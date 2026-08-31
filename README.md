@@ -30,7 +30,7 @@ cada quien trabaja sin pedir permiso.
 - @DayaneRojas1506
 - @OmarUTEC
 - @LuisIZ
-- @OmarUTEC
+- @NoeParedes
 - @jimena-mr
 
 Planificación en el [Project board](https://github.com/users/LuisIZ/projects/1)
