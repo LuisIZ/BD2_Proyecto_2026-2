@@ -7,18 +7,83 @@ directorio crece solo cuando la profundidad local lo requiere.
 
 from __future__ import annotations
 
+import logging
+import sys
+import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Generic, Hashable, Iterator, List, Optional, Tuple, TypeVar
+from pathlib import Path
+from typing import Any, Callable, Dict, Generic, Hashable, Iterable, Iterator, List, Optional, Tuple, TypeVar
 
 
 Clave = TypeVar("Clave", bound=Hashable)
 Valor = TypeVar("Valor")
+logger = logging.getLogger(__name__)
+
+
+def configurar_log(ruta: Optional[str | Path] = None) -> Path:
+    """Configura un archivo persistente para el historial del indice."""
+    destino = Path(ruta) if ruta is not None else Path(__file__).parents[2] / "logs" / "extendible_hash.log"
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino = destino.resolve()
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == destino:
+            return destino
+
+    handler = logging.FileHandler(destino, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    return destino
+
+
+def cerrar_log(ruta: Optional[str | Path] = None) -> None:
+    """Cierra y retira handlers de archivo, opcionalmente por ruta."""
+    destino = Path(ruta).resolve() if ruta is not None else None
+    for handler in list(logger.handlers):
+        if not isinstance(handler, logging.FileHandler):
+            continue
+        if destino is not None and Path(handler.baseFilename) != destino:
+            continue
+        logger.removeHandler(handler)
+        handler.close()
 
 
 @dataclass
 class _Bucket(Generic[Clave, Valor]):
     profundidad_local: int
     registros: Dict[Clave, Valor] = field(default_factory=dict)
+
+
+@dataclass
+class MetricasHash:
+    """Metricas acumuladas del indice y de sus operaciones."""
+
+    construccion_ns: int = 0
+    consultas: int = 0
+    consultas_ns: int = 0
+    inserciones: int = 0
+    inserciones_ns: int = 0
+    eliminaciones: int = 0
+    eliminaciones_ns: int = 0
+    espacio_adicional_bytes: int = 0
+
+    def como_dict(self) -> dict[str, int | float]:
+        return {
+            "construccion_ms": self.construccion_ns / 1_000_000,
+            "consultas": self.consultas,
+            "consulta_promedio_us": self.consultas_ns / self.consultas / 1_000
+            if self.consultas
+            else 0.0,
+            "inserciones": self.inserciones,
+            "insercion_promedio_us": self.inserciones_ns / self.inserciones / 1_000
+            if self.inserciones
+            else 0.0,
+            "eliminaciones": self.eliminaciones,
+            "eliminacion_promedio_us": self.eliminaciones_ns / self.eliminaciones / 1_000
+            if self.eliminaciones
+            else 0.0,
+            "espacio_adicional_bytes": self.espacio_adicional_bytes,
+        }
 
 
 class ExtendibleHashing(Generic[Clave, Valor]):
@@ -34,11 +99,13 @@ class ExtendibleHashing(Generic[Clave, Valor]):
         bucket_capacity: int = 4,
         hash_function: Optional[Callable[[Clave], int]] = None,
         max_depth: int = 64,
+        log_path: Optional[str | Path] = None,
     ) -> None:
         if bucket_capacity < 1:
             raise ValueError("La capacidad del bucket debe ser positiva")
         if max_depth < 0:
             raise ValueError("La profundidad maxima no puede ser negativa")
+        configurar_log(log_path)
 
         self.bucket_capacity = bucket_capacity
         self._hash_function = hash_function or hash
@@ -46,6 +113,28 @@ class ExtendibleHashing(Generic[Clave, Valor]):
         self._profundidad_global = 0
         self._directorio: List[_Bucket[Clave, Valor]] = [_Bucket(0)]
         self._cantidad = 0
+        self._metricas = MetricasHash()
+
+    @classmethod
+    def construir(
+        cls,
+        registros: Iterable[Tuple[Clave, Valor]],
+        **kwargs: Any,
+    ) -> "ExtendibleHashing[Clave, Valor]":
+        """Construye el indice y mide el tiempo total de construccion."""
+        inicio = time.perf_counter_ns()
+        indice = cls(**kwargs)
+        for clave, valor in registros:
+            indice.insertar(clave, valor)
+        indice._metricas.construccion_ns = time.perf_counter_ns() - inicio
+        indice._actualizar_espacio()
+        logger.info(
+            "Indice hash construido: registros=%d tiempo_ms=%.3f espacio_bytes=%d",
+            indice.cantidad,
+            indice._metricas.construccion_ns / 1_000_000,
+            indice._metricas.espacio_adicional_bytes,
+        )
+        return indice
 
     @property
     def profundidad_global(self) -> int:
@@ -69,7 +158,9 @@ class ExtendibleHashing(Generic[Clave, Valor]):
 
     def insertar(self, clave: Clave, valor: Valor) -> bool:
         """Inserta ``clave`` y ``valor``; devuelve ``False`` si ya existe."""
+        inicio = time.perf_counter_ns()
         if self.contiene(clave):
+            self._registrar_insercion(inicio)
             return False
 
         while True:
@@ -77,6 +168,7 @@ class ExtendibleHashing(Generic[Clave, Valor]):
             if len(bucket.registros) < self.bucket_capacity:
                 bucket.registros[clave] = valor
                 self._cantidad += 1
+                self._registrar_insercion(inicio)
                 return True
             if not self._puede_separar(bucket, clave):
                 raise OverflowError("Las claves colisionan en todos los bits disponibles")
@@ -84,20 +176,27 @@ class ExtendibleHashing(Generic[Clave, Valor]):
 
     def buscar(self, clave: Clave, default: Optional[Valor] = None) -> Optional[Valor]:
         """Devuelve el valor asociado o ``default`` si la clave no existe."""
-        return self._bucket_para(clave).registros.get(clave, default)
+        inicio = time.perf_counter_ns()
+        resultado = self._bucket_para(clave).registros.get(clave, default)
+        self._metricas.consultas += 1
+        self._metricas.consultas_ns += time.perf_counter_ns() - inicio
+        return resultado
 
     def contiene(self, clave: Clave) -> bool:
         return clave in self._bucket_para(clave).registros
 
     def eliminar(self, clave: Clave) -> bool:
         """Elimina una clave y fusiona buckets cuando dejan de ser necesarios."""
+        inicio = time.perf_counter_ns()
         bucket = self._bucket_para(clave)
         if clave not in bucket.registros:
+            self._registrar_eliminacion(inicio)
             return False
 
         del bucket.registros[clave]
         self._cantidad -= 1
         self._fusionar(bucket)
+        self._registrar_eliminacion(inicio)
         return True
 
     def items(self) -> List[Tuple[Clave, Valor]]:
@@ -114,6 +213,19 @@ class ExtendibleHashing(Generic[Clave, Valor]):
             "buckets": self.cantidad_buckets,
             "capacidad_bucket": self.bucket_capacity,
         }
+
+    def metricas(self) -> dict[str, int | float]:
+        """Devuelve tiempos, contadores y espacio adicional estimado."""
+        self._actualizar_espacio()
+        resultado = self._metricas.como_dict()
+        logger.info("Metricas del indice hash: %s", resultado)
+        return resultado
+
+    def resetear_metricas(self) -> None:
+        """Reinicia contadores operativos sin modificar los registros."""
+        construccion_ns = self._metricas.construccion_ns
+        self._metricas = MetricasHash(construccion_ns=construccion_ns)
+        self._actualizar_espacio()
 
     def __len__(self) -> int:
         return self._cantidad
@@ -207,3 +319,21 @@ class ExtendibleHashing(Generic[Clave, Valor]):
         for bucket in self._directorio:
             unicos[id(bucket)] = bucket
         return list(unicos.values())
+
+    def _registrar_insercion(self, inicio: int) -> None:
+        self._metricas.inserciones += 1
+        self._metricas.inserciones_ns += time.perf_counter_ns() - inicio
+
+    def _registrar_eliminacion(self, inicio: int) -> None:
+        self._metricas.eliminaciones += 1
+        self._metricas.eliminaciones_ns += time.perf_counter_ns() - inicio
+
+    def _actualizar_espacio(self) -> None:
+        objetos = [self._directorio]
+        objetos.extend(self._buckets_unicos())
+        objetos.extend(bucket.registros for bucket in self._buckets_unicos())
+        espacio = sum(sys.getsizeof(objeto) for objeto in objetos)
+        for bucket in self._buckets_unicos():
+            espacio += sum(sys.getsizeof(clave) + sys.getsizeof(valor)
+                           for clave, valor in bucket.registros.items())
+        self._metricas.espacio_adicional_bytes = espacio

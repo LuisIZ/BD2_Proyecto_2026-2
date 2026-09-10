@@ -1,0 +1,18 @@
+2026-09-09 19:40:00,273 INFO Plan externo: {'algorithm': 'external_hash_aggregate', 'buffer_pages': 4, 'partitions': 3, 'max_groups_in_memory': 8, 'aggregates': ['avg', 'count', 'max', 'min', 'sum'], 'records': 5, 'groups': 2}
+2026-09-09 19:40:00,295 INFO Plan externo: {'algorithm': 'external_hash_aggregate', 'buffer_pages': 4, 'partitions': 13, 'max_groups_in_memory': 8, 'aggregates': ['count', 'sum'], 'records': 100, 'groups': 100}
+2026-09-09 19:40:01,289 INFO Plan externo: {'algorithm': 'external_merge_sort', 'buffer_pages': 10, 'records_per_page': 1000, 'k': 9, 'initial_runs': 10, 'merge_passes': 1, 'records': 100000}
+2026-09-09 19:40:01,322 INFO Plan externo: {'algorithm': 'external_merge_sort', 'buffer_pages': 3, 'records_per_page': 2, 'k': 2, 'initial_runs': 2, 'merge_passes': 0, 'records': 9}
+2026-09-09 19:40:01,332 INFO Plan externo: {'algorithm': 'external_merge_sort', 'buffer_pages': 3, 'records_per_page': 1, 'k': 2, 'initial_runs': 1, 'merge_passes': 0, 'records': 3}
+2026-09-09 19:40:01,337 INFO Plan externo: {'algorithm': 'hash_join', 'outer_rows': 10, 'inner_rows': 20, 'index_available': False}
+2026-09-09 19:40:01,344 INFO Plan externo: {'algorithm': 'index_nested_loop_join', 'outer_rows': 3, 'inner_rows': 3, 'index_available': True}
+2026-09-09 19:40:01,344 INFO Plan externo: {'algorithm': 'index_nested_loop_join_execute', 'rows': 2}
+2026-09-09 19:40:01,346 INFO Plan externo: {'algorithm': 'hash_join', 'outer_rows': 100, 'inner_rows': 10, 'index_available': False}
+2026-09-09 19:40:12,492 INFO Plan externo: {'algorithm': 'external_hash_aggregate', 'buffer_pages': 4, 'partitions': 3, 'max_groups_in_memory': 8, 'aggregates': ['avg', 'count', 'max', 'min', 'sum'], 'records': 5, 'groups': 2}
+2026-09-09 19:40:12,518 INFO Plan externo: {'algorithm': 'external_hash_aggregate', 'buffer_pages': 4, 'partitions': 13, 'max_groups_in_memory': 8, 'aggregates': ['count', 'sum'], 'records': 100, 'groups': 100}
+2026-09-09 19:40:13,308 INFO Plan externo: {'algorithm': 'external_merge_sort', 'buffer_pages': 10, 'records_per_page': 1000, 'k': 9, 'initial_runs': 10, 'merge_passes': 1, 'records': 100000}
+2026-09-09 19:40:13,324 INFO Plan externo: {'algorithm': 'external_merge_sort', 'buffer_pages': 3, 'records_per_page': 2, 'k': 2, 'initial_runs': 2, 'merge_passes': 0, 'records': 9}
+2026-09-09 19:40:13,339 INFO Plan externo: {'algorithm': 'external_merge_sort', 'buffer_pages': 3, 'records_per_page': 1, 'k': 2, 'initial_runs': 1, 'merge_passes': 0, 'records': 3}
+2026-09-09 19:40:13,342 INFO Plan externo: {'algorithm': 'hash_join', 'outer_rows': 10, 'inner_rows': 20, 'index_available': False}
+2026-09-09 19:40:13,354 INFO Plan externo: {'algorithm': 'index_nested_loop_join', 'outer_rows': 3, 'inner_rows': 3, 'index_available': True}
+2026-09-09 19:40:13,355 INFO Plan externo: {'algorithm': 'index_nested_loop_join_execute', 'rows': 2}
+2026-09-09 19:40:13,358 INFO Plan externo: {'algorithm': 'hash_join', 'outer_rows': 100, 'inner_rows': 10, 'index_available': False}
