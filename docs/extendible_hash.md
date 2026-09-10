@@ -48,6 +48,8 @@ Los archivos principales son:
 	del indice.
 - `motor/indices/__init__.py`: exporta la clase como parte del paquete.
 - `motor/pruebas/test_extendible_hash.py`: pruebas automatizadas.
+- `motor/pruebas/test_extendible_hash_csv.py`: prueba de integracion con el
+	CSV real de 100 000 organizaciones.
 
 ## 2. Conceptos principales
 
@@ -282,7 +284,57 @@ Operaciones disponibles:
 	cantidad de buckets y capacidad configurada.
 - `supportsRange()`: devuelve `False` para integracion con el planner.
 
-## 11. Pruebas implementadas
+## 11. Metricas y logs de rendimiento
+
+La clase registra metricas acumuladas mediante `metricas()`:
+
+```python
+metricas = indice.metricas()
+```
+
+El resultado incluye:
+
+- `construccion_ms`: tiempo de `construir()` en milisegundos.
+- `consultas`: cantidad de busquedas realizadas.
+- `consulta_promedio_us`: tiempo promedio de consulta en microsegundos.
+- `inserciones`: cantidad de llamadas a `insertar`.
+- `insercion_promedio_us`: tiempo promedio de insercion.
+- `eliminaciones`: cantidad de llamadas a `eliminar`.
+- `eliminacion_promedio_us`: tiempo promedio de eliminacion.
+- `espacio_adicional_bytes`: estimacion del espacio ocupado por el
+	directorio, buckets, diccionarios, claves y valores.
+
+Para medir la construccion completa se recomienda usar:
+
+```python
+indice = ExtendibleHashing.construir(
+		((int(fila["Index"]), fila) for fila in csv.DictReader(archivo)),
+		bucket_capacity=128,
+)
+```
+
+La construccion emite un log `INFO` en el logger
+`motor.indices.extendible_hash` con cantidad de registros, tiempo y espacio.
+Las consultas, inserciones y eliminaciones se acumulan para medir tambien
+cargas con actualizaciones frecuentes. `resetear_metricas()` reinicia esos
+contadores operativos sin eliminar los registros ni el tiempo de construccion.
+
+Por defecto, los eventos se guardan en:
+
+```text
+logs/extendible_hash.log
+```
+
+La ruta puede cambiarse al construir el indice:
+
+```python
+indice = ExtendibleHashing(log_path="tmp/mi-hash.log")
+```
+
+Para cerrar el archivo de forma explicita, especialmente en Windows o en
+tests que cambian de ruta, se puede usar `cerrar_log(ruta)`.
+
+## 12. Pruebas implementadas
 
 La suite se encuentra en `motor/pruebas/test_extendible_hash.py` y cubre:
 
@@ -294,17 +346,25 @@ La suite se encuentra en `motor/pruebas/test_extendible_hash.py` y cubre:
 6. Contrato `supportsRange() == False`.
 7. Validacion de parametros y estadisticas.
 8. Insercion de 100 000 claves y crecimiento del directorio.
+9. Construccion desde `organizations-100000.csv`, consultas y 1 000 ciclos de
+	eliminacion/reinsercion.
 
 El test de escala utiliza buckets de capacidad 64. Con 100 000 claves se
 verifica que el directorio crezca, que tenga exactamente `2^global_depth`
 posiciones y que las primeras, intermedias y ultimas claves puedan buscarse.
 
-## 12. Como ejecutar las pruebas
+## 13. Como ejecutar las pruebas
 
 Desde la raiz del proyecto, en PowerShell:
 
 ```powershell
 python -m unittest discover -s motor/pruebas -p "test_*.py" -v
+```
+
+Para ejecutar solo el benchmark de integracion con el CSV:
+
+```powershell
+python -m unittest motor.pruebas.test_extendible_hash_csv -v
 ```
 
 Una ejecucion exitosa termina con todos los tests en estado `ok` y una salida
@@ -322,7 +382,7 @@ Tambien se puede comprobar la sintaxis con:
 python -m compileall -q motor/indices motor/pruebas
 ```
 
-## 13. Resumen para la reunion
+## 14. Resumen para la reunion
 
 La implementacion cumple el flujo principal de un indice extendible hashing:
 
@@ -336,7 +396,10 @@ La implementacion cumple el flujo principal de un indice extendible hashing:
 - fusiona buckets buddy despues de eliminar;
 - reduce la profundidad global cuando el directorio ya no necesita crecer;
 - informa al planner que no soporta rangos;
-- valida el crecimiento con 100 000 claves.
+- valida el crecimiento con 100 000 claves;
+- mide construccion, consultas, inserciones, eliminaciones y espacio
+	adicional;
+- se prueba con el CSV real de organizaciones.
 
 La implementacion actual es en memoria. La siguiente etapa natural seria
 conectar el directorio y los buckets con el administrador de paginas para

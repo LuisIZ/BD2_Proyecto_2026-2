@@ -1,0 +1,12 @@
+2026-09-09 19:36:32,293 INFO Indice hash construido: registros=100000 tiempo_ms=936.277 espacio_bytes=34857912
+2026-09-09 19:36:49,514 INFO Indice hash construido: registros=100000 tiempo_ms=997.560 espacio_bytes=34857912
+2026-09-09 19:36:49,588 INFO Metricas del indice hash: {'construccion_ms': 0.0, 'consultas': 1, 'consulta_promedio_us': 3.4, 'inserciones': 1, 'insercion_promedio_us': 4.3, 'eliminaciones': 0, 'eliminacion_promedio_us': 0.0, 'espacio_adicional_bytes': 408}
+2026-09-09 19:37:10,538 INFO Indice hash construido: registros=100000 tiempo_ms=911.367 espacio_bytes=34857912
+2026-09-09 19:37:10,745 INFO Metricas del indice hash: {'construccion_ms': 911.3669, 'consultas': 1004, 'consulta_promedio_us': 0.7417330677290837, 'inserciones': 101000, 'insercion_promedio_us': 3.3249950495049507, 'eliminaciones': 1000, 'eliminacion_promedio_us': 146.9688, 'espacio_adicional_bytes': 34857912}
+2026-09-09 19:37:10,818 INFO Metricas del indice hash: {'construccion_ms': 0.0, 'consultas': 1, 'consulta_promedio_us': 1.1, 'inserciones': 1, 'insercion_promedio_us': 5.3, 'eliminaciones': 0, 'eliminacion_promedio_us': 0.0, 'espacio_adicional_bytes': 408}
+2026-09-09 19:37:22,440 INFO Indice hash construido: registros=100000 tiempo_ms=819.286 espacio_bytes=34857912
+2026-09-09 19:37:22,681 INFO Metricas del indice hash: {'construccion_ms': 819.286, 'consultas': 1004, 'consulta_promedio_us': 0.7010956175298805, 'inserciones': 101000, 'insercion_promedio_us': 3.2777465346534655, 'eliminaciones': 1000, 'eliminacion_promedio_us': 186.27620000000002, 'espacio_adicional_bytes': 34857912}
+2026-09-09 19:37:22,756 INFO Metricas del indice hash: {'construccion_ms': 0.0, 'consultas': 1, 'consulta_promedio_us': 0.8, 'inserciones': 1, 'insercion_promedio_us': 3.2, 'eliminaciones': 0, 'eliminacion_promedio_us': 0.0, 'espacio_adicional_bytes': 408}
+2026-09-09 19:40:12,237 INFO Indice hash construido: registros=100000 tiempo_ms=856.080 espacio_bytes=34857912
+2026-09-09 19:40:12,407 INFO Metricas del indice hash: {'construccion_ms': 856.0796, 'consultas': 1004, 'consulta_promedio_us': 0.6518924302788844, 'inserciones': 101000, 'insercion_promedio_us': 2.8281772277227724, 'eliminaciones': 1000, 'eliminacion_promedio_us': 124.3322, 'espacio_adicional_bytes': 34857912}
+2026-09-09 19:40:12,472 INFO Metricas del indice hash: {'construccion_ms': 0.0, 'consultas': 1, 'consulta_promedio_us': 0.7, 'inserciones': 1, 'insercion_promedio_us': 2.6, 'eliminaciones': 0, 'eliminacion_promedio_us': 0.0, 'espacio_adicional_bytes': 408}
