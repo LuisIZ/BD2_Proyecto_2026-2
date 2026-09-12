@@ -38,7 +38,8 @@ int main() {
         assert(ordenado[indice].clave == static_cast<int>(indice + 1));
     }
     const motor::EstadisticasArchivo stats_iniciales = archivo.stats();
-    assert(stats_iniciales.registros_auxiliares > 0);
+    assert(stats_iniciales.paginas >= 2);
+    assert(stats_iniciales.registros_auxiliares == 0);
     imprimir_registros(ordenado);
     imprimir_stats(stats_iniciales);
 

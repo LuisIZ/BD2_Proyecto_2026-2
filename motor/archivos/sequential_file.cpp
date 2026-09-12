@@ -34,7 +34,18 @@ bool SequentialFile::insertar(const Registro& registro) {
             [](const Slot& slot, int clave) { return slot.registro.clave < clave; });
         pagina.slots.insert(posicion, Slot{registro, false});
     } else {
-        insertar_auxiliar(registro);
+        std::vector<Slot> slots = pagina.slots;
+        const auto posicion = std::lower_bound(
+            slots.begin(), slots.end(), registro.clave,
+            [](const Slot& slot, int clave) { return slot.registro.clave < clave; });
+        slots.insert(posicion, Slot{registro, false});
+
+        const std::size_t punto_division = slots.size() / 2;
+        pagina.slots.assign(slots.begin(), slots.begin() + punto_division);
+        Pagina nueva_pagina;
+        nueva_pagina.slots.assign(slots.begin() + punto_division, slots.end());
+        paginas_.insert(paginas_.begin() + static_cast<std::ptrdiff_t>(indice + 1),
+                        std::move(nueva_pagina));
     }
 
     reorganizar_si_corresponde();
@@ -177,13 +188,6 @@ bool SequentialFile::marcar_tumba(std::vector<Slot>& slots, int clave) {
     }
     posicion->tumba = true;
     return true;
-}
-
-void SequentialFile::insertar_auxiliar(const Registro& registro) {
-    const auto posicion = std::lower_bound(
-        auxiliar_.begin(), auxiliar_.end(), registro.clave,
-        [](const Slot& slot, int clave) { return slot.registro.clave < clave; });
-    auxiliar_.insert(posicion, Slot{registro, false});
 }
 
 void SequentialFile::reorganizar_si_corresponde() {

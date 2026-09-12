@@ -34,7 +34,6 @@ private:
     std::size_t pagina_para(int clave) const;
     bool contiene(int clave) const;
     bool marcar_tumba(std::vector<Slot>& slots, int clave);
-    void insertar_auxiliar(const Registro& registro);
     void reorganizar_si_corresponde();
     double porcentaje_desperdicio() const;
 
