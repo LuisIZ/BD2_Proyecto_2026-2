@@ -8,7 +8,7 @@ const int MIN_HOJA    = ORDEN / 2;
 const int MIN_INTERNO = (ORDEN + 1) / 2 - 1;
 
 //comparo dos entradas 1 clave y si son iguales la posicion
-inline bool menor(int c1, int p1, int c2, int p2) {
+inline bool menor(int c1, long long p1, int c2, long long p2) {
     if (c1 != c2) return c1 < c2;
     return p1 < p2;
 }
@@ -17,7 +17,7 @@ inline bool menor(int c1, int p1, int c2, int p2) {
 struct Nodo {
     bool es_hoja;
     vector<int> claves;
-    vector<int> punteros;  
+    vector<long long> punteros;  // rid del heapfile en un solo numero: pagina * 65536 + slot
     vector<Nodo*> hijos;   
     Nodo* siguiente;             
 
@@ -45,7 +45,7 @@ public:
     BPlusNoAgrupado& operator=(const BPlusNoAgrupado&) = delete;
 
     //insetamos (clave, pos)
-    void insertar(int clave, int pos) {
+    void insertar(int clave, long long pos) {
         vector<Rastro> camino;
         Nodo* hoja = buscar_hoja(clave, pos, camino);
 
@@ -61,15 +61,15 @@ public:
     }
 
     // devuelve las posiciones de todos los registros que tienen esa clave
-    vector<int> buscar(int clave) {
+    vector<long long> buscar(int clave) {
         return buscar_rango(clave, clave);
     }
 
     // recore las hojas y saca las posiciones
-    vector<int> buscar_rango(int desde, int hasta) {
+    vector<long long> buscar_rango(int desde, int hasta) {
         vector<Rastro> camino;
-        Nodo* hoja = buscar_hoja(desde, -1, camino);  
-        vector<int> resultado;
+        Nodo* hoja = buscar_hoja(desde, -1, camino);  // -1 va antes de cualquier rid real
+        vector<long long> resultado;
         while (hoja != nullptr) {
             for (int i = 0; i < (int)hoja->claves.size(); i++) {
                 if (hoja->claves[i] > hasta) return resultado;
@@ -92,15 +92,15 @@ public:
 
     //borra todas las entradas con esa clave y cuantas borro
     int eliminar(int clave) {
-        vector<int> posiciones = buscar(clave);
+        vector<long long> posiciones = buscar(clave);
         int n = 0;
-        for (int pos : posiciones)
+        for (long long pos : posiciones)
             if (eliminar_entrada(clave, pos)) n = n + 1;
         return n;
     }
 
     // borrmos una sola entrada
-    bool eliminar_entrada(int clave, int pos) {
+    bool eliminar_entrada(int clave, long long pos) {
         vector<Rastro> camino;
         Nodo* hoja = buscar_hoja(clave, pos, camino);
 
@@ -117,7 +117,7 @@ public:
 
 private:
     // baja de la raiz hasta la hoja y va guardando los padres en el camino
-    Nodo* buscar_hoja(int clave, int pos, vector<Rastro>& camino) {
+    Nodo* buscar_hoja(int clave, long long pos, vector<Rastro>& camino) {
         Nodo* nodo = raiz;
         camino.clear();
         while (!nodo->es_hoja) {
@@ -146,7 +146,7 @@ private:
     }
 
     //mete el separador en el padre y parte tanbien al padre si se llena
-    void subir_clave(int clave, int pos, Nodo* nodo_der, vector<Rastro>& camino) {
+    void subir_clave(int clave, long long pos, Nodo* nodo_der, vector<Rastro>& camino) {
         if (camino.empty()) {
             Nodo* nueva_raiz = new Nodo(false);
             nueva_raiz->claves.push_back(clave);
@@ -168,7 +168,7 @@ private:
 
         int mitad = (int)padre->claves.size() / 2;
         int sube_c = padre->claves[mitad];
-        int sube_p = padre->punteros[mitad];
+        long long sube_p = padre->punteros[mitad];
         Nodo* nuevo = new Nodo(false);
         nuevo->claves.assign(padre->claves.begin() + mitad + 1, padre->claves.end());
         nuevo->punteros.assign(padre->punteros.begin() + mitad + 1, padre->punteros.end());
