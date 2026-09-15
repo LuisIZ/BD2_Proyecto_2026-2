@@ -15,6 +15,7 @@ BD2_Proyecto_2026-2/
 │   ├── indices/    # B+ agrupado, B+ no agrupado, hash
 │   ├── consultas/  # parser y ejecución
 │   └── pruebas/
+├── api/            # Para guardar las métricas de comparación técnica
 ├── api/            # Python: conecta el motor con la web
 ├── web/            # React: la interfaz
 ├── datos/          # CSVs y resultados de los experimentos
