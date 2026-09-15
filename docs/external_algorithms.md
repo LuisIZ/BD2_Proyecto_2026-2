@@ -1,231 +1,194 @@
-# Algoritmos externos de consultas
+# Algoritmos externos de consultas en C++17
 
-## 1. Objetivo
+## 1. Implementacion
 
-Se implementaron algoritmos que permiten procesar relaciones mayores que la
-memoria disponible:
+Los algoritmos C++ estan en:
 
-- `ExternalMergeSort` para `ORDER BY`.
-- `ExternalHashAggregate` para `GROUP BY` y agregados.
-- `hash_join` e `index_nested_loop_join` para `JOIN`.
-- `JoinPlanner` para seleccionar y registrar el algoritmo de join.
+- `motor/consultas/external_algorithms.h`: templates de ordenamiento,
+  agregacion, joins y `PlanTrace`.
+- `motor/consultas/external_algorithms.cpp`: unidad de compilacion.
+- `motor/pruebas/external_algorithms_test.cpp`: pruebas principales.
 
-La implementación utiliza archivos temporales como representación de runs y
-particiones. El presupuesto de memoria se expresa en páginas de buffer.
+Los templates reciben tipos concretos de registro y clave:
 
-Los archivos principales son:
+```cpp
+motor::PlanTrace traza;
+motor::ExternalMergeSort<int, int> sort(10, 1000, 9, &traza);
+```
 
-- `motor/consultas/external_algorithms.py`.
-- `motor/consultas/__init__.py`.
-- `motor/pruebas/test_external_algorithms.py`.
+## 2. Paginas y presupuesto
 
-Los eventos de planificación se guardan en un historial separado:
+El C++ modela el presupuesto mediante `buffer_pages`, `records_per_page` y
+`k`. No se crean paginas fisicas ni archivos temporales en esta version: runs
+y particiones viven en `std::vector`. Por tanto, `records_per_page` es un
+limite de memoria reproducible, no una serializacion real.
+
+Para el CSV de prueba:
+
+| Medida | Valor |
+|---|---:|
+| Filas | 100 000 |
+| Fila promedio CSV | 140.17 bytes |
+| Fila maxima CSV | 220 bytes |
+| Payload total | 14 017 171 bytes |
+| Pagina logica de 4 KiB | 25-27 filas con slots |
+| Pagina logica de 8 KiB | 50-53 filas con slots |
+
+El rango practico descuenta 16-32 bytes por slot para longitud, offset,
+estado y alineamiento. En C++, `std::string`, capacidad reservada y allocator
+pueden aumentar el costo real.
+
+## 3. External Merge Sort
+
+`ExternalMergeSort<Registro, Clave>` calcula:
 
 ```text
-logs/external_algorithms.log
+chunk_size = buffer_pages * records_per_page
 ```
 
-## 2. Presupuesto de buffers
-
-Los constructores reciben:
-
-```python
-buffer_pages=10
-records_per_page=100
-```
-
-`records_per_page` traduce páginas a una cantidad de registros para hacer
-reproducible la prueba en memoria. El algoritmo no mantiene toda la relación
-en memoria: escribe runs o particiones en archivos temporales.
-
-En el sort, `k` representa la cantidad máxima de runs que se fusionan en una
-pasada. Por defecto es `buffer_pages - 1`, reservando una página para la
-salida, pero puede configurarse explícitamente:
-
-```python
-sorter = ExternalMergeSort(buffer_pages=10, records_per_page=100, k=5)
-```
-
-El valor válido de `k` está entre 2 y `buffer_pages - 1`.
-
-## 3. External Merge Sort para ORDER BY
-
-### Generación de runs
-
-La relación se lee en grupos de:
+Cada chunk se ordena con `std::sort` y se convierte en un run logico. En la
+prueba de 100 000 enteros:
 
 ```text
-buffer_pages * records_per_page
+buffer_pages = 10
+records_per_page = 1000
+chunk_size = 10000
+initial_runs = ceil(100000 / 10000) = 10
+k = 9
 ```
 
-Cada grupo se ordena en memoria y se almacena en un archivo temporal llamado
-run. Si hay 100 000 registros, 10 páginas y 1 000 registros por página, se
-generan 10 runs de 10 000 registros cada uno.
+Como 10 runs superan `k`, se realiza una pasada intermedia y luego el merge
+final.
 
-### Merge k-way
+El merge usa `std::priority_queue` como heap de minimos. Cada entrada guarda
+clave, indice del run y posicion dentro del run. El costo esperado es:
 
-Los runs se fusionan usando un heap de mínimos:
-
-1. Se lee el primer registro de cada run.
-2. Se inserta cada registro en el heap junto con su clave y origen.
-3. Se extrae el menor registro.
-4. Se escribe en la salida y se lee el siguiente registro del mismo run.
-5. Se repite hasta vaciar todos los runs.
-
-Si hay más de `k` runs, se realizan pasadas intermedias hasta reducirlos a
-`k` o menos. El resultado se produce ordenado sin cargar la relación completa
-en memoria.
-
-Uso:
-
-```python
-sorter = ExternalMergeSort(buffer_pages=10, records_per_page=1000)
-ordenados = sorter.sort(registros, key=lambda registro: registro["id"])
+```text
+O(N log k)
 ```
 
-La traza registra:
+El heap usa aproximadamente `O(k)` elementos, sin contar los vectores de runs
+que esta version conserva en memoria.
 
-- `buffer_pages`.
-- `records_per_page`.
-- `k`.
-- cantidad inicial de runs.
-- cantidad de pasadas de merge.
-- cantidad final de registros.
+La traza registra `buffer_pages`, `records_per_page`, `k`, `initial_runs`,
+`merge_passes` y `records`.
 
-## 4. External Hashing para GROUP BY
+## 4. External Hash Aggregation
 
-`ExternalHashAggregate` particiona los registros por el hash de su clave de
-grupo. Cada partición se guarda en un archivo temporal y luego se procesa por
-separado, de manera que los grupos de una partición puedan agregarse sin
-mantener todos los grupos globales en memoria.
+`ExternalHashAggregate<Registro, Grupo>` particiona por:
 
-El límite estimado de grupos simultáneos es:
+```text
+hash(grupo) % partitions
+```
+
+El limite logico de grupos simultaneos es:
 
 ```text
 max_groups_in_memory = buffer_pages * records_per_page
 ```
 
-El número de particiones aumenta cuando la cantidad de registros supera ese
-límite. Así, el algoritmo puede manejar más grupos que los que caben en
-memoria, como demuestra el test con 100 grupos y capacidad de 8 grupos.
+La cantidad de particiones es al menos `buffer_pages - 1` y aumenta cuando el
+volumen supera el limite. Cada grupo acumula `COUNT`, `SUM`, `AVG`, `MIN` y
+`MAX` en `AggregateResult`.
 
-Uso:
+La prueba usa 100 grupos, 4 paginas y 2 registros por pagina:
 
-```python
-aggregate = ExternalHashAggregate(buffer_pages=4, records_per_page=2)
-resultado = aggregate.aggregate(
-    registros,
-    group_key=lambda registro: registro["country"],
-    value=lambda registro: registro["employees"],
-    aggregates={
-        "count": "COUNT",
-        "total": "SUM",
-        "average": "AVG",
-        "minimum": "MIN",
-        "maximum": "MAX",
-    },
-)
+```text
+max_groups_in_memory = 4 * 2 = 8
 ```
 
-El resultado tiene una entrada por grupo:
+Se prueban 100 grupos, 12.5 veces el limite simultaneo.
 
-```python
-{
-    "Peru": {
-        "count": 2,
-        "total": 120,
-        "average": 60.0,
-        "minimum": 40,
-        "maximum": 80,
-    }
-}
-```
-
-Soporta `COUNT`, `SUM`, `AVG`, `MIN` y `MAX`. La traza informa el presupuesto
-de buffers, las particiones utilizadas, el límite de grupos, registros y
-grupos resultantes.
+Importante: esta version implementa particionamiento externo a nivel logico,
+pero las particiones siguen en memoria. Para external hashing persistente se
+deben usar archivos temporales o paginas y procesar una particion por vez.
 
 ## 5. Joins
 
 ### Hash join
 
-`hash_join` construye una tabla hash con la relación interna y luego consulta
-la tabla con cada registro de la relación externa. Es apropiado para
-equi-joins cuando no existe un índice útil.
+`hash_join` construye un `std::unordered_map<Key, vector<Right>>` con la
+relacion derecha y sondea con la izquierda:
 
-```python
-resultado = hash_join(
-    clientes,
-    pedidos,
-    left_key=lambda cliente: cliente["id"],
-    right_key=lambda pedido: pedido["cliente_id"],
-)
+```text
+Tiempo esperado: O(|left| + |right| + |resultado|)
+Memoria: O(|right|)
 ```
+
+Las listas por clave soportan duplicados.
 
 ### Index nested loop join
 
-`index_nested_loop_join` recorre la relación externa y consulta un índice para
-cada clave. El índice puede ser una función callable o un objeto con método
-`buscar`.
+`index_nested_loop_join` recorre la relacion externa y llama una funcion de
+lookup por clave:
 
-```python
-resultado = index_nested_loop_join(
-    clientes,
-    indice_pedidos,
-    outer_key=lambda cliente: cliente["id"],
-)
+```text
+Costo: O(|outer| * costo_lookup + |resultado|)
 ```
+
+Es apropiado cuando la relacion externa es pequena y existe un indice sobre la
+relacion interna.
 
 ### Planner
 
-`JoinPlanner` elige index nested loop cuando existe índice y la relación
-externa no es mayor que la interna. En los demás casos selecciona hash join.
-La decisión y la ejecución quedan registradas en `PlanTrace`:
+`JoinPlanner::choose` selecciona index nested loop si hay indice y
+`outer_rows <= inner_rows`; en otro caso selecciona hash join. Es una
+heuristica inicial. Una version posterior debe considerar paginas, I/O,
+selectividad y cardinalidades del catalogo.
 
-```python
-trace = PlanTrace()
-planner = JoinPlanner(trace)
-resultado = planner.execute(clientes, pedidos, clave_cliente, clave_pedido)
+## 6. Trazas y logs
+
+`PlanTrace` conserva eventos como `PlanEvent` y los agrega a:
+
+```text
+logs/external_algorithms_cpp.log
 ```
 
-Cada evento de la traza contiene `algorithm` y los datos de la decisión,
-como cardinalidades, disponibilidad del índice y cantidad de filas
-producidas.
+Ejemplo:
 
-`PlanTrace` escribe esos mismos eventos en el archivo
-`logs/external_algorithms.log`. La ruta puede personalizarse:
-
-```python
-trace = PlanTrace(log_path="tmp/mi-plan.log")
+```text
+INFO Plan externo: external_merge_sort buffer_pages=10 records_per_page=1000 k=9 initial_runs=10 merge_passes=1 records=100000
 ```
 
-Los operadores `ExternalMergeSort`, `ExternalHashAggregate` y `JoinPlanner`
-tambien aceptan `log_path` cuando crean su propia traza. Para cerrar el
-archivo explicitamente se puede llamar `cerrar_log(ruta)`, una practica util
-en tests y en Windows.
+Tambien se registran `external_hash_aggregate`, `hash_join` e
+`index_nested_loop_join`.
 
-## 6. Pruebas
+## 7. Pruebas
 
-La suite se encuentra en `motor/pruebas/test_external_algorithms.py` y cubre:
+`external_algorithms_test.cpp` verifica:
 
-- generación de runs y merge k-way;
-- configuración y reporte de buffers y `k`;
-- ordenamiento de 100 000 registros con 10 páginas de buffer;
-- agregados `COUNT`, `SUM`, `AVG`, `MIN` y `MAX`;
-- GROUP BY con más grupos que el límite de memoria;
-- hash join;
-- index nested loop join;
-- elección y registro del plan de joins.
-- persistencia de la traza en un archivo `.log` separado.
+1. Ordenamiento de 100 000 registros.
+2. 10 runs con 10 paginas y 1 000 registros por pagina.
+3. Merge k-way con `k=9`.
+4. 100 grupos con capacidad logica de 8 grupos.
+5. `COUNT`, `SUM`, `AVG`, `MIN` y `MAX`.
+6. Hash join con claves coincidentes.
+7. Index nested loop join.
+8. Eleccion del planner.
+9. Persistencia de la traza.
 
-Desde la raíz del proyecto:
+Compilacion:
 
 ```powershell
-python -m unittest discover -s motor/pruebas -p "test_*.py" -v
+New-Item -ItemType Directory -Force .build | Out-Null
+g++ -std=c++17 -Wall -Wextra -pedantic motor/consultas/external_algorithms.cpp motor/pruebas/external_algorithms_test.cpp -o .build/external_algorithms_test.exe
 ```
 
-También se puede comprobar la sintaxis con:
+Ejecucion:
 
 ```powershell
-python -m compileall -q motor/consultas motor/pruebas
+.\.build\external_algorithms_test.exe
 ```
+
+## 8. Limitaciones
+
+La implementacion C++ preserva las APIs principales de Python, pero aun no
+persiste runs ni particiones. Para cumplir completamente el modelo externo
+sobre disco se necesita:
+
+- formato de pagina de 4 KiB u 8 KiB;
+- administrador de paginas temporales;
+- serializacion de registros variables;
+- lectura por streams en vez de vectores completos;
+- conteo de lecturas y escrituras de pagina;
+- planner basado en costo de I/O.
