@@ -26,6 +26,19 @@ BD2_Proyecto_2026-2/
 que todos usamos. Cambiar algo ahí se avisa al grupo. En las demás carpetas,
 cada quien trabaja sin pedir permiso.
 
+## Compilar y correr
+
+```bash
+make gui        # compila el motor y abre la interfaz (tablas, consulta, resultados, plan)
+make test       # todas las pruebas
+make bench      # benchmarks de heap, secuencial y B+ agrupado en datos/resultados/
+make clean
+```
+
+En Windows con MinGW: `mingw32-make gui`. Sin make, `python api/ui_sql.py` compila el
+motor por su cuenta. Consola: `python3 api/motor_cli.py "SHOW TABLES"`. Gramática y
+planificador en [docs/parser_sql.md](docs/parser_sql.md).
+
 ## Equipo
 
 - @DayaneRojas1506

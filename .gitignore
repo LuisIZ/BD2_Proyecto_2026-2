@@ -291,3 +291,9 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+# base de datos del minigestor (se regenera con CREATE TABLE)
+datos/db/
+.build/
+
+# el Makefile del proyecto es nuestro, no generado por CMake
+!/Makefile
