@@ -1,0 +1,853 @@
+#include "ejecutor.h"
+
+#include "external_algorithms.h"
+#include "../archivos/heap_file.h"
+#include "../archivos/sequential_file.h"
+#include "../indices/bplus_agrupado.h"
+#include "../indices/bplus_no_agrupado.h"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <climits>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <set>
+#include <stdexcept>
+#include <unordered_set>
+
+namespace motor {
+namespace sql {
+
+namespace {
+
+using Reloj = std::chrono::steady_clock;
+
+std::string minusculas(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string texto(std::size_t n) { return std::to_string(n); }
+
+// el B+ no agrupado guarda un long long: página y slot del heap empaquetados
+long long pos_de(const RecordId& rid) { return static_cast<long long>(rid.page_id) * 65536 + rid.slot_id; }
+RecordId rid_de(long long pos) {
+    RecordId rid;
+    rid.page_id = static_cast<std::uint32_t>(pos / 65536);
+    rid.slot_id = static_cast<std::uint16_t>(pos % 65536);
+    return rid;
+}
+
+int a_int(long long v) {
+    if (v < INT_MIN) return INT_MIN;
+    if (v > INT_MAX) return INT_MAX;
+    return static_cast<int>(v);
+}
+
+struct FilaFisica {
+    Fila fila;
+    RecordId rid;  // solo heap
+};
+
+// límites [desde, hasta] que impone una condición sobre una columna entera
+bool rango_de(const Condicion& c, long long& desde, long long& hasta) {
+    if (!c.valor.es_entero) return false;
+    desde = LLONG_MIN;
+    hasta = LLONG_MAX;
+    if (c.op == "=") { desde = hasta = c.valor.entero; }
+    else if (c.op == "BETWEEN") { if (!c.hasta.es_entero) return false; desde = c.valor.entero; hasta = c.hasta.entero; }
+    else if (c.op == "<") hasta = c.valor.entero - 1;
+    else if (c.op == "<=") hasta = c.valor.entero;
+    else if (c.op == ">") desde = c.valor.entero + 1;
+    else if (c.op == ">=") desde = c.valor.entero;
+    else return false;
+    return true;
+}
+
+bool cumple(const Valor& v, const Condicion& c) {
+    if (c.op == "=") return v == c.valor;
+    if (c.op == "!=") return v != c.valor;
+    if (c.op == "<") return v < c.valor;
+    if (c.op == "<=") return v <= c.valor;
+    if (c.op == ">") return v > c.valor;
+    if (c.op == ">=") return v >= c.valor;
+    if (c.op == "BETWEEN") return v >= c.valor && v <= c.hasta;
+    return false;
+}
+
+std::string describir(const Condicion& c) {
+    std::string s = c.columna + " " + c.op + " " + (c.valor.es_entero ? c.valor.a_texto() : "'" + c.valor.texto + "'");
+    if (c.op == "BETWEEN") s += " AND " + c.hasta.a_texto();
+    return s;
+}
+
+// --- acceso a los archivos de una tabla ---
+
+class Almacen {
+public:
+    Almacen(const Catalogo& catalogo, const Tabla& tabla, bool crear) : tabla_(tabla) {
+        (void)catalogo;
+        switch (tabla.organizacion) {
+            case Organizacion::HEAP:
+                heap_ = std::make_unique<HeapFile>(tabla.archivo, crear);
+                break;
+            case Organizacion::SEQUENTIAL:
+                seq_ = std::make_unique<SequentialFile>(tabla.archivo, crear);
+                break;
+            case Organizacion::BPLUS:
+                arbol_ = std::make_unique<BPlusAgrupado>(tabla.archivo, tabla.tam_registro_fijo(), crear);
+                break;
+        }
+        for (const Indice& indice : tabla.indices) {
+            indices_.emplace_back(&indice, std::make_unique<BPlusNoAgrupado>(indice.archivo, false));
+        }
+    }
+
+    ~Almacen() {
+        for (auto& [indice, arbol] : indices_) arbol->sincronizar();
+    }
+
+    std::string estructura() const {
+        switch (tabla_.organizacion) {
+            case Organizacion::HEAP: return "heap";
+            case Organizacion::SEQUENTIAL: return "secuencial";
+            case Organizacion::BPLUS: return "bplus_agrupado";
+        }
+        return "";
+    }
+
+    // --- lectura ---
+
+    std::vector<FilaFisica> escanear() {
+        std::vector<FilaFisica> salida;
+        if (heap_) {
+            heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
+                Registro r;
+                if (decodificar_registro(datos, largo, r)) salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), rid});
+                return true;
+            });
+        } else if (seq_) {
+            for (const Registro& r : seq_->scan()) salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), {}});
+        } else {
+            arbol_->buscar_rango_bytes(INT_MIN, INT_MAX, [&](const void* datos) {
+                salida.push_back({desempaquetar_fijo(tabla_, static_cast<const char*>(datos)), {}});
+                return true;
+            });
+        }
+        return salida;
+    }
+
+    // búsqueda por clave primaria con la estructura de la tabla (sin índices secundarios)
+    std::vector<FilaFisica> buscar_pk(long long clave) {
+        std::vector<FilaFisica> salida;
+        if (clave < INT_MIN || clave > INT_MAX) return salida;
+        if (heap_) {
+            heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
+                int c = 0;
+                if (!leer_clave(datos, largo, c) || c != clave) return true;
+                Registro r;
+                if (decodificar_registro(datos, largo, r)) salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), rid});
+                return false;
+            });
+        } else if (seq_) {
+            if (auto r = seq_->buscar(static_cast<int>(clave))) salida.push_back({desempaquetar_variable(tabla_, r->clave, r->valor), {}});
+        } else {
+            std::vector<char> buf(tabla_.tam_registro_fijo());
+            if (arbol_->buscar_bytes(static_cast<int>(clave), buf.data())) salida.push_back({desempaquetar_fijo(tabla_, buf.data()), {}});
+        }
+        return salida;
+    }
+
+    std::vector<FilaFisica> rango_pk(long long desde, long long hasta) {
+        std::vector<FilaFisica> salida;
+        if (heap_) {
+            for (FilaFisica& f : escanear()) {
+                const long long c = f.fila[tabla_.pk].entero;
+                if (c >= desde && c <= hasta) salida.push_back(std::move(f));
+            }
+        } else if (seq_) {
+            for (const Registro& r : seq_->buscar_rango(a_int(desde), a_int(hasta))) salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), {}});
+        } else {
+            arbol_->buscar_rango_bytes(a_int(desde), a_int(hasta), [&](const void* datos) {
+                salida.push_back({desempaquetar_fijo(tabla_, static_cast<const char*>(datos)), {}});
+                return true;
+            });
+        }
+        return salida;
+    }
+
+    bool sabe_rango_pk() const { return seq_ != nullptr || arbol_ != nullptr; }
+
+    BPlusNoAgrupado* indice(const Indice* i) {
+        for (auto& [ind, arbol] : indices_) if (ind == i) return arbol.get();
+        return nullptr;
+    }
+
+    std::vector<FilaFisica> rango_indice(const Indice* i, long long desde, long long hasta) {
+        std::vector<FilaFisica> salida;
+        BPlusNoAgrupado* arbol = indice(i);
+        const std::vector<long long> posiciones = desde == hasta ? arbol->buscar(a_int(desde))
+                                                                  : arbol->buscar_rango(a_int(desde), a_int(hasta));
+        for (long long pos : posiciones) {
+            const RecordId rid = rid_de(pos);
+            auto bytes = heap_->obtener(rid);
+            Registro r;
+            if (bytes && decodificar_registro(bytes->data(), static_cast<std::uint16_t>(bytes->size()), r)) {
+                salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), rid});
+            }
+        }
+        return salida;
+    }
+
+    // --- escritura ---
+
+    void insertar(const Fila& fila) {
+        validar_fila(tabla_, fila);
+        const int clave = clave_de(tabla_, fila);
+        if (heap_) {
+            const Indice* ipk = tabla_.indice_sobre(tabla_.columnas[tabla_.pk].nombre);
+            const bool repetida = ipk ? !indice(ipk)->buscar(clave).empty() : !buscar_pk(clave).empty();
+            if (repetida) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
+            const std::vector<std::byte> bytes = codificar_registro({clave, empaquetar_variable(tabla_, fila)});
+            const RecordId rid = heap_->insertar_bytes(bytes.data(), static_cast<std::uint16_t>(bytes.size()));
+            for (auto& [ind, arbol] : indices_) {
+                arbol->insertar(static_cast<int>(fila[tabla_.posicion_columna(ind->columna)].entero), pos_de(rid));
+            }
+        } else if (seq_) {
+            if (seq_->buscar(clave)) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
+            if (!seq_->insertar({clave, empaquetar_variable(tabla_, fila)})) throw std::runtime_error("el registro no cabe en una pagina");
+        } else {
+            const std::vector<char> buf = empaquetar_fijo(tabla_, fila);
+            if (!arbol_->insertar_bytes(buf.data())) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
+        }
+    }
+
+    void eliminar(const FilaFisica& f) {
+        const int clave = clave_de(tabla_, f.fila);
+        if (heap_) {
+            heap_->eliminar_rid(f.rid);
+            for (auto& [ind, arbol] : indices_) {
+                arbol->eliminar_entrada(static_cast<int>(f.fila[tabla_.posicion_columna(ind->columna)].entero), pos_de(f.rid));
+            }
+        } else if (seq_) {
+            seq_->eliminar(clave);
+        } else {
+            arbol_->eliminar(clave);
+        }
+    }
+
+    // carga inicial de una tabla recién creada (sin índices todavía)
+    void cargar(std::vector<Fila>& filas) {
+        for (const Fila& fila : filas) validar_fila(tabla_, fila);
+        std::unordered_set<long long> vistas;
+        for (const Fila& fila : filas) {
+            if (!vistas.insert(fila[tabla_.pk].entero).second) {
+                throw std::runtime_error("clave primaria repetida en el archivo: " + fila[tabla_.pk].a_texto());
+            }
+        }
+        if (arbol_) {
+            std::sort(filas.begin(), filas.end(), [&](const Fila& a, const Fila& b) { return a[tabla_.pk].entero < b[tabla_.pk].entero; });
+            const std::size_t tam = tabla_.tam_registro_fijo();
+            std::vector<char> todo(tam * filas.size());
+            for (std::size_t i = 0; i < filas.size(); ++i) {
+                const std::vector<char> buf = empaquetar_fijo(tabla_, filas[i]);
+                std::memcpy(todo.data() + i * tam, buf.data(), tam);
+            }
+            arbol_->cargar_masivo_bytes(todo.data(), filas.size());
+            return;
+        }
+        for (const Fila& fila : filas) {
+            const Registro r{clave_de(tabla_, fila), empaquetar_variable(tabla_, fila)};
+            if (heap_) {
+                const std::vector<std::byte> bytes = codificar_registro(r);
+                heap_->insertar_bytes(bytes.data(), static_cast<std::uint16_t>(bytes.size()));
+            } else if (!seq_->insertar(r)) {
+                throw std::runtime_error("el registro no cabe en una pagina");
+            }
+        }
+    }
+
+    // construye un índice B+ no agrupado recorriendo el heap
+    void construir_indice(const Indice& indice, BPlusNoAgrupado& arbol) {
+        const int col = tabla_.posicion_columna(indice.columna);
+        heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
+            Registro r;
+            if (decodificar_registro(datos, largo, r)) {
+                const Fila fila = desempaquetar_variable(tabla_, r.clave, r.valor);
+                arbol.insertar(static_cast<int>(fila[col].entero), pos_de(rid));
+            }
+            return true;
+        });
+        arbol.sincronizar();
+    }
+
+    // --- contadores y estadísticas ---
+
+    void reiniciar_contadores() {
+        if (heap_) heap_->reiniciar_contadores();
+        if (seq_) seq_->reiniciar_contadores();
+        lect_arbol_ = arbol_ ? arbol_->paginas_leidas() : 0;
+        escr_arbol_ = arbol_ ? arbol_->paginas_escritas() : 0;
+        lect_idx_.clear();
+        for (auto& [ind, arbol] : indices_) lect_idx_.push_back(arbol->paginas_leidas());
+    }
+    std::size_t paginas_leidas() const {
+        if (heap_) return heap_->paginas_leidas();
+        if (seq_) return seq_->paginas_leidas();
+        return static_cast<std::size_t>(arbol_->paginas_leidas() - lect_arbol_);
+    }
+    std::size_t paginas_escritas() const {
+        if (heap_) return heap_->paginas_escritas();
+        if (seq_) return seq_->paginas_escritas();
+        return static_cast<std::size_t>(arbol_->paginas_escritas() - escr_arbol_);
+    }
+    std::size_t paginas_leidas_indice(const Indice* i) const {
+        for (std::size_t k = 0; k < indices_.size(); ++k) {
+            if (indices_[k].first == i) return static_cast<std::size_t>(indices_[k].second->paginas_leidas() - lect_idx_[k]);
+        }
+        return 0;
+    }
+
+    std::size_t registros() const {
+        if (heap_) return heap_->stats_heap().registros_vivos;
+        if (seq_) return seq_->stats_secuencial().registros_vivos;
+        return static_cast<std::size_t>(arbol_->num_registros());
+    }
+    std::size_t paginas() const {
+        if (heap_) return heap_->num_paginas();
+        if (seq_) return seq_->num_paginas();
+        long internas = 0, hojas = 0;
+        arbol_->contar_paginas(internas, hojas);
+        return static_cast<std::size_t>(internas + hojas);
+    }
+    std::size_t bytes() const {
+        if (heap_) return heap_->tamano_en_disco();
+        if (seq_) return seq_->tamano_en_disco();
+        return static_cast<std::size_t>(arbol_->tamano_en_disco());
+    }
+    std::string detalle() const {
+        if (seq_) {
+            const auto e = seq_->stats_secuencial();
+            return "principal=" + texto(e.paginas_principal) + " aux=" + texto(e.paginas_auxiliares) +
+                   " tumbas=" + texto(e.tumbas) + " reorganizaciones=" + texto(e.reorganizaciones);
+        }
+        if (heap_) {
+            const auto e = heap_->stats_heap();
+            return "tumbas=" + texto(e.tumbas) + " bytes_desperdiciados=" + texto(e.bytes_desperdiciados);
+        }
+        return "altura=" + std::to_string(arbol_->altura()) + " regs/hoja=" + std::to_string(arbol_->max_regs_hoja());
+    }
+
+private:
+    const Tabla& tabla_;
+    std::unique_ptr<HeapFile> heap_;
+    std::unique_ptr<SequentialFile> seq_;
+    std::unique_ptr<BPlusAgrupado> arbol_;
+    std::vector<std::pair<const Indice*, std::unique_ptr<BPlusNoAgrupado>>> indices_;
+    long lect_arbol_ = 0;
+    long escr_arbol_ = 0;
+    std::vector<long> lect_idx_;
+};
+
+// --- planificación del WHERE ---
+
+struct Acceso {
+    std::vector<FilaFisica> filas;
+    std::vector<Condicion> restantes;
+    PasoPlan paso;
+};
+
+// elige la condición que puede resolverse con una estructura y ejecuta el acceso
+Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion>& condiciones) {
+    Acceso acceso;
+    const std::string pk = tabla.columnas[tabla.pk].nombre;
+    int usada = -1;
+
+    for (std::size_t i = 0; i < condiciones.size() && usada < 0; ++i) {
+        const Condicion& c = condiciones[i];
+        const int col = tabla.posicion_columna(c.columna);
+        if (col < 0) throw std::runtime_error("la columna " + c.columna + " no existe en " + tabla.nombre);
+        if (tabla.columnas[col].tipo == TipoColumna::INT && !c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es INT");
+        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
+        long long desde, hasta;
+        if (!rango_de(c, desde, hasta)) continue;
+
+        const bool es_pk = minusculas(c.columna) == minusculas(pk);
+        const Indice* indice = almacen.indice(tabla.indice_sobre(c.columna)) ? tabla.indice_sobre(c.columna) : nullptr;
+
+        if (indice) {
+            almacen.reiniciar_contadores();
+            acceso.filas = almacen.rango_indice(indice, desde, hasta);
+            acceso.paso.operacion = desde == hasta ? "busqueda_por_indice" : "rango_por_indice";
+            acceso.paso.detalles = {{"indice", indice->nombre}, {"estructura", "bplus_no_agrupado"}, {"columna", c.columna},
+                                    {"condicion", describir(c)}, {"paginas_indice", texto(almacen.paginas_leidas_indice(indice))},
+                                    {"paginas_heap", texto(almacen.paginas_leidas())}, {"filas", texto(acceso.filas.size())}};
+            usada = static_cast<int>(i);
+        } else if (es_pk && (desde == hasta || almacen.sabe_rango_pk())) {
+            almacen.reiniciar_contadores();
+            acceso.filas = desde == hasta ? almacen.buscar_pk(desde) : almacen.rango_pk(desde, hasta);
+            const bool scan = tabla.organizacion == Organizacion::HEAP;
+            acceso.paso.operacion = scan ? "scan_completo" : (desde == hasta ? "busqueda_por_clave" : "rango_por_clave");
+            acceso.paso.detalles = {{"estructura", almacen.estructura()}, {"columna", c.columna}, {"condicion", describir(c)},
+                                    {"paginas_leidas", texto(almacen.paginas_leidas())}, {"filas", texto(acceso.filas.size())}};
+            if (scan) acceso.paso.detalles.push_back({"nota", "heap sin indice sobre la clave: recorrido completo"});
+            usada = static_cast<int>(i);
+        }
+    }
+
+    if (usada < 0) {
+        almacen.reiniciar_contadores();
+        acceso.filas = almacen.escanear();
+        acceso.paso.operacion = "scan_completo";
+        acceso.paso.detalles = {{"estructura", almacen.estructura()}, {"paginas_leidas", texto(almacen.paginas_leidas())},
+                                {"filas", texto(acceso.filas.size())}};
+    }
+    for (std::size_t i = 0; i < condiciones.size(); ++i) {
+        if (static_cast<int>(i) != usada) acceso.restantes.push_back(condiciones[i]);
+    }
+    return acceso;
+}
+
+void filtrar(Acceso& acceso, const Tabla& tabla, std::vector<PasoPlan>& plan) {
+    if (acceso.restantes.empty()) return;
+    std::vector<FilaFisica> salida;
+    std::string descripcion;
+    for (const Condicion& c : acceso.restantes) {
+        if (tabla.posicion_columna(c.columna) < 0) throw std::runtime_error("la columna " + c.columna + " no existe en " + tabla.nombre);
+        descripcion += (descripcion.empty() ? "" : " AND ") + describir(c);
+    }
+    for (FilaFisica& f : acceso.filas) {
+        bool ok = true;
+        for (const Condicion& c : acceso.restantes) {
+            if (!cumple(f.fila[tabla.posicion_columna(c.columna)], c)) { ok = false; break; }
+        }
+        if (ok) salida.push_back(std::move(f));
+    }
+    plan.push_back({"filtro", {{"condicion", descripcion}, {"entrada", texto(acceso.filas.size())}, {"salida", texto(salida.size())}}});
+    acceso.filas = std::move(salida);
+}
+
+// --- CSV ---
+
+std::vector<std::vector<std::string>> leer_csv(const std::string& ruta) {
+    std::ifstream entrada(ruta, std::ios::binary);
+    if (!entrada) throw std::runtime_error("no se pudo abrir " + ruta);
+    std::vector<std::vector<std::string>> filas;
+    std::string linea;
+    while (std::getline(entrada, linea)) {
+        if (!linea.empty() && linea.back() == '\r') linea.pop_back();
+        if (linea.empty()) continue;
+        std::vector<std::string> campos;
+        std::string actual;
+        bool comillas = false;
+        for (std::size_t i = 0; i < linea.size(); ++i) {
+            const char c = linea[i];
+            if (c == '"') {
+                if (comillas && i + 1 < linea.size() && linea[i + 1] == '"') { actual.push_back('"'); ++i; }
+                else comillas = !comillas;
+            } else if (c == ',' && !comillas) {
+                campos.push_back(actual);
+                actual.clear();
+            } else {
+                actual.push_back(c);
+            }
+        }
+        campos.push_back(actual);
+        filas.push_back(std::move(campos));
+    }
+    return filas;
+}
+
+std::string identificador_valido(const std::string& original) {
+    std::string s;
+    for (const char c : original) s.push_back(std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
+    if (s.empty() || std::isdigit(static_cast<unsigned char>(s[0]))) s = "c_" + s;
+    return s;
+}
+
+bool es_entero(const std::string& s, long long& v) {
+    if (s.empty() || s.size() > 11) return false;
+    std::size_t i = s[0] == '-' ? 1 : 0;
+    if (i == s.size()) return false;
+    for (; i < s.size(); ++i) if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
+    v = std::stoll(s);
+    return v >= INT_MIN && v <= INT_MAX;
+}
+
+}  // namespace
+
+// --- Ejecutor ---
+
+Resultado Ejecutor::ejecutar(const std::string& sql) { return ejecutar(parsear(sql)); }
+
+Resultado Ejecutor::ejecutar(const Sentencia& s) {
+    const auto inicio = Reloj::now();
+    Resultado r;
+    switch (s.tipo) {
+        case TipoSentencia::CREATE_TABLE: r = crear_tabla(s); break;
+        case TipoSentencia::CREATE_TABLE_FROM_FILE: r = crear_tabla_desde_csv(s); break;
+        case TipoSentencia::CREATE_INDEX: r = crear_indice(s); break;
+        case TipoSentencia::DROP_TABLE: r = borrar_tabla(s); break;
+        case TipoSentencia::INSERT: r = insertar(s); break;
+        case TipoSentencia::DELETE_FROM: r = eliminar(s); break;
+        case TipoSentencia::SELECT: r = seleccionar(s); break;
+        case TipoSentencia::SHOW_TABLES: r = mostrar_tablas(); break;
+        case TipoSentencia::DESCRIBE: r = describir(s); break;
+    }
+    r.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+    return r;
+}
+
+Resultado Ejecutor::crear_tabla(const Sentencia& s) {
+    if (catalogo_.existe(s.tabla)) throw std::runtime_error("la tabla " + s.tabla + " ya existe");
+    if (s.columnas.empty()) throw std::runtime_error("la tabla necesita columnas");
+
+    Tabla tabla;
+    tabla.nombre = s.tabla;
+    tabla.organizacion = organizacion_desde(s.organizacion);
+    int pk = -1;
+    std::set<std::string> nombres;
+    for (std::size_t i = 0; i < s.columnas.size(); ++i) {
+        const ColumnaDef& def = s.columnas[i];
+        if (!nombres.insert(minusculas(def.nombre)).second) throw std::runtime_error("columna repetida: " + def.nombre);
+        Columna col;
+        col.nombre = def.nombre;
+        col.tipo = def.tipo == "INT" ? TipoColumna::INT : TipoColumna::VARCHAR;
+        col.tam = static_cast<std::uint16_t>(def.tam);
+        if (def.pk) {
+            if (pk >= 0) throw std::runtime_error("solo una columna puede ser PRIMARY KEY");
+            if (col.tipo != TipoColumna::INT) throw std::runtime_error("la clave primaria debe ser INT");
+            pk = static_cast<int>(i);
+        }
+        tabla.columnas.push_back(col);
+    }
+    if (!s.pk.empty()) {
+        pk = tabla.posicion_columna(s.pk);
+        if (pk < 0) throw std::runtime_error("la columna " + s.pk + " no existe");
+    }
+    if (pk < 0) {
+        for (std::size_t i = 0; i < tabla.columnas.size() && pk < 0; ++i) if (tabla.columnas[i].tipo == TipoColumna::INT) pk = static_cast<int>(i);
+        if (pk < 0) throw std::runtime_error("la tabla necesita una columna INT como clave primaria");
+    }
+    tabla.pk = static_cast<std::size_t>(pk);
+    if (tabla.organizacion == Organizacion::BPLUS && tabla.tam_registro_fijo() > 2040) {
+        throw std::runtime_error("el registro fijo mide " + texto(tabla.tam_registro_fijo()) + " B y el B+ agrupado admite hasta 2040");
+    }
+    const char* ext = tabla.organizacion == Organizacion::HEAP ? ".heap" : tabla.organizacion == Organizacion::SEQUENTIAL ? ".seq" : ".bpa";
+    tabla.archivo = catalogo_.ruta_datos(tabla.nombre, ext);
+
+    { Almacen almacen(catalogo_, tabla, true); }
+    catalogo_.agregar(tabla);
+    catalogo_.guardar();
+
+    Resultado r;
+    r.tipo = "create_table";
+    r.mensaje = "tabla " + tabla.nombre + " creada con organizacion " + nombre_organizacion(tabla.organizacion) +
+                ", clave primaria " + tabla.columnas[tabla.pk].nombre;
+    r.plan.push_back({"crear_tabla", {{"estructura", nombre_organizacion(tabla.organizacion)}, {"archivo", tabla.archivo}}});
+    return r;
+}
+
+Resultado Ejecutor::crear_tabla_desde_csv(const Sentencia& s) {
+    if (catalogo_.existe(s.tabla)) throw std::runtime_error("la tabla " + s.tabla + " ya existe");
+    const auto inicio_lectura = Reloj::now();
+    std::vector<std::vector<std::string>> csv = leer_csv(s.archivo_csv);
+    if (csv.size() < 2) throw std::runtime_error("el CSV no tiene filas de datos");
+    const std::size_t ncol = csv[0].size();
+
+    // esquema inferido: INT si toda la columna son enteros, si no VARCHAR del largo maximo
+    Sentencia definicion = s;
+    definicion.tipo = TipoSentencia::CREATE_TABLE;
+    std::set<std::string> usados;
+    for (std::size_t c = 0; c < ncol; ++c) {
+        ColumnaDef def;
+        def.nombre = identificador_valido(csv[0][c]);
+        while (!usados.insert(minusculas(def.nombre)).second) def.nombre += "_";
+        bool entera = true;
+        std::size_t maximo = 1;
+        for (std::size_t f = 1; f < csv.size(); ++f) {
+            if (csv[f].size() != ncol) throw std::runtime_error("la fila " + texto(f + 1) + " tiene " + texto(csv[f].size()) + " campos, esperaba " + texto(ncol));
+            long long v;
+            if (entera && !es_entero(csv[f][c], v)) entera = false;
+            maximo = std::max(maximo, csv[f][c].size());
+        }
+        def.tipo = entera ? "INT" : "VARCHAR";
+        def.tam = entera ? 0 : static_cast<int>(maximo);
+        definicion.columnas.push_back(def);
+    }
+    Resultado r = crear_tabla(definicion);
+    Tabla& tabla = catalogo_.tabla(s.tabla);
+
+    std::vector<Fila> filas;
+    filas.reserve(csv.size() - 1);
+    for (std::size_t f = 1; f < csv.size(); ++f) {
+        Fila fila(ncol);
+        for (std::size_t c = 0; c < ncol; ++c) {
+            if (tabla.columnas[c].tipo == TipoColumna::INT) fila[c] = Valor::de_entero(std::stoll(csv[f][c]));
+            else fila[c] = Valor::de_texto(csv[f][c]);
+        }
+        filas.push_back(std::move(fila));
+    }
+    const double t_lectura = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_lectura).count();
+
+    const auto inicio_carga = Reloj::now();
+    std::size_t escritas = 0;
+    try {
+        Almacen almacen(catalogo_, tabla, false);
+        almacen.reiniciar_contadores();
+        almacen.cargar(filas);
+        escritas = almacen.paginas_escritas();
+    } catch (...) {
+        std::filesystem::remove(tabla.archivo);
+        catalogo_.quitar(s.tabla);
+        catalogo_.guardar();
+        throw;
+    }
+    const double t_carga = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_carga).count();
+
+    r.afectadas = filas.size();
+    r.mensaje += "; " + texto(filas.size()) + " filas cargadas de " + s.archivo_csv;
+    r.plan.push_back({"leer_csv", {{"archivo", s.archivo_csv}, {"filas", texto(filas.size())}, {"columnas", texto(ncol)}, {"tiempo_ms", std::to_string(t_lectura)}}});
+    r.plan.push_back({tabla.organizacion == Organizacion::BPLUS ? "carga_masiva" : "insercion_secuencial",
+                      {{"estructura", nombre_organizacion(tabla.organizacion)}, {"paginas_escritas", texto(escritas)}, {"tiempo_ms", std::to_string(t_carga)}}});
+    return r;
+}
+
+Resultado Ejecutor::crear_indice(const Sentencia& s) {
+    Tabla& tabla = catalogo_.tabla(s.tabla);
+    if (s.indice_tipo == "HASH") throw std::runtime_error("el indice HASH aun no esta disponible en disco; usa BPLUS");
+    if (tabla.organizacion != Organizacion::HEAP) throw std::runtime_error("los indices secundarios solo se admiten sobre tablas HEAP (las otras reubican registros)");
+    const int col = tabla.posicion_columna(s.indice_columna);
+    if (col < 0) throw std::runtime_error("la columna " + s.indice_columna + " no existe");
+    if (tabla.columnas[col].tipo != TipoColumna::INT) throw std::runtime_error("solo se indexan columnas INT");
+    if (tabla.indice_sobre(s.indice_columna)) throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
+    for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
+
+    Indice indice{s.indice_nombre, tabla.columnas[col].nombre, "BPLUS", catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), ".bplus")};
+    long entradas = 0;
+    long disco = 0;
+    {
+        Almacen almacen(catalogo_, tabla, false);
+        BPlusNoAgrupado arbol(indice.archivo, true);
+        almacen.construir_indice(indice, arbol);
+        entradas = arbol.num_entradas();
+        disco = arbol.tamano_en_disco();
+    }
+    tabla.indices.push_back(indice);
+    catalogo_.guardar();
+
+    Resultado r;
+    r.tipo = "create_index";
+    r.afectadas = static_cast<std::size_t>(entradas);
+    r.mensaje = "indice " + indice.nombre + " (B+ no agrupado) creado sobre " + tabla.nombre + "." + indice.columna + " con " + std::to_string(entradas) + " entradas";
+    r.plan.push_back({"construir_indice", {{"estructura", "bplus_no_agrupado"}, {"entradas", std::to_string(entradas)}, {"bytes", std::to_string(disco)}, {"archivo", indice.archivo}}});
+    return r;
+}
+
+Resultado Ejecutor::borrar_tabla(const Sentencia& s) {
+    const Tabla tabla = catalogo_.tabla(s.tabla);
+    std::filesystem::remove(tabla.archivo);
+    for (const Indice& i : tabla.indices) std::filesystem::remove(i.archivo);
+    catalogo_.quitar(s.tabla);
+    catalogo_.guardar();
+    Resultado r;
+    r.tipo = "drop_table";
+    r.mensaje = "tabla " + tabla.nombre + " eliminada";
+    return r;
+}
+
+Resultado Ejecutor::insertar(const Sentencia& s) {
+    Tabla& tabla = catalogo_.tabla(s.tabla);
+    Almacen almacen(catalogo_, tabla, false);
+    almacen.reiniciar_contadores();
+    almacen.insertar(s.valores);
+    Resultado r;
+    r.tipo = "insert";
+    r.afectadas = 1;
+    r.mensaje = "1 fila insertada en " + tabla.nombre;
+    r.plan.push_back({"insertar", {{"estructura", almacen.estructura()}, {"paginas_leidas", texto(almacen.paginas_leidas())},
+                                   {"paginas_escritas", texto(almacen.paginas_escritas())}, {"indices_actualizados", texto(tabla.indices.size())}}});
+    return r;
+}
+
+Resultado Ejecutor::eliminar(const Sentencia& s) {
+    Tabla& tabla = catalogo_.tabla(s.tabla);
+    Almacen almacen(catalogo_, tabla, false);
+    Resultado r;
+    r.tipo = "delete";
+
+    Acceso acceso = acceder(almacen, tabla, s.condiciones);
+    r.plan.push_back(acceso.paso);
+    filtrar(acceso, tabla, r.plan);
+
+    almacen.reiniciar_contadores();
+    for (const FilaFisica& f : acceso.filas) almacen.eliminar(f);
+    r.afectadas = acceso.filas.size();
+    r.mensaje = texto(r.afectadas) + " filas eliminadas de " + tabla.nombre;
+    r.plan.push_back({"eliminar", {{"estructura", almacen.estructura()}, {"filas", texto(r.afectadas)},
+                                   {"paginas_escritas", texto(almacen.paginas_escritas())}, {"modo", "lazy: se marcan tumbas"}}});
+    return r;
+}
+
+Resultado Ejecutor::seleccionar(const Sentencia& s) {
+    const Tabla& tabla = catalogo_.tabla(s.tabla);
+    Almacen almacen(catalogo_, tabla, false);
+    Resultado r;
+    r.tipo = "select";
+
+    Acceso acceso = acceder(almacen, tabla, s.condiciones);
+    r.plan.push_back(acceso.paso);
+    filtrar(acceso, tabla, r.plan);
+
+    std::vector<Fila> filas;
+    filas.reserve(acceso.filas.size());
+    for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
+
+    std::vector<ItemSelect> items = s.items;
+    if (s.todas_las_columnas) {
+        for (const Columna& c : tabla.columnas) items.push_back({c.nombre, ""});
+    }
+    bool hay_agregados = false;
+    for (const ItemSelect& item : items) {
+        if (!item.agregado.empty()) hay_agregados = true;
+        if (!item.columna.empty() && tabla.posicion_columna(item.columna) < 0) throw std::runtime_error("la columna " + item.columna + " no existe en " + tabla.nombre);
+    }
+
+    PlanTrace traza;
+    if (hay_agregados || !s.group_by.empty()) {
+        // GROUP BY con external hashing: una pasada por cada agregado sobre columna
+        const int gcol = s.group_by.empty() ? -1 : tabla.posicion_columna(s.group_by);
+        if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + s.group_by + " no existe");
+        for (const ItemSelect& item : items) {
+            if (item.agregado.empty() && (gcol < 0 || minusculas(item.columna) != minusculas(s.group_by))) {
+                throw std::runtime_error("la columna " + item.columna + " debe estar en GROUP BY o dentro de un agregado");
+            }
+            if (!item.agregado.empty() && !item.columna.empty() && tabla.columnas[tabla.posicion_columna(item.columna)].tipo != TipoColumna::INT) {
+                throw std::runtime_error(item.agregado + " solo se aplica a columnas INT");
+            }
+        }
+        auto clave_grupo = [&](const Fila& f) { return gcol < 0 ? std::string() : f[gcol].a_texto(); };
+        std::map<std::string, Valor> valor_grupo;
+        for (const Fila& f : filas) valor_grupo.emplace(clave_grupo(f), gcol < 0 ? Valor::de_texto("") : f[gcol]);
+
+        std::vector<std::unordered_map<std::string, AggregateResult>> resultados;
+        for (const ItemSelect& item : items) {
+            if (item.agregado.empty()) { resultados.emplace_back(); continue; }
+            const int col = item.columna.empty() ? -1 : tabla.posicion_columna(item.columna);
+            ExternalHashAggregate<Fila, std::string> agregador(10, 100, &traza);
+            resultados.push_back(agregador.agrupar(filas, clave_grupo,
+                                                   [&](const Fila& f) { return col < 0 ? 0.0 : static_cast<double>(f[col].entero); },
+                                                   {AggregateOp::COUNT}));
+        }
+        for (const ItemSelect& item : items) r.columnas.push_back(item.etiqueta());
+        for (const auto& [clave, valor] : valor_grupo) {
+            Fila fila;
+            for (std::size_t i = 0; i < items.size(); ++i) {
+                const ItemSelect& item = items[i];
+                if (item.agregado.empty()) { fila.push_back(valor); continue; }
+                const AggregateResult& a = resultados[i].at(clave);
+                if (item.agregado == "COUNT") fila.push_back(Valor::de_entero(static_cast<long long>(a.count)));
+                else if (item.agregado == "SUM") fila.push_back(Valor::de_entero(static_cast<long long>(a.sum)));
+                else if (item.agregado == "MIN") fila.push_back(Valor::de_entero(static_cast<long long>(a.minimum)));
+                else if (item.agregado == "MAX") fila.push_back(Valor::de_entero(static_cast<long long>(a.maximum)));
+                else {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%.2f", a.average);
+                    fila.push_back(Valor::de_texto(buf));
+                }
+            }
+            r.filas.push_back(std::move(fila));
+        }
+        if (gcol < 0 && r.filas.empty()) {
+            Fila fila;
+            for (const ItemSelect& item : items) fila.push_back(item.agregado == "COUNT" ? Valor::de_entero(0) : Valor::de_texto(""));
+            r.filas.push_back(fila);
+        }
+        PasoPlan paso{"agrupacion", {{"algoritmo", "external_hash_aggregate"}, {"columna", s.group_by.empty() ? "(todo)" : s.group_by}, {"grupos", texto(r.filas.size())}}};
+        if (!traza.events.empty()) for (const auto& [k, v] : traza.last("external_hash_aggregate").details) if (k == "partitions") paso.detalles.push_back({"particiones", v});
+        r.plan.push_back(paso);
+    } else {
+        for (const ItemSelect& item : items) r.columnas.push_back(item.columna);
+    }
+
+    // ORDER BY con external merge sort (k-way)
+    if (!s.order_by.empty()) {
+        int col = -1;
+        std::vector<Fila>& objetivo = hay_agregados || !s.group_by.empty() ? r.filas : filas;
+        if (hay_agregados || !s.group_by.empty()) {
+            for (std::size_t i = 0; i < r.columnas.size(); ++i) if (minusculas(r.columnas[i]) == minusculas(s.order_by)) col = static_cast<int>(i);
+        } else {
+            col = tabla.posicion_columna(s.order_by);
+        }
+        if (col < 0) throw std::runtime_error("no se puede ordenar por " + s.order_by);
+        ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &traza);
+        objetivo = ordenador.ordenar(std::move(objetivo), [col](const Fila& f) { return f[col]; }, s.descendente);
+        PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
+        for (const auto& [k, v] : traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
+        r.plan.push_back(paso);
+    }
+
+    // proyección
+    if (!(hay_agregados || !s.group_by.empty())) {
+        std::vector<int> posiciones;
+        for (const ItemSelect& item : items) posiciones.push_back(tabla.posicion_columna(item.columna));
+        for (Fila& f : filas) {
+            Fila salida;
+            for (int p : posiciones) salida.push_back(f[p]);
+            r.filas.push_back(std::move(salida));
+        }
+        if (!s.todas_las_columnas) r.plan.push_back({"proyeccion", {{"columnas", texto(posiciones.size())}}});
+    }
+
+    if (s.limite >= 0 && r.filas.size() > static_cast<std::size_t>(s.limite)) {
+        r.filas.resize(static_cast<std::size_t>(s.limite));
+        r.plan.push_back({"limite", {{"filas", texto(r.filas.size())}}});
+    }
+    r.afectadas = r.filas.size();
+    r.mensaje = texto(r.filas.size()) + " filas";
+    return r;
+}
+
+Resultado Ejecutor::mostrar_tablas() {
+    Resultado r;
+    r.tipo = "show_tables";
+    r.columnas = {"tabla", "organizacion", "clave", "columnas", "registros", "paginas", "bytes", "indices", "detalle"};
+    for (const auto& [clave, tabla] : catalogo_.tablas()) {
+        Almacen almacen(catalogo_, tabla, false);
+        std::string indices;
+        for (const Indice& i : tabla.indices) indices += (indices.empty() ? "" : ", ") + i.nombre + "(" + i.columna + ")";
+        r.filas.push_back({Valor::de_texto(tabla.nombre), Valor::de_texto(nombre_organizacion(tabla.organizacion)),
+                           Valor::de_texto(tabla.columnas[tabla.pk].nombre), Valor::de_entero(static_cast<long long>(tabla.columnas.size())),
+                           Valor::de_entero(static_cast<long long>(almacen.registros())), Valor::de_entero(static_cast<long long>(almacen.paginas())),
+                           Valor::de_entero(static_cast<long long>(almacen.bytes())), Valor::de_texto(indices), Valor::de_texto(almacen.detalle())});
+    }
+    r.afectadas = r.filas.size();
+    r.mensaje = texto(r.filas.size()) + " tablas";
+    return r;
+}
+
+Resultado Ejecutor::describir(const Sentencia& s) {
+    const Tabla& tabla = catalogo_.tabla(s.tabla);
+    Resultado r;
+    r.tipo = "describe";
+    r.columnas = {"columna", "tipo", "clave", "indice"};
+    for (std::size_t i = 0; i < tabla.columnas.size(); ++i) {
+        const Columna& c = tabla.columnas[i];
+        const Indice* indice = tabla.indice_sobre(c.nombre);
+        r.filas.push_back({Valor::de_texto(c.nombre),
+                           Valor::de_texto(c.tipo == TipoColumna::INT ? "INT" : "VARCHAR(" + texto(c.tam) + ")"),
+                           Valor::de_texto(i == tabla.pk ? "PK" : ""),
+                           Valor::de_texto(indice ? indice->nombre + " (B+ no agrupado)" : "")});
+    }
+    r.afectadas = r.filas.size();
+    r.mensaje = tabla.nombre + ": " + nombre_organizacion(tabla.organizacion) + " en " + tabla.archivo;
+    return r;
+}
+
+}  // namespace sql
+}  // namespace motor
