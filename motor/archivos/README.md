@@ -6,7 +6,7 @@ pruebas.
 
 | Archivo | Que es |
 |---|---|
-| `sequential_file.{h,cpp}` | Archivo Secuencial Paginado. Ver `docs/explicativo.md`. |
+| `sequential_file.{h,cpp}` | Archivo Secuencial Paginado en disco: área principal ordenada, auxiliar, tumbas y reorganización. Ver [`docs/sequential_file_paged.md`](../../docs/sequential_file_paged.md). |
 | `serializacion.h` | `escribir_campo` / `leer_campo` con `memcpy`. Sin dependencias. |
 | `pagina_slotted.{h,cpp}` | Pagina slotted sobre un buffer prestado. **Cero I/O.** Aloja `RecordId`, `PAGE_SIZE` y las constantes del layout. |
 | `heap_file.{h,cpp}` | Heap File persistido: cabecera de archivo, mapa de espacio libre, compactacion y capa adaptadora. |
