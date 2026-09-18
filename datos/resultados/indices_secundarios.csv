@@ -1,0 +1,15 @@
+implementacion,n,columna,claves_distintas,semilla,verifica_duplicado,t_construccion_us,paginas_escritas_construccion,t_igualdad_us,paginas_por_igualdad,filas_por_igualdad,soporta_rango,t_rango_us,paginas_por_rango,filas_por_rango,t_insercion_us,t_eliminacion_us,bytes_en_disco,paginas_estructura,detalle
+bplus_no_agrupado,1000,Founded,53,42,0,2015,8,3.22642,3.03774,19.0755,1,5.20755,3.79245,105.283,0.981132,1.18868,40960,10,altura=2
+hash_extensible,1000,Founded,53,42,0,1821,5,4,2,19.0755,0,0,0,0,0.773585,1.28302,32768,7,profundidad=3 buckets=6
+bplus_no_agrupado,10000,Founded,53,42,0,14870,68,7.90566,4.03774,187.396,1,14.2453,9.77358,1063.94,1.5283,1.20755,278528,68,altura=2
+hash_extensible,10000,Founded,53,42,0,7287,48,7.33962,2.79245,187.396,0,0,0,0,0.792453,1.11321,208896,50,profundidad=7 buckets=49
+bplus_no_agrupado,100000,Founded,53,42,0,189197,2197,174.302,21.9057,1887.64,1,1433.15,107.057,10685,9.86792,2.03774,3956736,966,altura=3
+hash_extensible,100000,Founded,53,42,0,162042,1159,124.396,16.4717,1887.64,0,0,0,0,9.45283,1.4717,1687552,411,profundidad=7 buckets=410
+bplus_no_agrupado,1000,Number of employees,950,42,0,859,8,0.76,3.025,1.065,1,1.145,3.03,1.61,0.645,0.79,40960,10,altura=2
+hash_extensible,1000,Number of employees,950,42,0,753,4,0.815,2,1.065,0,0,0,0,2.075,0.445,40960,9,profundidad=3 buckets=8
+bplus_no_agrupado,10000,Number of employees,6263,42,0,15458,125,2.56,3.02,1.52,1,4.745,3.07,6.55,3.12,5.395,290816,71,altura=2
+hash_extensible,10000,Number of employees,6263,42,0,15143,78,2.245,2,1.52,0,0,0,0,0.525,0.61,270336,65,profundidad=6 buckets=64
+bplus_no_agrupado,100000,Number of employees,9998,42,0,1343565,71157,13.86,4.11,10.285,1,15.195,4.42,60.815,14.105,15.865,2908160,710,altura=3
+hash_extensible,100000,Number of employees,9998,42,0,1104480,64561,8.525,2,10.285,0,0,0,0,13.405,15.39,2277376,555,profundidad=10 buckets=554
+bplus_no_agrupado,100000,Founded,53,42,1,233001,2197,241.679,21.9057,1887.64,1,1300.38,107.057,10685,5.88679,1.03774,3956736,966,altura=3
+hash_extensible,100000,Founded,53,42,1,5917195,56944,158.717,16.4717,1887.64,0,0,0,0,124.491,3.37736,1687552,411,profundidad=7 buckets=410
