@@ -4,6 +4,7 @@
 #   make motor     solo el binario .build/motor_sql
 #   make test      compila y corre todas las pruebas
 #   make bench     benchmarks de heap, secuencial y B+ agrupado (1k / 10k / 100k)
+#   make bench-indices  comparacion B+ agrupado / no agrupado / hash con graficas
 #   make clean
 #
 # En Windows: mingw32-make gui (g++ de MinGW en el PATH).
@@ -57,13 +58,13 @@ MOTOR_SQL := $(BUILD)/motor_sql$(EXE)
 
 TESTS := pagina_slotted_test heap_file_test sequential_file_test bplus_agrupado_test \
          extendible_hash_test external_algorithms_test sql_test
-BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_file_escala_test \
+BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_file_escala_test indices_bench \
           extendible_hash_csv_test ejemplo_heap
 
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all gui motor test bench clean
+.PHONY: all gui motor test bench bench-indices clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -96,6 +97,16 @@ bench: $(BUILD)/heap_file_bench$(EXE) $(BUILD)/sequential_file_bench$(EXE) $(BUI
 	$(call RUN,$(BUILD)/bplus_agrupado_csv_test$(EXE)) --n 10000  --salida datos/resultados/bplus_agrupado.csv
 	$(call RUN,$(BUILD)/bplus_agrupado_csv_test$(EXE)) --n 100000 --salida datos/resultados/bplus_agrupado.csv
 	@echo resultados en datos/resultados/
+
+# comparacion de indices (seccion 2.1.6): corre el bench y regenera las graficas
+bench-indices: $(BUILD)/indices_bench$(EXE)
+	@$(call MKDIR,datos/resultados)
+	-$(call RMFILE,datos/resultados/indices_bench.csv)
+	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 1000
+	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 10000
+	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 100000
+	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 100000 --barajar
+	$(PYTHON) docs/comparacion_indices/graficar.py
 
 # --- reglas ---
 
