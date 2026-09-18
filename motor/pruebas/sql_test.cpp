@@ -161,6 +161,14 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     r = e.ejecutar("SELECT Country, COUNT(*), SUM(Employees), MIN(Index) FROM " + t + " GROUP BY Country ORDER BY Country");
     assert(r.filas.size() == 3 && r.filas[0][0].texto == "Bolivia" && r.filas[0][1].entero == 100 && r.filas[2][3].entero == 3);
     assert(tiene_paso(r, "agrupacion"));
+
+    // external hashing: la tabla de hash viva es la de una particion, no la de todos
+    // los grupos, asi que con 300 claves distintas el pico debe quedar muy por debajo
+    r = e.ejecutar("SELECT Index, COUNT(*) FROM " + t + " GROUP BY Index");
+    assert(r.filas.size() == 300);
+    const int pico = std::stoi(detalle_paso(r, "agrupacion", "grupos_en_memoria"));
+    assert(pico > 0 && pico < 100 && "los grupos deben agregarse particion por particion");
+
     r = e.ejecutar("SELECT COUNT(*) FROM " + t);
     assert(r.filas[0][0].entero == 300);
 

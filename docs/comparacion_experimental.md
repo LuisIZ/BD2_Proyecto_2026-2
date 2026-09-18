@@ -205,10 +205,18 @@ en cardinalidades no puede ver ese coste; haría falta comparar
 
 ## 7. Limitaciones conocidas
 
-- Los **algoritmos externos** (`external_merge_sort`, `external_hash_aggregate`) simulan
-  el particionado en memoria: las *runs* y particiones viven en `std::vector`, no en
-  archivos temporales. Las métricas de `initial_runs` y `merge_passes` son reproducibles,
-  pero no corresponden a E/S real.
+- Los **algoritmos externos** acotan su conjunto de trabajo pero no su entrada. El
+  `GROUP BY` procesa una partición por vez, y el plan lo reporta: sobre 10 000 filas con
+  243 países agrupa manteniendo solo **29 grupos vivos a la vez** (`grupos_en_memoria=29`
+  frente a `grupos=243`). El `ORDER BY` hace un *k-way merge* real con cola de prioridad
+  respetando el presupuesto `buffer_pages × records_per_page`: con 10 000 filas el plan
+  muestra `initial_runs=10, k=9, merge_passes=1`. Lo que falta es que las *runs* y
+  particiones vivan en archivos temporales en vez de en `std::vector`, y que el ejecutor
+  deje de materializar la tabla completa antes de ordenar; hasta entonces las métricas son
+  reproducibles pero no corresponden a E/S real.
+- El *k-way merge* solo se activa por encima de `buffer_pages × records_per_page` = 1 000
+  filas. Con la tabla de 1 000 registros el plan muestra `merge_passes=0`, porque todo
+  cabe en una sola *run*.
 - El **hash extensible no fusiona buckets** al borrar: el espacio se reutiliza mediante
   una lista de páginas libres, pero el directorio nunca se reduce.
 - El **JOIN** admite solo `INNER`, uno por consulta y con una sola igualdad en el `ON`.

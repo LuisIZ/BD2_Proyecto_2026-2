@@ -99,9 +99,15 @@ max_groups_in_memory = 4 * 2 = 8
 
 Se prueban 100 grupos, 12.5 veces el limite simultaneo.
 
-Importante: esta version implementa particionamiento externo a nivel logico,
-pero las particiones siguen en memoria. Para external hashing persistente se
-deben usar archivos temporales o paginas y procesar una particion por vez.
+Las particiones se procesan **una por vez**: como el hash manda todas las filas de
+un grupo a la misma particion, cada una se agrega por separado y la tabla de hash
+viva solo contiene los grupos de la particion en curso. La traza lo reporta en
+`peak_groups_in_memory`, que es el maximo de grupos simultaneos, frente a `groups`,
+que es el total devuelto.
+
+Lo que falta para ser externo del todo: las particiones siguen viviendo en
+`std::vector` en lugar de en archivos temporales, asi que el conjunto de trabajo
+esta acotado pero la entrada no. Ver la seccion 8.
 
 ## 5. Joins
 

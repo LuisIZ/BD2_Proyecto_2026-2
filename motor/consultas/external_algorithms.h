@@ -191,22 +191,35 @@ public:
             const auto group = group_key(record);
             buckets[hash(group) % partitions].push_back({group, value(record)});
         }
+        // Una particion por vez: el hash manda todas las filas de un grupo a la misma
+        // particion, asi que agregarlas por separado da el mismo resultado y la tabla
+        // de hash viva solo contiene los grupos de la particion en curso. Ese es el
+        // punto del external hashing: acotar el conjunto de trabajo, no el resultado.
         std::unordered_map<Grupo, AggregateResult> result;
-        for (const auto& partition : buckets) {
+        std::size_t pico_en_memoria = 0;
+        for (auto& partition : buckets) {
+            std::unordered_map<Grupo, AggregateResult> parcial;
             for (const auto& [group, item] : partition) {
-                auto& state = result[group];
+                auto& state = parcial[group];
                 ++state.count;
                 state.sum += item;
                 state.minimum = std::min(state.minimum, item);
                 state.maximum = std::max(state.maximum, item);
             }
+            pico_en_memoria = std::max(pico_en_memoria, parcial.size());
+            for (auto& [group, state] : parcial) {
+                state.average = state.sum / state.count;
+                result.emplace(group, state);  // ningun grupo cae en dos particiones
+            }
+            partition.clear();
+            partition.shrink_to_fit();
         }
-        for (auto& [group, state] : result) state.average = state.sum / state.count;
         if (trace_) {
             trace_->record("external_hash_aggregate", {
                 {"buffer_pages", std::to_string(buffer_pages_)},
                 {"partitions", std::to_string(partitions)},
                 {"max_groups_in_memory", std::to_string(max_groups)},
+                {"peak_groups_in_memory", std::to_string(pico_en_memoria)},
                 {"records", std::to_string(records.size())},
                 {"groups", std::to_string(result.size())},
                 {"aggregates", std::to_string(operations.size())},
