@@ -354,6 +354,70 @@ private:
     std::vector<long> lect_idx_;
 };
 
+// --- esquema de la salida ---
+
+std::string calificar(const std::string& calificador, const std::string& columna) {
+    return calificador.empty() ? columna : calificador + "." + columna;
+}
+
+struct ColumnaEsquema {
+    std::string fuente;  // tabla de la que viene la columna
+    std::string nombre;
+    TipoColumna tipo;
+};
+
+// Resuelve nombres de columna contra las tablas de la consulta. Con una sola
+// fuente se comporta igual que Tabla::posicion_columna; con dos detecta ambigüedad.
+class EsquemaResultado {
+public:
+    void agregar_tabla(const Tabla& t) {
+        fuentes_.push_back(t.nombre);
+        for (const Columna& c : t.columnas) cols_.push_back({t.nombre, c.nombre, c.tipo});
+    }
+
+    // -1 si la columna no existe; lanza si es ambigua o si el calificador no corresponde
+    int posicion(const std::string& calificador, const std::string& columna) const {
+        if (!calificador.empty() && !conoce(calificador)) {
+            throw std::runtime_error("no hay ninguna tabla llamada " + calificador + " en la consulta");
+        }
+        int encontrada = -1;
+        int repetidas = 0;
+        for (std::size_t i = 0; i < cols_.size(); ++i) {
+            if (minusculas(cols_[i].nombre) != minusculas(columna)) continue;
+            if (!calificador.empty() && minusculas(cols_[i].fuente) != minusculas(calificador)) continue;
+            if (encontrada < 0) encontrada = static_cast<int>(i);
+            ++repetidas;
+        }
+        if (repetidas > 1) throw std::runtime_error("la columna " + columna + " es ambigua: " + sugerencia(columna));
+        return encontrada;
+    }
+
+    const ColumnaEsquema& en(std::size_t i) const { return cols_[i]; }
+    bool multiple() const { return fuentes_.size() > 1; }
+    const std::vector<ColumnaEsquema>& columnas() const { return cols_; }
+
+    // nombre visible en el resultado: calificado solo cuando hay varias tablas
+    std::string nombre_salida(std::size_t i) const {
+        return multiple() ? cols_[i].fuente + "." + cols_[i].nombre : cols_[i].nombre;
+    }
+
+private:
+    bool conoce(const std::string& fuente) const {
+        for (const std::string& f : fuentes_) if (minusculas(f) == minusculas(fuente)) return true;
+        return false;
+    }
+    std::string sugerencia(const std::string& columna) const {
+        std::string s;
+        for (const ColumnaEsquema& c : cols_) {
+            if (minusculas(c.nombre) == minusculas(columna)) s += (s.empty() ? "use " : " o ") + c.fuente + "." + c.nombre;
+        }
+        return s;
+    }
+
+    std::vector<ColumnaEsquema> cols_;
+    std::vector<std::string> fuentes_;
+};
+
 // --- planificación del WHERE ---
 
 struct Acceso {
@@ -430,6 +494,171 @@ void filtrar(Acceso& acceso, const Tabla& tabla, std::vector<PasoPlan>& plan) {
     }
     plan.push_back({"filtro", {{"condicion", descripcion}, {"entrada", texto(acceso.filas.size())}, {"salida", texto(salida.size())}}});
     acceso.filas = std::move(salida);
+}
+
+// --- JOIN ---
+
+// Reparte el WHERE entre los dos lados (selección antes del join). El calificador se
+// quita de la copia que recibe cada lado para poder reusar acceder() y filtrar() tal cual.
+void repartir_condiciones(const std::vector<Condicion>& todas, const Tabla& ti, const Tabla& td,
+                          std::vector<Condicion>& izq, std::vector<Condicion>& der) {
+    for (const Condicion& c : todas) {
+        bool a_izquierda;
+        if (!c.calificador.empty()) {
+            const bool es_i = minusculas(c.calificador) == minusculas(ti.nombre);
+            const bool es_d = minusculas(c.calificador) == minusculas(td.nombre);
+            if (!es_i && !es_d) throw std::runtime_error("no hay ninguna tabla llamada " + c.calificador + " en la consulta");
+            a_izquierda = es_i;
+            const Tabla& duena = a_izquierda ? ti : td;
+            if (duena.posicion_columna(c.columna) < 0) throw std::runtime_error("la columna " + c.nombre_completo() + " no existe");
+        } else {
+            const bool en_i = ti.posicion_columna(c.columna) >= 0;
+            const bool en_d = td.posicion_columna(c.columna) >= 0;
+            if (en_i && en_d) {
+                throw std::runtime_error("la columna " + c.columna + " es ambigua: use " + ti.nombre + "." + c.columna +
+                                         " o " + td.nombre + "." + c.columna);
+            }
+            if (!en_i && !en_d) throw std::runtime_error("la columna " + c.columna + " no existe");
+            a_izquierda = en_i;
+        }
+        Condicion copia = c;
+        copia.calificador.clear();
+        (a_izquierda ? izq : der).push_back(copia);
+    }
+}
+
+// Ejecuta el INNER JOIN y deja en esquema las columnas de las dos tablas concatenadas.
+std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, EsquemaResultado& esquema,
+                                std::vector<PasoPlan>& plan, PlanTrace& traza) {
+    if (s.joins.size() > 1) throw std::runtime_error("por ahora solo se admite un JOIN por consulta");
+    const JoinSpec& j = s.joins[0];
+
+    const Tabla& ti = catalogo.tabla(s.tabla);
+    const Tabla& td = catalogo.tabla(j.tabla_derecha);
+    if (minusculas(ti.nombre) == minusculas(td.nombre)) {
+        throw std::runtime_error("unir una tabla consigo misma todavia no esta soportado");
+    }
+
+    // el ON puede venir escrito en cualquier orden: 1 = tabla del FROM, 2 = tabla del JOIN
+    auto lado = [&](const std::string& cal, const std::string& col) -> int {
+        if (!cal.empty()) {
+            if (minusculas(cal) == minusculas(ti.nombre)) return 1;
+            if (minusculas(cal) == minusculas(td.nombre)) return 2;
+            throw std::runtime_error("no hay ninguna tabla llamada " + cal + " en la consulta");
+        }
+        const bool en_i = ti.posicion_columna(col) >= 0;
+        const bool en_d = td.posicion_columna(col) >= 0;
+        if (en_i && en_d) return 0;  // ambiguo: lo decide el otro lado
+        if (en_i) return 1;
+        if (en_d) return 2;
+        throw std::runtime_error("la columna " + col + " no existe en " + ti.nombre + " ni en " + td.nombre);
+    };
+    int la = lado(j.izq_calificador, j.izq_columna);
+    int lb = lado(j.der_calificador, j.der_columna);
+    if (la == 0 && lb == 0) { la = 1; lb = 2; }  // "ON k = k": izquierda = FROM, derecha = JOIN
+    else if (la == 0) la = lb == 1 ? 2 : 1;
+    else if (lb == 0) lb = la == 1 ? 2 : 1;
+    if (la == lb) throw std::runtime_error("el ON debe comparar una columna de " + ti.nombre + " con una de " + td.nombre);
+
+    const std::string col_i = la == 1 ? j.izq_columna : j.der_columna;
+    const std::string col_d = la == 1 ? j.der_columna : j.izq_columna;
+    const int ci = ti.posicion_columna(col_i);
+    const int cd = td.posicion_columna(col_d);
+    if (ci < 0) throw std::runtime_error("la columna " + ti.nombre + "." + col_i + " no existe");
+    if (cd < 0) throw std::runtime_error("la columna " + td.nombre + "." + col_d + " no existe");
+    if (ti.columnas[ci].tipo != td.columnas[cd].tipo) {
+        throw std::runtime_error("no se puede unir " + ti.nombre + "." + col_i + " con " + td.nombre + "." + col_d +
+                                 ": son de tipos distintos");
+    }
+
+    std::vector<Condicion> cond_i, cond_d;
+    repartir_condiciones(s.condiciones, ti, td, cond_i, cond_d);
+
+    // lado izquierdo: el mismo camino de acceso de una consulta de una tabla
+    Almacen ai(catalogo, ti, false);
+    Acceso acc_i = acceder(ai, ti, cond_i);
+    acc_i.paso.detalles.insert(acc_i.paso.detalles.begin(), {"tabla", ti.nombre});
+    plan.push_back(acc_i.paso);
+    std::size_t pasos = plan.size();
+    filtrar(acc_i, ti, plan);
+    if (plan.size() > pasos) plan.back().detalles.insert(plan.back().detalles.begin(), {"tabla", ti.nombre});
+    std::vector<Fila> filas_i;
+    filas_i.reserve(acc_i.filas.size());
+    for (FilaFisica& f : acc_i.filas) filas_i.push_back(std::move(f.fila));
+    const std::size_t pag_i = ai.paginas_leidas();
+
+    // ¿se puede sondear el lado derecho por índice en vez de materializarlo?
+    Almacen ad(catalogo, td, false);
+    const Indice* idx_d = td.indice_sobre(col_d);
+    if (idx_d && !ad.indice(idx_d)) idx_d = nullptr;
+    // en un heap buscar_pk es un recorrido completo, así que no cuenta como índice
+    const bool pk_util = static_cast<std::size_t>(cd) == td.pk && td.organizacion != Organizacion::HEAP;
+    const bool hay_indice = cond_d.empty() && td.columnas[cd].tipo == TipoColumna::INT && (idx_d != nullptr || pk_util);
+
+    JoinPlanner planificador(&traza);
+    std::size_t filas_d_usadas = ad.registros();
+    const std::string algoritmo = planificador.choose(filas_i.size(), filas_d_usadas, hay_indice);
+
+    std::vector<std::pair<Fila, Fila>> pares;
+    std::size_t pag_d = 0;
+    std::size_t entradas_hash = 0;
+
+    if (algoritmo == "index_nested_loop_join") {
+        ad.reiniciar_contadores();
+        const std::function<long long(const Fila&)> clave_i = [ci](const Fila& f) { return f[ci].entero; };
+        const std::function<std::vector<Fila>(const long long&)> sonda = [&](const long long& k) {
+            std::vector<FilaFisica> fisicas = idx_d ? ad.rango_indice(idx_d, k, k) : ad.buscar_pk(k);
+            std::vector<Fila> salida;
+            salida.reserve(fisicas.size());
+            for (FilaFisica& f : fisicas) salida.push_back(std::move(f.fila));
+            return salida;
+        };
+        pares = index_nested_loop_join<Fila, Fila, long long>(filas_i, sonda, clave_i);
+        pag_d = ad.paginas_leidas() + (idx_d ? ad.paginas_leidas_indice(idx_d) : 0);
+    } else {
+        Acceso acc_d = acceder(ad, td, cond_d);
+        acc_d.paso.detalles.insert(acc_d.paso.detalles.begin(), {"tabla", td.nombre});
+        plan.push_back(acc_d.paso);
+        pasos = plan.size();
+        filtrar(acc_d, td, plan);
+        if (plan.size() > pasos) plan.back().detalles.insert(plan.back().detalles.begin(), {"tabla", td.nombre});
+        std::vector<Fila> filas_d;
+        filas_d.reserve(acc_d.filas.size());
+        for (FilaFisica& f : acc_d.filas) filas_d.push_back(std::move(f.fila));
+        pag_d = ad.paginas_leidas();
+        filas_d_usadas = filas_d.size();
+        entradas_hash = filas_d.size();
+        // la clave va como texto porque std::hash<Valor> no existe (igual que en el GROUP BY)
+        const std::function<std::string(const Fila&)> clave_i = [ci](const Fila& f) { return f[ci].a_texto(); };
+        const std::function<std::string(const Fila&)> clave_d = [cd](const Fila& f) { return f[cd].a_texto(); };
+        pares = hash_join<Fila, Fila, std::string>(filas_i, filas_d, clave_i, clave_d);
+    }
+
+    esquema.agregar_tabla(ti);
+    esquema.agregar_tabla(td);
+
+    std::vector<Fila> filas;
+    filas.reserve(pares.size());
+    for (auto& par : pares) {
+        Fila f = std::move(par.first);
+        f.insert(f.end(), std::make_move_iterator(par.second.begin()), std::make_move_iterator(par.second.end()));
+        filas.push_back(std::move(f));
+    }
+
+    PasoPlan paso{"join", {{"tipo", j.tipo},
+                           {"algoritmo", algoritmo},
+                           {"condicion", ti.nombre + "." + col_i + " = " + td.nombre + "." + col_d},
+                           {"filas_izquierda", texto(filas_i.size())},
+                           {"filas_derecha", texto(filas_d_usadas)},
+                           {"paginas_izquierda", texto(pag_i)},
+                           {"paginas_derecha", texto(pag_d)},
+                           {"indice_disponible", hay_indice ? "si" : "no"},
+                           {"filas_resultado", texto(filas.size())}}};
+    paso.detalles.push_back(algoritmo == "index_nested_loop_join"
+                                ? std::make_pair(std::string("sondas"), texto(filas_i.size()))
+                                : std::make_pair(std::string("entradas_tabla_hash"), texto(entradas_hash)));
+    plan.push_back(paso);
+    return filas;
 }
 
 // --- CSV ---
@@ -695,39 +924,48 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
 }
 
 Resultado Ejecutor::seleccionar(const Sentencia& s) {
-    const Tabla& tabla = catalogo_.tabla(s.tabla);
-    Almacen almacen(catalogo_, tabla, false);
     Resultado r;
     r.tipo = "select";
-
-    Acceso acceso = acceder(almacen, tabla, s.condiciones);
-    r.plan.push_back(acceso.paso);
-    filtrar(acceso, tabla, r.plan);
-
+    PlanTrace traza;
+    EsquemaResultado esquema;
     std::vector<Fila> filas;
-    filas.reserve(acceso.filas.size());
-    for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
+
+    if (s.joins.empty()) {
+        const Tabla& tabla = catalogo_.tabla(s.tabla);
+        Almacen almacen(catalogo_, tabla, false);
+        Acceso acceso = acceder(almacen, tabla, s.condiciones);
+        r.plan.push_back(acceso.paso);
+        filtrar(acceso, tabla, r.plan);
+        filas.reserve(acceso.filas.size());
+        for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
+        esquema.agregar_tabla(tabla);
+    } else {
+        filas = ejecutar_join(catalogo_, s, esquema, r.plan, traza);
+    }
 
     std::vector<ItemSelect> items = s.items;
     if (s.todas_las_columnas) {
-        for (const Columna& c : tabla.columnas) items.push_back({c.nombre, ""});
+        for (const ColumnaEsquema& c : esquema.columnas()) {
+            items.push_back({c.nombre, "", esquema.multiple() ? c.fuente : std::string()});
+        }
     }
     bool hay_agregados = false;
     for (const ItemSelect& item : items) {
         if (!item.agregado.empty()) hay_agregados = true;
-        if (!item.columna.empty() && tabla.posicion_columna(item.columna) < 0) throw std::runtime_error("la columna " + item.columna + " no existe en " + tabla.nombre);
+        if (!item.columna.empty() && esquema.posicion(item.calificador, item.columna) < 0) {
+            throw std::runtime_error("la columna " + calificar(item.calificador, item.columna) + " no existe");
+        }
     }
 
-    PlanTrace traza;
     if (hay_agregados || !s.group_by.empty()) {
         // GROUP BY con external hashing: una pasada por cada agregado sobre columna
-        const int gcol = s.group_by.empty() ? -1 : tabla.posicion_columna(s.group_by);
-        if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + s.group_by + " no existe");
+        const int gcol = s.group_by.empty() ? -1 : esquema.posicion(s.group_by_calificador, s.group_by);
+        if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + calificar(s.group_by_calificador, s.group_by) + " no existe");
         for (const ItemSelect& item : items) {
-            if (item.agregado.empty() && (gcol < 0 || minusculas(item.columna) != minusculas(s.group_by))) {
-                throw std::runtime_error("la columna " + item.columna + " debe estar en GROUP BY o dentro de un agregado");
+            if (item.agregado.empty() && (gcol < 0 || esquema.posicion(item.calificador, item.columna) != gcol)) {
+                throw std::runtime_error("la columna " + calificar(item.calificador, item.columna) + " debe estar en GROUP BY o dentro de un agregado");
             }
-            if (!item.agregado.empty() && !item.columna.empty() && tabla.columnas[tabla.posicion_columna(item.columna)].tipo != TipoColumna::INT) {
+            if (!item.agregado.empty() && !item.columna.empty() && esquema.en(esquema.posicion(item.calificador, item.columna)).tipo != TipoColumna::INT) {
                 throw std::runtime_error(item.agregado + " solo se aplica a columnas INT");
             }
         }
@@ -738,13 +976,13 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         std::vector<std::unordered_map<std::string, AggregateResult>> resultados;
         for (const ItemSelect& item : items) {
             if (item.agregado.empty()) { resultados.emplace_back(); continue; }
-            const int col = item.columna.empty() ? -1 : tabla.posicion_columna(item.columna);
+            const int col = item.columna.empty() ? -1 : esquema.posicion(item.calificador, item.columna);
             ExternalHashAggregate<Fila, std::string> agregador(10, 100, &traza);
             resultados.push_back(agregador.agrupar(filas, clave_grupo,
                                                    [&](const Fila& f) { return col < 0 ? 0.0 : static_cast<double>(f[col].entero); },
                                                    {AggregateOp::COUNT}));
         }
-        for (const ItemSelect& item : items) r.columnas.push_back(item.etiqueta());
+        for (const ItemSelect& item : items) r.columnas.push_back(esquema.multiple() ? item.etiqueta_calificada() : item.etiqueta());
         for (const auto& [clave, valor] : valor_grupo) {
             Fila fila;
             for (std::size_t i = 0; i < items.size(); ++i) {
@@ -772,7 +1010,11 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         if (!traza.events.empty()) for (const auto& [k, v] : traza.last("external_hash_aggregate").details) if (k == "partitions") paso.detalles.push_back({"particiones", v});
         r.plan.push_back(paso);
     } else {
-        for (const ItemSelect& item : items) r.columnas.push_back(item.columna);
+        for (const ItemSelect& item : items) {
+            r.columnas.push_back(esquema.multiple()
+                                     ? esquema.nombre_salida(static_cast<std::size_t>(esquema.posicion(item.calificador, item.columna)))
+                                     : item.columna);
+        }
     }
 
     // ORDER BY con external merge sort (k-way)
@@ -780,14 +1022,23 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         int col = -1;
         std::vector<Fila>& objetivo = hay_agregados || !s.group_by.empty() ? r.filas : filas;
         if (hay_agregados || !s.group_by.empty()) {
-            for (std::size_t i = 0; i < r.columnas.size(); ++i) if (minusculas(r.columnas[i]) == minusculas(s.order_by)) col = static_cast<int>(i);
+            const std::string buscado = minusculas(calificar(s.order_by_calificador, s.order_by));
+            for (std::size_t i = 0; i < r.columnas.size(); ++i) if (minusculas(r.columnas[i]) == buscado) col = static_cast<int>(i);
+            if (col < 0 && s.order_by_calificador.empty()) {
+                // en un join las columnas salen calificadas: aceptar "tabla.columna" por el sufijo
+                const std::string sufijo = "." + minusculas(s.order_by);
+                for (std::size_t i = 0; i < r.columnas.size(); ++i) {
+                    const std::string c = minusculas(r.columnas[i]);
+                    if (c.size() > sufijo.size() && c.compare(c.size() - sufijo.size(), sufijo.size(), sufijo) == 0) col = static_cast<int>(i);
+                }
+            }
         } else {
-            col = tabla.posicion_columna(s.order_by);
+            col = esquema.posicion(s.order_by_calificador, s.order_by);
         }
-        if (col < 0) throw std::runtime_error("no se puede ordenar por " + s.order_by);
+        if (col < 0) throw std::runtime_error("no se puede ordenar por " + calificar(s.order_by_calificador, s.order_by));
         ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &traza);
         objetivo = ordenador.ordenar(std::move(objetivo), [col](const Fila& f) { return f[col]; }, s.descendente);
-        PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
+        PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", calificar(s.order_by_calificador, s.order_by)}, {"orden", s.descendente ? "DESC" : "ASC"}}};
         for (const auto& [k, v] : traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
         r.plan.push_back(paso);
     }
@@ -795,7 +1046,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     // proyección
     if (!(hay_agregados || !s.group_by.empty())) {
         std::vector<int> posiciones;
-        for (const ItemSelect& item : items) posiciones.push_back(tabla.posicion_columna(item.columna));
+        for (const ItemSelect& item : items) posiciones.push_back(esquema.posicion(item.calificador, item.columna));
         for (Fila& f : filas) {
             Fila salida;
             for (int p : posiciones) salida.push_back(f[p]);

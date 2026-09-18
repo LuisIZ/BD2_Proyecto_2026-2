@@ -25,6 +25,18 @@ SELECT Index, Name, Country, Founded FROM organizaciones WHERE Index = 500;
 SELECT Index, Name FROM organizaciones WHERE Index BETWEEN 10 AND 20;
 SELECT Country, COUNT(*), AVG(Number_of_employees) FROM organizaciones GROUP BY Country ORDER BY Country LIMIT 10;
 
+-- JOIN: hace falta una segunda tabla
+-- CREATE TABLE decadas FROM FILE 'datos/decadas.csv' USING BPLUS;
+-- CREATE TABLE paises FROM FILE 'datos/paises.csv' USING HEAP;
+
+-- misma consulta en los dos sentidos: mira 'algoritmo' en el plan
+-- SELECT organizaciones.Name, decadas.Decada FROM organizaciones JOIN decadas ON organizaciones.Founded = decadas.Founded LIMIT 20;
+-- SELECT decadas.Decada, organizaciones.Name FROM decadas JOIN organizaciones ON decadas.Founded = organizaciones.Founded LIMIT 20;
+
+-- el WHERE se aplica antes del join: mira filas_izquierda
+-- SELECT organizaciones.Name, paises.Region FROM organizaciones JOIN paises ON organizaciones.Country = paises.Country WHERE organizaciones.Country = 'Peru';
+-- SELECT paises.Region, COUNT(*) FROM organizaciones JOIN paises ON organizaciones.Country = paises.Country GROUP BY paises.Region ORDER BY Region;
+
 -- Indice secundario (solo sobre tablas HEAP)
 -- CREATE INDEX idx_founded ON organizaciones (Founded);
 

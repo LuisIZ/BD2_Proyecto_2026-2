@@ -17,11 +17,16 @@ namespace sql {
 //   INSERT INTO t VALUES (v1, v2, ...)
 //   DELETE FROM t [WHERE cond]
 //   SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
-//     FROM t [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
+//     FROM t [[INNER] JOIN t2 ON col = col]
+//     [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
 //   SHOW TABLES
 //   DESCRIBE t
 //
 //   cond := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
+//   col  := nombre | tabla.nombre   (calificar solo hace falta si el nombre esta en las dos tablas)
+//
+// Del JOIN solo se admite INNER, uno por consulta y con una sola igualdad en el ON.
+// No hay alias: los calificadores son nombres de tabla.
 
 enum class TipoSentencia {
     CREATE_TABLE,
@@ -47,15 +52,33 @@ struct Condicion {
     std::string op;  // = != < <= > >= BETWEEN
     Valor valor;
     Valor hasta;     // solo BETWEEN
+    std::string calificador;  // tabla en "tabla.col"; vacío si vino sin calificar
+    std::string nombre_completo() const {
+        return calificador.empty() ? columna : calificador + "." + columna;
+    }
 };
 
 struct ItemSelect {
     std::string columna;   // vacía para COUNT(*)
     std::string agregado;  // vacía, COUNT, SUM, AVG, MIN, MAX
+    std::string calificador;  // tabla en "tabla.col"; vacío si vino sin calificar
     std::string etiqueta() const {
         if (agregado.empty()) return columna;
         return agregado + "(" + (columna.empty() ? "*" : columna) + ")";
     }
+    // como etiqueta(), pero conservando el calificador en las columnas simples
+    std::string etiqueta_calificada() const {
+        if (!agregado.empty()) return etiqueta();
+        return calificador.empty() ? columna : calificador + "." + columna;
+    }
+};
+
+// [INNER] JOIN tabla_derecha ON izq_columna = der_columna
+struct JoinSpec {
+    std::string tipo = "INNER";
+    std::string tabla_derecha;
+    std::string izq_calificador, izq_columna;
+    std::string der_calificador, der_columna;
 };
 
 struct Sentencia {
@@ -75,8 +98,11 @@ struct Sentencia {
 
     bool todas_las_columnas = false;
     std::vector<ItemSelect> items;
+    std::vector<JoinSpec> joins;  // vacío = consulta de una sola tabla
     std::string group_by;
+    std::string group_by_calificador;
     std::string order_by;
+    std::string order_by_calificador;
     bool descendente = false;
     long long limite = -1;
 };

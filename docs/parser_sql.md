@@ -111,7 +111,10 @@ columnas e índices para el panel de archivos.
 
 ## 7. Límites conocidos
 
-- Sin `UPDATE`, sin `JOIN`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
+- Sin `UPDATE`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
+- Del `JOIN` solo hay `INNER`, uno por consulta y con una sola igualdad en el `ON`.
+  No hay alias: los calificadores son nombres de tabla (`organizaciones.Name`), así que
+  tampoco se puede unir una tabla consigo misma.
 - Agregados solo sobre columnas `INT`; `AVG` devuelve texto con dos decimales.
 - `CREATE INDEX ... USING HASH` responde "aún no disponible en disco" hasta que el hash
   extensible salga de RAM.

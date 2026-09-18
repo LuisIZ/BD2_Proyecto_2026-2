@@ -19,6 +19,7 @@ namespace {
 
 const std::string DB = ".build/db_sql_test";
 const std::string CSV = ".build/sql_test.csv";
+const std::string CSV_DEC = ".build/sql_test_decadas.csv";
 
 bool falla(const std::string& sql) {
     try {
@@ -41,6 +42,14 @@ bool falla_ejecucion(Ejecutor& e, const std::string& sql) {
 bool tiene_paso(const Resultado& r, const std::string& operacion) {
     for (const auto& p : r.plan) if (p.operacion == operacion) return true;
     return false;
+}
+
+std::string detalle_paso(const Resultado& r, const std::string& operacion, const std::string& clave) {
+    for (const auto& p : r.plan) {
+        if (p.operacion != operacion) continue;
+        for (const auto& d : p.detalles) if (d.first == clave) return d.second;
+    }
+    return "";
 }
 
 void prueba_parser() {
@@ -74,10 +83,37 @@ void prueba_parser() {
     assert(motor::sql::parsear("show tables").tipo == TipoSentencia::SHOW_TABLES);
     assert(motor::sql::parsear("describe t").tabla == "t");
 
+    s = motor::sql::parsear("SELECT orgs.Name, dec.Decada FROM orgs JOIN dec ON orgs.Founded = dec.Founded");
+    assert(s.tabla == "orgs" && s.joins.size() == 1 && s.joins[0].tabla_derecha == "dec");
+    assert(s.joins[0].izq_calificador == "orgs" && s.joins[0].izq_columna == "Founded");
+    assert(s.joins[0].der_calificador == "dec" && s.joins[0].der_columna == "Founded");
+    assert(s.items[0].calificador == "orgs" && s.items[0].columna == "Name");
+    assert(s.items[0].etiqueta_calificada() == "orgs.Name");
+
+    s = motor::sql::parsear("SELECT * FROM a INNER JOIN b ON k = k WHERE a.x = 1 ORDER BY b.y DESC");
+    assert(s.joins.size() == 1 && s.joins[0].tipo == "INNER" && s.joins[0].izq_calificador.empty());
+    assert(s.condiciones[0].calificador == "a" && s.condiciones[0].nombre_completo() == "a.x");
+    assert(s.order_by_calificador == "b" && s.order_by == "y" && s.descendente);
+
+    s = motor::sql::parsear("SELECT COUNT(o.Index) FROM o JOIN d ON o.k = d.k GROUP BY d.Zona");
+    assert(s.items[0].agregado == "COUNT" && s.items[0].calificador == "o");
+    assert(s.group_by_calificador == "d" && s.group_by == "Zona");
+
+    assert(motor::sql::parsear("SELECT t.a FROM t").items[0].calificador == "t");
+    assert(motor::sql::parsear("SELECT a FROM t").joins.empty());
+
+    assert(falla("SELECT * FROM a LEFT JOIN b ON a.k = b.k"));
+    assert(falla("SELECT * FROM a JOIN b"));
+    assert(falla("SELECT * FROM a JOIN b ON a.k > b.k"));
+    assert(falla("SELECT * FROM a JOIN b ON a.k = b.k AND a.j = b.j"));
+    assert(falla("SELECT * FROM a INNER b ON a.k = b.k"));
+    assert(falla("SELECT a. FROM t"));
+
     assert(falla("SELECT FROM t"));
     assert(falla("SELECT * t"));
     assert(falla("SELECT * FROM t WHERE"));
     assert(falla("SELECT * FROM t WHERE a = 1.5"));
+    assert(falla("SELECT * FROM t WHERE a = 1.5.6"));
     assert(falla("INSERT INTO t VALUES (1, 'abierto)"));
     assert(falla("CREATE TABLE t (a FLOAT)"));
     assert(falla("SELECT * FROM t WHERE a = 1 extra"));
@@ -109,6 +145,12 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     assert(r.filas.size() == 1 && r.filas[0][1].texto == "Org, 150" && r.filas[0][2].texto == "Peru");
     assert(tiene_paso(r, org == "HEAP" ? "scan_completo" : "busqueda_por_clave"));
     assert(e.ejecutar("SELECT * FROM " + t + " WHERE Index = 999").filas.empty());
+
+    // nombres calificados en una consulta de una sola tabla: mismo resultado y encabezados sin calificar
+    r = e.ejecutar("SELECT " + t + ".Index, " + t + ".Name FROM " + t + " WHERE " + t + ".Index = 150 ORDER BY " + t + ".Index");
+    assert(r.filas.size() == 1 && r.filas[0][1].texto == "Org, 150");
+    assert(r.columnas[0] == "Index" && r.columnas[1] == "Name");
+    assert(falla_ejecucion(e, "SELECT otra.Index FROM " + t) && "calificador que no es de la consulta");
 
     // rango por clave y condicion adicional filtrada
     r = e.ejecutar("SELECT Index FROM " + t + " WHERE Index BETWEEN 10 AND 30 AND Country = 'Peru'");
@@ -161,6 +203,68 @@ void prueba_indice_secundario(Ejecutor& e) {
     std::cout << "indice secundario: B+ no agrupado sobre heap, uso en igualdad y rango, mantenimiento\n";
 }
 
+void escribir_csv_decadas() {
+    std::ofstream f(CSV_DEC);
+    f << "Founded,Decada\n";
+    for (int anio = 2000; anio <= 2024; ++anio) f << anio << ',' << anio / 10 * 10 << "s\n";
+}
+
+void prueba_join(Ejecutor& e) {
+    e.ejecutar("CREATE TABLE j_org FROM FILE '" + CSV + "' USING HEAP");          // 300 filas, Founded 2000..2019
+    e.ejecutar("CREATE TABLE j_dec FROM FILE '" + CSV_DEC + "' USING BPLUS");     // 25 filas, Founded 2000..2024
+
+    // hash join: el lado externo (300) es mas grande que el interno (25)
+    Resultado r = e.ejecutar("SELECT j_org.Index, j_dec.Decada FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded");
+    assert(r.filas.size() == 300);
+    assert(r.columnas.size() == 2 && r.columnas[0] == "j_org.Index" && r.columnas[1] == "j_dec.Decada");
+    assert(tiene_paso(r, "join") && detalle_paso(r, "join", "algoritmo") == "hash_join");
+    assert(detalle_paso(r, "join", "filas_resultado") == "300");
+
+    // el ON sin calificar se orienta solo: izquierda = FROM, derecha = JOIN
+    assert(e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON Founded = Founded").filas.size() == 300);
+    // y tambien si se escribe al reves
+    assert(e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON j_dec.Founded = j_org.Founded").filas.size() == 300);
+
+    // index nested loop: al invertir, el externo es el chico y el interno tiene indice
+    e.ejecutar("CREATE INDEX ij ON j_org (Founded)");
+    r = e.ejecutar("SELECT j_dec.Decada, j_org.Index FROM j_dec JOIN j_org ON j_dec.Founded = j_org.Founded");
+    assert(detalle_paso(r, "join", "algoritmo") == "index_nested_loop_join");
+    assert(detalle_paso(r, "join", "sondas") == "25");
+    assert(r.filas.size() == 300 && "los dos algoritmos dan el mismo resultado");
+
+    // seleccion antes del join: el WHERE reduce el lado izquierdo de 300 a 100
+    r = e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded WHERE j_org.Country = 'Peru'");
+    assert(r.filas.size() == 100 && detalle_paso(r, "join", "filas_izquierda") == "100");
+
+    // sin coincidencias
+    r = e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded WHERE j_org.Founded = 1999");
+    assert(r.filas.empty() && detalle_paso(r, "join", "filas_resultado") == "0");
+
+    // agregados y ordenamiento sobre el join; el ORDER BY sin calificar encuentra j_dec.Decada
+    r = e.ejecutar("SELECT j_dec.Decada, COUNT(*) FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded GROUP BY j_dec.Decada ORDER BY Decada");
+    assert(r.filas.size() == 2 && r.filas[0][0].texto == "2000s" && r.filas[0][1].entero == 150);
+    assert(tiene_paso(r, "agrupacion") && tiene_paso(r, "ordenamiento"));
+    r = e.ejecutar("SELECT j_org.Name FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded ORDER BY j_org.Index LIMIT 3");
+    assert(r.filas.size() == 3 && r.filas[0][0].texto == "Org, 1" && tiene_paso(r, "limite"));
+
+    // SELECT * concatena los dos esquemas y siempre califica
+    r = e.ejecutar("SELECT * FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded LIMIT 1");
+    assert(r.columnas.size() == 7 && r.columnas[0] == "j_org.Index" && r.columnas[6] == "j_dec.Decada");
+
+    // errores
+    assert(falla_ejecucion(e, "SELECT Founded FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded") && "columna ambigua");
+    assert(falla_ejecucion(e, "SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded WHERE Founded = 2005") && "ambigua en el WHERE");
+    assert(falla_ejecucion(e, "SELECT x.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded") && "calificador ajeno");
+    assert(falla_ejecucion(e, "SELECT j_org.Index FROM j_org JOIN no_existe ON j_org.Founded = no_existe.Founded"));
+    assert(falla_ejecucion(e, "SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Country = j_dec.Founded") && "tipos distintos");
+    assert(falla_ejecucion(e, "SELECT j_org.Index FROM j_org JOIN j_org ON j_org.Founded = j_org.Founded") && "auto-join");
+    assert(falla_ejecucion(e, "SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded JOIN j_dec ON j_org.Founded = j_dec.Founded") && "solo un join");
+
+    e.ejecutar("DROP TABLE j_org");
+    e.ejecutar("DROP TABLE j_dec");
+    std::cout << "join: hash join, index nested loop, seleccion antes del join, ambiguedad y errores\n";
+}
+
 void prueba_persistencia() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -198,11 +302,13 @@ int main() {
     std::filesystem::remove_all(DB);
     prueba_parser();
     escribir_csv();
+    escribir_csv_decadas();
     {
         Catalogo catalogo(DB);
         Ejecutor e(catalogo);
         for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) prueba_organizacion(e, org);
         prueba_indice_secundario(e);
+        prueba_join(e);
     }
     prueba_persistencia();
     prueba_tabla_manual();

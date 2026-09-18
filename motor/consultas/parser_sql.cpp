@@ -81,7 +81,7 @@ private:
                 return {TipoToken::SIMBOLO, dos == "<>" ? "!=" : dos};
             }
         }
-        if (c == '(' || c == ')' || c == ',' || c == '*' || c == '=' || c == '<' || c == '>' || c == ';') {
+        if (c == '(' || c == ')' || c == ',' || c == '*' || c == '=' || c == '<' || c == '>' || c == ';' || c == '.') {
             ++i_;
             return {TipoToken::SIMBOLO, std::string(1, c)};
         }
@@ -172,6 +172,17 @@ private:
         long long n = std::stoll(actual().texto);
         avanzar();
         return n;
+    }
+
+    // nombre | tabla.nombre
+    void nombre_columna(std::string& calificador, std::string& columna) {
+        columna = identificador();
+        calificador.clear();
+        if (es_simbolo(".")) {
+            avanzar();
+            calificador = columna;
+            columna = identificador();
+        }
     }
 
     std::string organizacion() {
@@ -269,7 +280,7 @@ private:
     void where(Sentencia& s) {
         while (true) {
             Condicion c;
-            c.columna = identificador();
+            nombre_columna(c.calificador, c.columna);
             if (es("BETWEEN")) {
                 avanzar();
                 c.op = "BETWEEN";
@@ -292,6 +303,31 @@ private:
         }
     }
 
+    // [INNER] JOIN tabla ON col = col
+    void joins(Sentencia& s) {
+        while (true) {
+            if (es("LEFT") || es("RIGHT") || es("FULL") || es("OUTER") || es("CROSS")) {
+                error("por ahora solo se admite INNER JOIN");
+            }
+            const bool inner_explicito = es("INNER");
+            if (inner_explicito) avanzar();
+            if (!es("JOIN")) {
+                if (inner_explicito) error("se esperaba JOIN despues de INNER");
+                return;
+            }
+            avanzar();
+            JoinSpec j;
+            j.tabla_derecha = identificador();
+            esperar_palabra("ON");
+            nombre_columna(j.izq_calificador, j.izq_columna);
+            if (!es_simbolo("=")) error("la condicion ON solo admite igualdad entre columnas");
+            avanzar();
+            nombre_columna(j.der_calificador, j.der_columna);
+            if (es("AND")) error("la condicion ON solo admite una igualdad");
+            s.joins.push_back(j);
+        }
+    }
+
     void select(Sentencia& s) {
         s.tipo = TipoSentencia::SELECT;
         if (es_simbolo("*")) {
@@ -309,9 +345,13 @@ private:
                         if (may != "COUNT") error("solo COUNT admite *");
                         avanzar();
                     } else {
-                        item.columna = identificador();
+                        nombre_columna(item.calificador, item.columna);
                     }
                     esperar_simbolo(")");
+                } else if (es_simbolo(".")) {
+                    avanzar();
+                    item.calificador = nombre;
+                    item.columna = identificador();
                 } else {
                     item.columna = nombre;
                 }
@@ -322,12 +362,13 @@ private:
         }
         esperar_palabra("FROM");
         s.tabla = identificador();
+        joins(s);
         if (es("WHERE")) { avanzar(); where(s); }
-        if (es("GROUP")) { avanzar(); esperar_palabra("BY"); s.group_by = identificador(); }
+        if (es("GROUP")) { avanzar(); esperar_palabra("BY"); nombre_columna(s.group_by_calificador, s.group_by); }
         if (es("ORDER")) {
             avanzar();
             esperar_palabra("BY");
-            s.order_by = identificador();
+            nombre_columna(s.order_by_calificador, s.order_by);
             if (es("ASC")) avanzar();
             else if (es("DESC")) { avanzar(); s.descendente = true; }
         }
