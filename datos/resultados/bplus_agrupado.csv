@@ -1,0 +1,7 @@
+implementacion,modo,n,barajado,t_construccion_us,escrituras_construccion,altura,paginas_internas,paginas_hoja,bytes_en_disco,t_busqueda_us,paginas_por_busqueda,t_rango100_us,paginas_por_rango,t_eliminacion_us
+bplus_agrupado,insercion,1000,0,4987,184,2,1,90,376832,28.71,3,134.71,12.1,16.04
+bplus_agrupado,masiva,1000,0,2574,110,2,1,53,225280,38.111,3,90.26,8.19,4.98
+bplus_agrupado,insercion,10000,0,54969,1828,3,4,909,3743744,59.983,4,126.61,13.08,38.896
+bplus_agrupado,masiva,10000,0,27412,1062,3,3,527,2174976,40.817,4,91.63,9.32,22.119
+bplus_agrupado,insercion,100000,0,969827,18254,3,36,9090,37384192,55.619,4,157.03,13.08,68.4742
+bplus_agrupado,masiva,100000,0,263891,10554,3,13,5263,21614592,55.62,4,94.09,9.19,26.9011

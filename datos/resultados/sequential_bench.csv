@@ -1,0 +1,4 @@
+implementacion,n,barajado,semilla,t_carga_us,t_insercion_us,t_busqueda_pk_prom_us,t_busqueda_pk_peor_us,t_scan_us,t_reorganizacion_us,paginas,registros_vivos,bytes_en_disco,tumbas,bytes_desperdiciados,paginas_leidas,paginas_escritas,paginas_leidas_por_busqueda,reorganizaciones_auto,t_reorganizaciones_auto_us,paginas_principal,registros_auxiliares,umbral,factor_llenado
+secuencial,1000,0,42,1633,141644,46,90,1850,9751,44,1000,184320,300,42205,5576,1137,6,7,83666,37,174,0.3,0.8
+secuencial,10000,0,42,18341,854868,108,519,10324,23467,427,10000,1753088,3000,420509,87027,11426,20,13,242068,331,2669,0.3,0.8
+secuencial,100000,0,42,143840,9406762,260,2058,117005,130569,4419,100000,18104320,30000,4204206,1193318,116997,35,20,1050344,4037,10625,0.3,0.8
