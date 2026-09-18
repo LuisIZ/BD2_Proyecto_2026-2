@@ -5,6 +5,7 @@
 #include "../archivos/sequential_file.h"
 #include "../indices/bplus_agrupado.h"
 #include "../indices/bplus_no_agrupado.h"
+#include "../indices/hash_extensible_disco.h"
 
 #include <algorithm>
 #include <cctype>
@@ -34,7 +35,6 @@ std::string minusculas(std::string s) {
 
 std::string texto(std::size_t n) { return std::to_string(n); }
 
-// el B+ no agrupado guarda un long long: página y slot del heap empaquetados
 long long pos_de(const RecordId& rid) { return static_cast<long long>(rid.page_id) * 65536 + rid.slot_id; }
 RecordId rid_de(long long pos) {
     RecordId rid;
@@ -51,10 +51,37 @@ int a_int(long long v) {
 
 struct FilaFisica {
     Fila fila;
-    RecordId rid;  // solo heap
+    RecordId rid;
 };
 
-// límites [desde, hasta] que impone una condición sobre una columna entera
+struct IndiceAbierto {
+    const Indice* meta = nullptr;
+    std::unique_ptr<BPlusNoAgrupado> bplus;
+    std::unique_ptr<HashExtensibleDisco> hash;
+
+    bool es_hash() const { return hash != nullptr; }
+    void insertar(int clave, long long pos) {
+        if (hash) hash->insertar(clave, pos, false);
+        else bplus->insertar(clave, pos);
+    }
+    bool eliminar_entrada(int clave, long long pos) {
+        return hash ? hash->eliminar_entrada(clave, pos) : bplus->eliminar_entrada(clave, pos);
+    }
+    std::vector<long long> buscar(int clave) { return hash ? hash->buscar(clave) : bplus->buscar(clave); }
+    std::vector<long long> buscar_rango(int desde, int hasta) {
+        if (hash) throw std::runtime_error("un indice hash no resuelve rangos");
+        return bplus->buscar_rango(desde, hasta);
+    }
+    void sincronizar() {
+        if (hash) hash->sincronizar();
+        else bplus->sincronizar();
+    }
+    long paginas_leidas() const { return hash ? hash->paginas_leidas() : bplus->paginas_leidas(); }
+    long num_entradas() const { return hash ? hash->num_entradas() : bplus->num_entradas(); }
+    long tamano_en_disco() { return hash ? hash->tamano_en_disco() : bplus->tamano_en_disco(); }
+    std::string estructura() const { return hash ? "hash_extensible" : "bplus_no_agrupado"; }
+};
+
 bool rango_de(const Condicion& c, long long& desde, long long& hasta) {
     if (!c.valor.es_entero) return false;
     desde = LLONG_MIN;
@@ -86,8 +113,6 @@ std::string describir(const Condicion& c) {
     return s;
 }
 
-// --- acceso a los archivos de una tabla ---
-
 class Almacen {
 public:
     Almacen(const Catalogo& catalogo, const Tabla& tabla, bool crear) : tabla_(tabla) {
@@ -104,12 +129,16 @@ public:
                 break;
         }
         for (const Indice& indice : tabla.indices) {
-            indices_.emplace_back(&indice, std::make_unique<BPlusNoAgrupado>(indice.archivo, false));
+            IndiceAbierto abierto;
+            abierto.meta = &indice;
+            if (indice.tipo == "HASH") abierto.hash = std::make_unique<HashExtensibleDisco>(indice.archivo, false);
+            else abierto.bplus = std::make_unique<BPlusNoAgrupado>(indice.archivo, false);
+            indices_.push_back(std::move(abierto));
         }
     }
 
     ~Almacen() {
-        for (auto& [indice, arbol] : indices_) arbol->sincronizar();
+        for (auto& abierto : indices_) abierto.sincronizar();
     }
 
     std::string estructura() const {
@@ -120,8 +149,6 @@ public:
         }
         return "";
     }
-
-    // --- lectura ---
 
     std::vector<FilaFisica> escanear() {
         std::vector<FilaFisica> salida;
@@ -142,7 +169,6 @@ public:
         return salida;
     }
 
-    // búsqueda por clave primaria con la estructura de la tabla (sin índices secundarios)
     std::vector<FilaFisica> buscar_pk(long long clave) {
         std::vector<FilaFisica> salida;
         if (clave < INT_MIN || clave > INT_MAX) return salida;
@@ -183,14 +209,14 @@ public:
 
     bool sabe_rango_pk() const { return seq_ != nullptr || arbol_ != nullptr; }
 
-    BPlusNoAgrupado* indice(const Indice* i) {
-        for (auto& [ind, arbol] : indices_) if (ind == i) return arbol.get();
+    IndiceAbierto* indice(const Indice* i) {
+        for (auto& abierto : indices_) if (abierto.meta == i) return &abierto;
         return nullptr;
     }
 
     std::vector<FilaFisica> rango_indice(const Indice* i, long long desde, long long hasta) {
         std::vector<FilaFisica> salida;
-        BPlusNoAgrupado* arbol = indice(i);
+        IndiceAbierto* arbol = indice(i);
         const std::vector<long long> posiciones = desde == hasta ? arbol->buscar(a_int(desde))
                                                                   : arbol->buscar_rango(a_int(desde), a_int(hasta));
         for (long long pos : posiciones) {
@@ -204,8 +230,6 @@ public:
         return salida;
     }
 
-    // --- escritura ---
-
     void insertar(const Fila& fila) {
         validar_fila(tabla_, fila);
         const int clave = clave_de(tabla_, fila);
@@ -215,8 +239,8 @@ public:
             if (repetida) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
             const std::vector<std::byte> bytes = codificar_registro({clave, empaquetar_variable(tabla_, fila)});
             const RecordId rid = heap_->insertar_bytes(bytes.data(), static_cast<std::uint16_t>(bytes.size()));
-            for (auto& [ind, arbol] : indices_) {
-                arbol->insertar(static_cast<int>(fila[tabla_.posicion_columna(ind->columna)].entero), pos_de(rid));
+            for (auto& abierto : indices_) {
+                abierto.insertar(static_cast<int>(fila[tabla_.posicion_columna(abierto.meta->columna)].entero), pos_de(rid));
             }
         } else if (seq_) {
             if (seq_->buscar(clave)) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
@@ -231,8 +255,8 @@ public:
         const int clave = clave_de(tabla_, f.fila);
         if (heap_) {
             heap_->eliminar_rid(f.rid);
-            for (auto& [ind, arbol] : indices_) {
-                arbol->eliminar_entrada(static_cast<int>(f.fila[tabla_.posicion_columna(ind->columna)].entero), pos_de(f.rid));
+            for (auto& abierto : indices_) {
+                abierto.eliminar_entrada(static_cast<int>(f.fila[tabla_.posicion_columna(abierto.meta->columna)].entero), pos_de(f.rid));
             }
         } else if (seq_) {
             seq_->eliminar(clave);
@@ -241,7 +265,6 @@ public:
         }
     }
 
-    // carga inicial de una tabla recién creada (sin índices todavía)
     void cargar(std::vector<Fila>& filas) {
         for (const Fila& fila : filas) validar_fila(tabla_, fila);
         std::unordered_set<long long> vistas;
@@ -272,8 +295,7 @@ public:
         }
     }
 
-    // construye un índice B+ no agrupado recorriendo el heap
-    void construir_indice(const Indice& indice, BPlusNoAgrupado& arbol) {
+    void construir_indice(const Indice& indice, IndiceAbierto& arbol) {
         const int col = tabla_.posicion_columna(indice.columna);
         heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
             Registro r;
@@ -286,15 +308,13 @@ public:
         arbol.sincronizar();
     }
 
-    // --- contadores y estadísticas ---
-
     void reiniciar_contadores() {
         if (heap_) heap_->reiniciar_contadores();
         if (seq_) seq_->reiniciar_contadores();
         lect_arbol_ = arbol_ ? arbol_->paginas_leidas() : 0;
         escr_arbol_ = arbol_ ? arbol_->paginas_escritas() : 0;
         lect_idx_.clear();
-        for (auto& [ind, arbol] : indices_) lect_idx_.push_back(arbol->paginas_leidas());
+        for (auto& abierto : indices_) lect_idx_.push_back(abierto.paginas_leidas());
     }
     std::size_t paginas_leidas() const {
         if (heap_) return heap_->paginas_leidas();
@@ -308,7 +328,7 @@ public:
     }
     std::size_t paginas_leidas_indice(const Indice* i) const {
         for (std::size_t k = 0; k < indices_.size(); ++k) {
-            if (indices_[k].first == i) return static_cast<std::size_t>(indices_[k].second->paginas_leidas() - lect_idx_[k]);
+            if (indices_[k].meta == i) return static_cast<std::size_t>(indices_[k].paginas_leidas() - lect_idx_[k]);
         }
         return 0;
     }
@@ -348,26 +368,22 @@ private:
     std::unique_ptr<HeapFile> heap_;
     std::unique_ptr<SequentialFile> seq_;
     std::unique_ptr<BPlusAgrupado> arbol_;
-    std::vector<std::pair<const Indice*, std::unique_ptr<BPlusNoAgrupado>>> indices_;
+    std::vector<IndiceAbierto> indices_;
     long lect_arbol_ = 0;
     long escr_arbol_ = 0;
     std::vector<long> lect_idx_;
 };
-
-// --- esquema de la salida ---
 
 std::string calificar(const std::string& calificador, const std::string& columna) {
     return calificador.empty() ? columna : calificador + "." + columna;
 }
 
 struct ColumnaEsquema {
-    std::string fuente;  // tabla de la que viene la columna
+    std::string fuente;
     std::string nombre;
     TipoColumna tipo;
 };
 
-// Resuelve nombres de columna contra las tablas de la consulta. Con una sola
-// fuente se comporta igual que Tabla::posicion_columna; con dos detecta ambigüedad.
 class EsquemaResultado {
 public:
     void agregar_tabla(const Tabla& t) {
@@ -375,7 +391,6 @@ public:
         for (const Columna& c : t.columnas) cols_.push_back({t.nombre, c.nombre, c.tipo});
     }
 
-    // -1 si la columna no existe; lanza si es ambigua o si el calificador no corresponde
     int posicion(const std::string& calificador, const std::string& columna) const {
         if (!calificador.empty() && !conoce(calificador)) {
             throw std::runtime_error("no hay ninguna tabla llamada " + calificador + " en la consulta");
@@ -396,7 +411,6 @@ public:
     bool multiple() const { return fuentes_.size() > 1; }
     const std::vector<ColumnaEsquema>& columnas() const { return cols_; }
 
-    // nombre visible en el resultado: calificado solo cuando hay varias tablas
     std::string nombre_salida(std::size_t i) const {
         return multiple() ? cols_[i].fuente + "." + cols_[i].nombre : cols_[i].nombre;
     }
@@ -418,19 +432,17 @@ private:
     std::vector<std::string> fuentes_;
 };
 
-// --- planificación del WHERE ---
-
 struct Acceso {
     std::vector<FilaFisica> filas;
     std::vector<Condicion> restantes;
     PasoPlan paso;
 };
 
-// elige la condición que puede resolverse con una estructura y ejecuta el acceso
 Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion>& condiciones) {
     Acceso acceso;
     const std::string pk = tabla.columnas[tabla.pk].nombre;
     int usada = -1;
+    bool hash_descartado = false;
 
     for (std::size_t i = 0; i < condiciones.size() && usada < 0; ++i) {
         const Condicion& c = condiciones[i];
@@ -443,12 +455,18 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
 
         const bool es_pk = minusculas(c.columna) == minusculas(pk);
         const Indice* indice = almacen.indice(tabla.indice_sobre(c.columna)) ? tabla.indice_sobre(c.columna) : nullptr;
+        const bool hash = indice && almacen.indice(indice)->es_hash();
+        if (hash && desde != hasta) {
+            indice = nullptr;
+            hash_descartado = true;
+        }
 
         if (indice) {
             almacen.reiniciar_contadores();
             acceso.filas = almacen.rango_indice(indice, desde, hasta);
             acceso.paso.operacion = desde == hasta ? "busqueda_por_indice" : "rango_por_indice";
-            acceso.paso.detalles = {{"indice", indice->nombre}, {"estructura", "bplus_no_agrupado"}, {"columna", c.columna},
+            acceso.paso.detalles = {{"indice", indice->nombre}, {"estructura", almacen.indice(indice)->estructura()},
+                                    {"columna", c.columna},
                                     {"condicion", describir(c)}, {"paginas_indice", texto(almacen.paginas_leidas_indice(indice))},
                                     {"paginas_heap", texto(almacen.paginas_leidas())}, {"filas", texto(acceso.filas.size())}};
             usada = static_cast<int>(i);
@@ -470,6 +488,9 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
         acceso.paso.operacion = "scan_completo";
         acceso.paso.detalles = {{"estructura", almacen.estructura()}, {"paginas_leidas", texto(almacen.paginas_leidas())},
                                 {"filas", texto(acceso.filas.size())}};
+        if (hash_descartado) {
+            acceso.paso.detalles.push_back({"nota", "el indice hash no resuelve rangos: recorrido completo"});
+        }
     }
     for (std::size_t i = 0; i < condiciones.size(); ++i) {
         if (static_cast<int>(i) != usada) acceso.restantes.push_back(condiciones[i]);
@@ -496,10 +517,6 @@ void filtrar(Acceso& acceso, const Tabla& tabla, std::vector<PasoPlan>& plan) {
     acceso.filas = std::move(salida);
 }
 
-// --- JOIN ---
-
-// Reparte el WHERE entre los dos lados (selección antes del join). El calificador se
-// quita de la copia que recibe cada lado para poder reusar acceder() y filtrar() tal cual.
 void repartir_condiciones(const std::vector<Condicion>& todas, const Tabla& ti, const Tabla& td,
                           std::vector<Condicion>& izq, std::vector<Condicion>& der) {
     for (const Condicion& c : todas) {
@@ -527,7 +544,6 @@ void repartir_condiciones(const std::vector<Condicion>& todas, const Tabla& ti, 
     }
 }
 
-// Ejecuta el INNER JOIN y deja en esquema las columnas de las dos tablas concatenadas.
 std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, EsquemaResultado& esquema,
                                 std::vector<PasoPlan>& plan, PlanTrace& traza) {
     if (s.joins.size() > 1) throw std::runtime_error("por ahora solo se admite un JOIN por consulta");
@@ -539,7 +555,6 @@ std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, Es
         throw std::runtime_error("unir una tabla consigo misma todavia no esta soportado");
     }
 
-    // el ON puede venir escrito en cualquier orden: 1 = tabla del FROM, 2 = tabla del JOIN
     auto lado = [&](const std::string& cal, const std::string& col) -> int {
         if (!cal.empty()) {
             if (minusculas(cal) == minusculas(ti.nombre)) return 1;
@@ -548,14 +563,14 @@ std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, Es
         }
         const bool en_i = ti.posicion_columna(col) >= 0;
         const bool en_d = td.posicion_columna(col) >= 0;
-        if (en_i && en_d) return 0;  // ambiguo: lo decide el otro lado
+        if (en_i && en_d) return 0;
         if (en_i) return 1;
         if (en_d) return 2;
         throw std::runtime_error("la columna " + col + " no existe en " + ti.nombre + " ni en " + td.nombre);
     };
     int la = lado(j.izq_calificador, j.izq_columna);
     int lb = lado(j.der_calificador, j.der_columna);
-    if (la == 0 && lb == 0) { la = 1; lb = 2; }  // "ON k = k": izquierda = FROM, derecha = JOIN
+    if (la == 0 && lb == 0) { la = 1; lb = 2; }
     else if (la == 0) la = lb == 1 ? 2 : 1;
     else if (lb == 0) lb = la == 1 ? 2 : 1;
     if (la == lb) throw std::runtime_error("el ON debe comparar una columna de " + ti.nombre + " con una de " + td.nombre);
@@ -574,7 +589,6 @@ std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, Es
     std::vector<Condicion> cond_i, cond_d;
     repartir_condiciones(s.condiciones, ti, td, cond_i, cond_d);
 
-    // lado izquierdo: el mismo camino de acceso de una consulta de una tabla
     Almacen ai(catalogo, ti, false);
     Acceso acc_i = acceder(ai, ti, cond_i);
     acc_i.paso.detalles.insert(acc_i.paso.detalles.begin(), {"tabla", ti.nombre});
@@ -587,11 +601,9 @@ std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, Es
     for (FilaFisica& f : acc_i.filas) filas_i.push_back(std::move(f.fila));
     const std::size_t pag_i = ai.paginas_leidas();
 
-    // ¿se puede sondear el lado derecho por índice en vez de materializarlo?
     Almacen ad(catalogo, td, false);
     const Indice* idx_d = td.indice_sobre(col_d);
     if (idx_d && !ad.indice(idx_d)) idx_d = nullptr;
-    // en un heap buscar_pk es un recorrido completo, así que no cuenta como índice
     const bool pk_util = static_cast<std::size_t>(cd) == td.pk && td.organizacion != Organizacion::HEAP;
     const bool hay_indice = cond_d.empty() && td.columnas[cd].tipo == TipoColumna::INT && (idx_d != nullptr || pk_util);
 
@@ -628,7 +640,6 @@ std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, Es
         pag_d = ad.paginas_leidas();
         filas_d_usadas = filas_d.size();
         entradas_hash = filas_d.size();
-        // la clave va como texto porque std::hash<Valor> no existe (igual que en el GROUP BY)
         const std::function<std::string(const Fila&)> clave_i = [ci](const Fila& f) { return f[ci].a_texto(); };
         const std::function<std::string(const Fila&)> clave_d = [cd](const Fila& f) { return f[cd].a_texto(); };
         pares = hash_join<Fila, Fila, std::string>(filas_i, filas_d, clave_i, clave_d);
@@ -660,8 +671,6 @@ std::vector<Fila> ejecutar_join(const Catalogo& catalogo, const Sentencia& s, Es
     plan.push_back(paso);
     return filas;
 }
-
-// --- CSV ---
 
 std::vector<std::vector<std::string>> leer_csv(const std::string& ruta) {
     std::ifstream entrada(ruta, std::ios::binary);
@@ -708,9 +717,7 @@ bool es_entero(const std::string& s, long long& v) {
     return v >= INT_MIN && v <= INT_MAX;
 }
 
-}  // namespace
-
-// --- Ejecutor ---
+}
 
 Resultado Ejecutor::ejecutar(const std::string& sql) { return ejecutar(parsear(sql)); }
 
@@ -789,7 +796,6 @@ Resultado Ejecutor::crear_tabla_desde_csv(const Sentencia& s) {
     if (csv.size() < 2) throw std::runtime_error("el CSV no tiene filas de datos");
     const std::size_t ncol = csv[0].size();
 
-    // esquema inferido: INT si toda la columna son enteros, si no VARCHAR del largo maximo
     Sentencia definicion = s;
     definicion.tipo = TipoSentencia::CREATE_TABLE;
     std::set<std::string> usados;
@@ -849,7 +855,6 @@ Resultado Ejecutor::crear_tabla_desde_csv(const Sentencia& s) {
 
 Resultado Ejecutor::crear_indice(const Sentencia& s) {
     Tabla& tabla = catalogo_.tabla(s.tabla);
-    if (s.indice_tipo == "HASH") throw std::runtime_error("el indice HASH aun no esta disponible en disco; usa BPLUS");
     if (tabla.organizacion != Organizacion::HEAP) throw std::runtime_error("los indices secundarios solo se admiten sobre tablas HEAP (las otras reubican registros)");
     const int col = tabla.posicion_columna(s.indice_columna);
     if (col < 0) throw std::runtime_error("la columna " + s.indice_columna + " no existe");
@@ -857,15 +862,27 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     if (tabla.indice_sobre(s.indice_columna)) throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
     for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
 
-    Indice indice{s.indice_nombre, tabla.columnas[col].nombre, "BPLUS", catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), ".bplus")};
+    const bool hash = s.indice_tipo == "HASH";
+    Indice indice{s.indice_nombre, tabla.columnas[col].nombre, hash ? "HASH" : "BPLUS",
+                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), hash ? ".hash" : ".bplus")};
     long entradas = 0;
     long disco = 0;
+    std::string detalle;
     {
         Almacen almacen(catalogo_, tabla, false);
-        BPlusNoAgrupado arbol(indice.archivo, true);
+        IndiceAbierto arbol;
+        arbol.meta = &indice;
+        if (hash) arbol.hash = std::make_unique<HashExtensibleDisco>(indice.archivo, true);
+        else arbol.bplus = std::make_unique<BPlusNoAgrupado>(indice.archivo, true);
         almacen.construir_indice(indice, arbol);
         entradas = arbol.num_entradas();
         disco = arbol.tamano_en_disco();
+        if (hash) {
+            detalle = "profundidad global " + std::to_string(arbol.hash->profundidad_global()) + ", " +
+                      std::to_string(arbol.hash->paginas_bucket()) + " paginas de bucket";
+        } else {
+            detalle = "altura " + std::to_string(arbol.bplus->altura());
+        }
     }
     tabla.indices.push_back(indice);
     catalogo_.guardar();
@@ -873,8 +890,14 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     Resultado r;
     r.tipo = "create_index";
     r.afectadas = static_cast<std::size_t>(entradas);
-    r.mensaje = "indice " + indice.nombre + " (B+ no agrupado) creado sobre " + tabla.nombre + "." + indice.columna + " con " + std::to_string(entradas) + " entradas";
-    r.plan.push_back({"construir_indice", {{"estructura", "bplus_no_agrupado"}, {"entradas", std::to_string(entradas)}, {"bytes", std::to_string(disco)}, {"archivo", indice.archivo}}});
+    r.mensaje = "indice " + indice.nombre + (hash ? " (hash extensible)" : " (B+ no agrupado)") + " creado sobre " +
+                tabla.nombre + "." + indice.columna + " con " + std::to_string(entradas) + " entradas";
+    r.plan.push_back({"construir_indice",
+                      {{"estructura", hash ? "hash_extensible" : "bplus_no_agrupado"},
+                       {"entradas", std::to_string(entradas)},
+                       {"bytes", std::to_string(disco)},
+                       {"detalle", detalle},
+                       {"archivo", indice.archivo}}});
     return r;
 }
 
@@ -958,7 +981,6 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     }
 
     if (hay_agregados || !s.group_by.empty()) {
-        // GROUP BY con external hashing: una pasada por cada agregado sobre columna
         const int gcol = s.group_by.empty() ? -1 : esquema.posicion(s.group_by_calificador, s.group_by);
         if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + calificar(s.group_by_calificador, s.group_by) + " no existe");
         for (const ItemSelect& item : items) {
@@ -1017,7 +1039,6 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         }
     }
 
-    // ORDER BY con external merge sort (k-way)
     if (!s.order_by.empty()) {
         int col = -1;
         std::vector<Fila>& objetivo = hay_agregados || !s.group_by.empty() ? r.filas : filas;
@@ -1025,7 +1046,6 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
             const std::string buscado = minusculas(calificar(s.order_by_calificador, s.order_by));
             for (std::size_t i = 0; i < r.columnas.size(); ++i) if (minusculas(r.columnas[i]) == buscado) col = static_cast<int>(i);
             if (col < 0 && s.order_by_calificador.empty()) {
-                // en un join las columnas salen calificadas: aceptar "tabla.columna" por el sufijo
                 const std::string sufijo = "." + minusculas(s.order_by);
                 for (std::size_t i = 0; i < r.columnas.size(); ++i) {
                     const std::string c = minusculas(r.columnas[i]);
@@ -1043,7 +1063,6 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         r.plan.push_back(paso);
     }
 
-    // proyección
     if (!(hay_agregados || !s.group_by.empty())) {
         std::vector<int> posiciones;
         for (const ItemSelect& item : items) posiciones.push_back(esquema.posicion(item.calificador, item.columna));
@@ -1071,7 +1090,9 @@ Resultado Ejecutor::mostrar_tablas() {
     for (const auto& [clave, tabla] : catalogo_.tablas()) {
         Almacen almacen(catalogo_, tabla, false);
         std::string indices;
-        for (const Indice& i : tabla.indices) indices += (indices.empty() ? "" : ", ") + i.nombre + "(" + i.columna + ")";
+        for (const Indice& i : tabla.indices) {
+            indices += (indices.empty() ? "" : ", ") + i.nombre + "(" + i.columna + ") " + (i.tipo == "HASH" ? "hash" : "B+");
+        }
         r.filas.push_back({Valor::de_texto(tabla.nombre), Valor::de_texto(nombre_organizacion(tabla.organizacion)),
                            Valor::de_texto(tabla.columnas[tabla.pk].nombre), Valor::de_entero(static_cast<long long>(tabla.columnas.size())),
                            Valor::de_entero(static_cast<long long>(almacen.registros())), Valor::de_entero(static_cast<long long>(almacen.paginas())),
@@ -1093,12 +1114,12 @@ Resultado Ejecutor::describir(const Sentencia& s) {
         r.filas.push_back({Valor::de_texto(c.nombre),
                            Valor::de_texto(c.tipo == TipoColumna::INT ? "INT" : "VARCHAR(" + texto(c.tam) + ")"),
                            Valor::de_texto(i == tabla.pk ? "PK" : ""),
-                           Valor::de_texto(indice ? indice->nombre + " (B+ no agrupado)" : "")});
+                           Valor::de_texto(indice ? indice->nombre + (indice->tipo == "HASH" ? " (hash extensible)" : " (B+ no agrupado)") : "")});
     }
     r.afectadas = r.filas.size();
     r.mensaje = tabla.nombre + ": " + nombre_organizacion(tabla.organizacion) + " en " + tabla.archivo;
     return r;
 }
 
-}  // namespace sql
-}  // namespace motor
+}
+}

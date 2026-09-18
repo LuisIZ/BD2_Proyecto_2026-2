@@ -225,12 +225,18 @@ class Aplicacion(tk.Tk):
             return
         columnas = r["columnas"]
         self.grilla["columns"] = columnas
-        for c in columnas:
-            self.grilla.heading(c, text=c)
-            self.grilla.column(c, width=max(80, min(260, 9 * len(c) + 20)), stretch=True)
         limite = 2000
-        for fila in r["filas"][:limite]:
-            self.grilla.insert("", tk.END, values=[str(v) for v in fila])
+        filas = [[str(v) for v in fila] for fila in r["filas"][:limite]]
+        # el ancho sale del contenido y no solo del encabezado: si no, valores
+        # largos como la lista de indices de SHOW TABLES quedan cortados
+        muestra = filas[:200]
+        for i, c in enumerate(columnas):
+            largo = max([len(c)] + [len(f[i]) for f in muestra if i < len(f)])
+            self.grilla.heading(c, text=c)
+            # sin stretch: cada columna conserva su ancho y el sobrante queda a la derecha
+            self.grilla.column(c, width=max(80, min(420, 7 * largo + 24)), stretch=False)
+        for fila in filas:
+            self.grilla.insert("", tk.END, values=fila)
         extra = f" (se muestran {limite})" if len(r["filas"]) > limite else ""
         self.resumen.set(f"{len(r['filas'])} filas{extra} - {r['tiempo_ms']:.2f} ms")
 
@@ -261,7 +267,8 @@ class Aplicacion(tk.Tk):
                 marca = " [PK]" if c["pk"] else ""
                 self.arbol.insert(nodo, tk.END, text=f"  {c['nombre']}{marca}", values=(tipo,))
             for x in t["indices"]:
-                self.arbol.insert(nodo, tk.END, text=f"  idx {x['nombre']}", values=(f"B+ no agrupado ({x['columna']})",))
+                estructura = "hash extensible" if x.get("tipo") == "HASH" else "B+ no agrupado"
+                self.arbol.insert(nodo, tk.END, text=f"  idx {x['nombre']}", values=(f"{estructura} ({x['columna']})",))
             if e.get("detalle"):
                 self.arbol.insert(nodo, tk.END, text="  archivo", values=(e["detalle"],))
 

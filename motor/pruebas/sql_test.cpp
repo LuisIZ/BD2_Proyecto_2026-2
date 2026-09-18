@@ -140,25 +140,21 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     r = e.ejecutar("DESCRIBE " + t);
     assert(r.filas.size() == 5 && r.filas[0][1].texto == "INT" && r.filas[0][2].texto == "PK" && r.filas[1][1].texto == "VARCHAR(8)");
 
-    // igualdad por clave
     r = e.ejecutar("SELECT Index, Name, Country FROM " + t + " WHERE Index = 150");
     assert(r.filas.size() == 1 && r.filas[0][1].texto == "Org, 150" && r.filas[0][2].texto == "Peru");
     assert(tiene_paso(r, org == "HEAP" ? "scan_completo" : "busqueda_por_clave"));
     assert(e.ejecutar("SELECT * FROM " + t + " WHERE Index = 999").filas.empty());
 
-    // nombres calificados en una consulta de una sola tabla: mismo resultado y encabezados sin calificar
     r = e.ejecutar("SELECT " + t + ".Index, " + t + ".Name FROM " + t + " WHERE " + t + ".Index = 150 ORDER BY " + t + ".Index");
     assert(r.filas.size() == 1 && r.filas[0][1].texto == "Org, 150");
     assert(r.columnas[0] == "Index" && r.columnas[1] == "Name");
     assert(falla_ejecucion(e, "SELECT otra.Index FROM " + t) && "calificador que no es de la consulta");
 
-    // rango por clave y condicion adicional filtrada
     r = e.ejecutar("SELECT Index FROM " + t + " WHERE Index BETWEEN 10 AND 30 AND Country = 'Peru'");
     assert(r.filas.size() == 7 && r.filas[0][0].entero == 12);
     assert(tiene_paso(r, "filtro"));
     if (org != "HEAP") assert(tiene_paso(r, "rango_por_clave"));
 
-    // ordenamiento, limite, agregados
     r = e.ejecutar("SELECT Index, Employees FROM " + t + " WHERE Founded = 2005 ORDER BY Employees DESC LIMIT 2");
     assert(r.filas.size() == 2 && r.filas[0][0].entero == 285 && r.filas[1][0].entero == 265);
     assert(tiene_paso(r, "ordenamiento") && tiene_paso(r, "limite"));
@@ -168,7 +164,6 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     r = e.ejecutar("SELECT COUNT(*) FROM " + t);
     assert(r.filas[0][0].entero == 300);
 
-    // insertar, clave repetida, borrar
     assert(e.ejecutar("INSERT INTO " + t + " VALUES (301, 'Nueva', 'Peru', 2024, 1)").afectadas == 1);
     assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (301, 'Repetida', 'Peru', 2024, 1)"));
     assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (302, 'Nombre demasiado largo', 'Peru', 2024, 1)"));
@@ -184,7 +179,6 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
 
 void prueba_indice_secundario(Ejecutor& e) {
     assert(falla_ejecucion(e, "CREATE INDEX i ON org_SEQUENTIAL (Founded)") && "solo sobre heap");
-    assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Founded) USING HASH") && "hash pendiente");
     assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country)") && "solo INT");
 
     Resultado r = e.ejecutar("CREATE INDEX idx_f ON org_HEAP (Founded)");
@@ -194,13 +188,38 @@ void prueba_indice_secundario(Ejecutor& e) {
     r = e.ejecutar("SELECT Index FROM org_HEAP WHERE Founded BETWEEN 2018 AND 2019");
     assert(tiene_paso(r, "rango_por_indice") && r.filas.size() == 20);
 
-    // el indice se mantiene al insertar y borrar
     e.ejecutar("INSERT INTO org_HEAP VALUES (400, 'Idx', 'Peru', 2005, 1)");
     assert(e.ejecutar("SELECT Index FROM org_HEAP WHERE Founded = 2005").filas.size() == 11);
     e.ejecutar("DELETE FROM org_HEAP WHERE Index = 400");
     assert(e.ejecutar("SELECT Index FROM org_HEAP WHERE Founded = 2005").filas.size() == 10);
     assert(falla_ejecucion(e, "CREATE INDEX otro ON org_HEAP (Founded)"));
     std::cout << "indice secundario: B+ no agrupado sobre heap, uso en igualdad y rango, mantenimiento\n";
+}
+
+void prueba_indice_hash(Ejecutor& e) {
+    const std::size_t por_igualdad = e.ejecutar("SELECT Index FROM org_HEAP WHERE Employees = 707").filas.size();
+    const std::size_t por_rango = e.ejecutar("SELECT Index FROM org_HEAP WHERE Employees BETWEEN 700 AND 1400").filas.size();
+    assert(por_igualdad == 1 && por_rango == 100);
+
+    Resultado r = e.ejecutar("CREATE INDEX idx_emp ON org_HEAP (Employees) USING HASH");
+    assert(r.afectadas == 201);
+    assert(detalle_paso(r, "construir_indice", "estructura") == "hash_extensible");
+
+    r = e.ejecutar("SELECT Index FROM org_HEAP WHERE Employees = 707");
+    assert(tiene_paso(r, "busqueda_por_indice") && r.filas.size() == por_igualdad);
+    assert(detalle_paso(r, "busqueda_por_indice", "estructura") == "hash_extensible");
+
+    r = e.ejecutar("SELECT Index FROM org_HEAP WHERE Employees BETWEEN 700 AND 1400");
+    assert(tiene_paso(r, "scan_completo") && !tiene_paso(r, "rango_por_indice"));
+    assert(detalle_paso(r, "scan_completo", "nota").find("no resuelve rangos") != std::string::npos);
+    assert(r.filas.size() == por_rango);
+
+    e.ejecutar("INSERT INTO org_HEAP VALUES (500, 'Hash', 'Peru', 2005, 707)");
+    assert(e.ejecutar("SELECT Index FROM org_HEAP WHERE Employees = 707").filas.size() == por_igualdad + 1);
+    e.ejecutar("DELETE FROM org_HEAP WHERE Index = 500");
+    assert(e.ejecutar("SELECT Index FROM org_HEAP WHERE Employees = 707").filas.size() == por_igualdad);
+    assert(falla_ejecucion(e, "CREATE INDEX otro ON org_HEAP (Employees) USING HASH") && "ya tiene indice");
+    std::cout << "indice hash: igualdad por hash extensible, rango cae a scan, mantenimiento\n";
 }
 
 void escribir_csv_decadas() {
@@ -210,48 +229,39 @@ void escribir_csv_decadas() {
 }
 
 void prueba_join(Ejecutor& e) {
-    e.ejecutar("CREATE TABLE j_org FROM FILE '" + CSV + "' USING HEAP");          // 300 filas, Founded 2000..2019
-    e.ejecutar("CREATE TABLE j_dec FROM FILE '" + CSV_DEC + "' USING BPLUS");     // 25 filas, Founded 2000..2024
+    e.ejecutar("CREATE TABLE j_org FROM FILE '" + CSV + "' USING HEAP");
+    e.ejecutar("CREATE TABLE j_dec FROM FILE '" + CSV_DEC + "' USING BPLUS");
 
-    // hash join: el lado externo (300) es mas grande que el interno (25)
     Resultado r = e.ejecutar("SELECT j_org.Index, j_dec.Decada FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded");
     assert(r.filas.size() == 300);
     assert(r.columnas.size() == 2 && r.columnas[0] == "j_org.Index" && r.columnas[1] == "j_dec.Decada");
     assert(tiene_paso(r, "join") && detalle_paso(r, "join", "algoritmo") == "hash_join");
     assert(detalle_paso(r, "join", "filas_resultado") == "300");
 
-    // el ON sin calificar se orienta solo: izquierda = FROM, derecha = JOIN
     assert(e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON Founded = Founded").filas.size() == 300);
-    // y tambien si se escribe al reves
     assert(e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON j_dec.Founded = j_org.Founded").filas.size() == 300);
 
-    // index nested loop: al invertir, el externo es el chico y el interno tiene indice
     e.ejecutar("CREATE INDEX ij ON j_org (Founded)");
     r = e.ejecutar("SELECT j_dec.Decada, j_org.Index FROM j_dec JOIN j_org ON j_dec.Founded = j_org.Founded");
     assert(detalle_paso(r, "join", "algoritmo") == "index_nested_loop_join");
     assert(detalle_paso(r, "join", "sondas") == "25");
     assert(r.filas.size() == 300 && "los dos algoritmos dan el mismo resultado");
 
-    // seleccion antes del join: el WHERE reduce el lado izquierdo de 300 a 100
     r = e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded WHERE j_org.Country = 'Peru'");
     assert(r.filas.size() == 100 && detalle_paso(r, "join", "filas_izquierda") == "100");
 
-    // sin coincidencias
     r = e.ejecutar("SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded WHERE j_org.Founded = 1999");
     assert(r.filas.empty() && detalle_paso(r, "join", "filas_resultado") == "0");
 
-    // agregados y ordenamiento sobre el join; el ORDER BY sin calificar encuentra j_dec.Decada
     r = e.ejecutar("SELECT j_dec.Decada, COUNT(*) FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded GROUP BY j_dec.Decada ORDER BY Decada");
     assert(r.filas.size() == 2 && r.filas[0][0].texto == "2000s" && r.filas[0][1].entero == 150);
     assert(tiene_paso(r, "agrupacion") && tiene_paso(r, "ordenamiento"));
     r = e.ejecutar("SELECT j_org.Name FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded ORDER BY j_org.Index LIMIT 3");
     assert(r.filas.size() == 3 && r.filas[0][0].texto == "Org, 1" && tiene_paso(r, "limite"));
 
-    // SELECT * concatena los dos esquemas y siempre califica
     r = e.ejecutar("SELECT * FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded LIMIT 1");
     assert(r.columnas.size() == 7 && r.columnas[0] == "j_org.Index" && r.columnas[6] == "j_dec.Decada");
 
-    // errores
     assert(falla_ejecucion(e, "SELECT Founded FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded") && "columna ambigua");
     assert(falla_ejecucion(e, "SELECT j_org.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded WHERE Founded = 2005") && "ambigua en el WHERE");
     assert(falla_ejecucion(e, "SELECT x.Index FROM j_org JOIN j_dec ON j_org.Founded = j_dec.Founded") && "calificador ajeno");
@@ -295,7 +305,7 @@ void prueba_tabla_manual() {
     std::cout << "tabla manual: CREATE TABLE con esquema explicito\n";
 }
 
-}  // namespace
+}
 
 int main() {
     std::filesystem::create_directories(".build");
@@ -308,6 +318,7 @@ int main() {
         Ejecutor e(catalogo);
         for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) prueba_organizacion(e, org);
         prueba_indice_secundario(e);
+        prueba_indice_hash(e);
         prueba_join(e);
     }
     prueba_persistencia();
