@@ -24,8 +24,10 @@ const explainExample = `EXPLAIN ANALYZE SELECT Name FROM org_idx WHERE Founded =
 Limit on org_idx  (rows=5) (actual rows=5)
   -> Projection on org_idx (actual rows=1940)
      Output: Name
-    -> Index Scan using org_idx_founded on org_idx  (cost=103.00 rows=100) (actual time=5.458 rows=1940 pages=1962)
+    -> Index Scan using org_idx_founded on org_idx (Founded)  (cost=103.00 rows=100) (actual time=5.458 rows=1940 pages=1962)
        Index Cond: Founded = 2000
+Rows: 5
+Planning Time: 0.507 ms
 Execution Time: 20.202 ms`;
 
 const access = [
