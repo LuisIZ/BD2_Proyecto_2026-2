@@ -161,7 +161,6 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
 
 void prueba_indice_secundario(Ejecutor& e) {
     assert(falla_ejecucion(e, "CREATE INDEX i ON org_SEQUENTIAL (Founded)") && "solo sobre heap");
-    assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Founded) USING HASH") && "hash pendiente");
     assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country)") && "solo INT");
 
     Resultado r = e.ejecutar("CREATE INDEX idx_f ON org_HEAP (Founded)");
@@ -178,6 +177,34 @@ void prueba_indice_secundario(Ejecutor& e) {
     assert(e.ejecutar("SELECT Index FROM org_HEAP WHERE Founded = 2005").filas.size() == 10);
     assert(falla_ejecucion(e, "CREATE INDEX otro ON org_HEAP (Founded)"));
     std::cout << "indice secundario: B+ no agrupado sobre heap, uso en igualdad y rango, mantenimiento\n";
+}
+
+void prueba_indice_hash(Ejecutor& e) {
+    assert(falla_ejecucion(e, "CREATE INDEX h ON org_SEQUENTIAL (Employees) USING HASH"));
+    e.ejecutar("CREATE TABLE org_hash FROM FILE '" + CSV + "'");
+    Resultado r = e.ejecutar("CREATE INDEX idx_emp ON org_hash (Employees) USING HASH");
+    assert(r.afectadas == 300 && detalle_paso(r, "construir_indice", "estructura") == "hash_extensible");
+
+    r = e.ejecutar("SELECT Index FROM org_hash WHERE Employees = 735");
+    assert(tiene_paso(r, "busqueda_por_indice") && r.filas.size() == 1 && r.filas[0][0].entero == 105);
+    assert(detalle_paso(r, "busqueda_por_indice", "estructura") == "hash_extensible");
+    r = e.ejecutar("SELECT Index FROM org_hash WHERE Employees BETWEEN 735 AND 770");
+    assert(tiene_paso(r, "scan_completo") && !tiene_paso(r, "rango_por_indice") && r.filas.size() == 6);
+
+    e.ejecutar("INSERT INTO org_hash VALUES (500, 'Hash', 'Peru', 2001, 735)");
+    assert(e.ejecutar("SELECT Index FROM org_hash WHERE Employees = 735").filas.size() == 2);
+    e.ejecutar("DELETE FROM org_hash WHERE Index = 500");
+    assert(e.ejecutar("SELECT Index FROM org_hash WHERE Employees = 735").filas.size() == 1);
+
+    {
+        Catalogo otro(DB);
+        Ejecutor e2(otro);
+        r = e2.ejecutar("SELECT Index FROM org_hash WHERE Employees = 1400");
+        assert(tiene_paso(r, "busqueda_por_indice") && r.filas.size() == 1 && r.filas[0][0].entero == 200);
+    }
+    e.ejecutar("DROP TABLE org_hash");
+    assert(!std::filesystem::exists(DB + "/org_hash__idx_emp.hash"));
+    std::cout << "indice hash: igualdad por hash, rango por recorrido, mantenimiento y persistencia\n";
 }
 
 // EXPLAIN describe sin tocar los datos; EXPLAIN ANALYZE ejecuta y mide
@@ -309,6 +336,7 @@ int main() {
         Ejecutor e(catalogo);
         for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) prueba_organizacion(e, org);
         prueba_indice_secundario(e);
+        prueba_indice_hash(e);
         prueba_explain(e);
         prueba_copy(e);
         prueba_carga_secuencial(e);
