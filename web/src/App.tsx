@@ -279,7 +279,12 @@ export default function App() {
                       {table.indices.map((index) => (
                         <li key={index.nombre}>
                           <strong>{index.nombre}</strong>
-                          <small>B+ no agrupado · {index.columna}</small>
+                          <small>
+                            {index.tipo === "HASH"
+                              ? "Hash extensible"
+                              : "B+ no agrupado"}{" "}
+                            · {index.columna}
+                          </small>
                         </li>
                       ))}
                     </ul>
