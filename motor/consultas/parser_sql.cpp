@@ -97,7 +97,28 @@ public:
     explicit Parser(std::vector<Token> tokens) : t_(std::move(tokens)) {}
 
     Sentencia sentencia() {
+        Sentencia s = cuerpo();
+        if (actual().tipo == TipoToken::SIMBOLO && actual().texto == ";") avanzar();
+        if (actual().tipo != TipoToken::FIN) error("texto de mas al final");
+        return s;
+    }
+
+private:
+    // una sentencia sin el ';' final; EXPLAIN la vuelve a llamar para lo que envuelve
+    Sentencia cuerpo() {
         Sentencia s;
+        if (es("EXPLAIN")) {
+            avanzar();
+            s.tipo = TipoSentencia::EXPLAIN;
+            s.explain = true;
+            if (es("ANALYZE") || es("ANALYSE")) { avanzar(); s.analyze = true; }
+            if (actual().tipo == TipoToken::FIN) error("EXPLAIN necesita una sentencia");
+            Sentencia interna = cuerpo();
+            if (interna.tipo == TipoSentencia::EXPLAIN) error("no se puede anidar EXPLAIN");
+            s.tabla = interna.tabla;
+            s.explicada = std::make_shared<Sentencia>(std::move(interna));
+            return s;
+        }
         if (es("CREATE")) {
             avanzar();
             if (es("TABLE")) { avanzar(); create_table(s); }
@@ -108,6 +129,16 @@ public:
             esperar_palabra("TABLE");
             s.tipo = TipoSentencia::DROP_TABLE;
             s.tabla = identificador();
+        } else if (es("COPY")) {
+            // COPY t FROM FILE 'ruta.csv': carga datos en una tabla que ya existe
+            avanzar();
+            s.tipo = TipoSentencia::COPY_FROM_FILE;
+            s.tabla = identificador();
+            esperar_palabra("FROM");
+            esperar_palabra("FILE");
+            if (actual().tipo != TipoToken::TEXTO) error("se esperaba la ruta del archivo entre comillas");
+            s.archivo_csv = actual().texto;
+            avanzar();
         } else if (es("INSERT")) {
             avanzar();
             insert(s);
@@ -128,12 +159,9 @@ public:
         } else {
             error("sentencia no reconocida");
         }
-        if (actual().tipo == TipoToken::SIMBOLO && actual().texto == ";") avanzar();
-        if (actual().tipo != TipoToken::FIN) error("texto de mas al final");
         return s;
     }
 
-private:
     const Token& actual() const { return t_[pos_]; }
     void avanzar() { if (pos_ + 1 < t_.size()) ++pos_; }
 
@@ -223,7 +251,18 @@ private:
         while (actual().tipo == TipoToken::IDENT) {
             if (es("USING")) { avanzar(); s.organizacion = organizacion(); }
             else if (es("PRIMARY")) { avanzar(); esperar_palabra("KEY"); s.pk = identificador(); }
-            else error("se esperaba USING o PRIMARY KEY");
+            else if (es("INDEX")) {
+                // INDEX (a, b): crea un B+ no agrupado por columna al terminar la carga
+                avanzar();
+                esperar_simbolo("(");
+                while (true) {
+                    s.indices.push_back(identificador());
+                    if (es_simbolo(",")) { avanzar(); continue; }
+                    esperar_simbolo(")");
+                    break;
+                }
+            }
+            else error("se esperaba USING, PRIMARY KEY o INDEX");
         }
     }
 

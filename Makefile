@@ -64,7 +64,7 @@ BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_fil
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all gui motor test bench bench-indices clean
+.PHONY: all run setup gui motor test bench bench-indices bench-agrupado clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -107,6 +107,19 @@ bench-indices: $(BUILD)/indices_bench$(EXE)
 	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 100000
 	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 100000 --barajar
 	$(PYTHON) docs/comparacion_indices/graficar.py
+
+# Un solo comando para usuarios nuevos: instala todo, compila y abre la web.
+# Equivale a ./bd2 run (en Windows, bd2 run).
+run:
+	$(PYTHON) tools/motor.py run
+
+setup:
+	$(PYTHON) tools/motor.py setup
+
+# B+ agrupado vs heap + B+ no agrupado, a traves del motor SQL
+# (ver docs/bplus_agrupado_vs_no_agrupado.md)
+bench-agrupado: $(MOTOR_SQL)
+	$(PYTHON) api/bench_agrupado.py
 
 # --- reglas ---
 

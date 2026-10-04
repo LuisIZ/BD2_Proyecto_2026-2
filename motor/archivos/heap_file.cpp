@@ -222,6 +222,47 @@ std::uint32_t HeapFile::crear_pagina() {
     return nueva;
 }
 
+void HeapFile::cargar_masivo(const std::vector<std::vector<std::byte>>& registros) {
+    if (num_paginas_ != 0 || registros_vivos_ != 0) {
+        throw std::logic_error("cargar_masivo requiere un heap vacio");
+    }
+    if (registros.empty()) return;
+
+    PaginaSlotted pagina(buffer_.data());
+    pagina.inicializar();
+    bool hay_datos = false;
+
+    // la página se escribe cuando ya se sabe cuál es la siguiente, para poder
+    // dejar enlazado next_page de una vez y no tener que releerla
+    auto volcar = [&](std::uint32_t siguiente) {
+        pagina.set_next_page(siguiente);
+        HEAP_VERIFICAR(pagina);
+        escribir_pagina(num_paginas_, buffer_.data());
+        espacio_contiguo_.push_back(pagina.espacio_contiguo());
+        bytes_muertos_.push_back(0);
+        ultima_pagina_ = num_paginas_;
+        ++num_paginas_;
+        pagina.inicializar();
+        hay_datos = false;
+    };
+
+    for (const std::vector<std::byte>& datos : registros) {
+        const auto largo = static_cast<std::uint16_t>(datos.size());
+        if (largo > CAPACIDAD_MAXIMA_REGISTRO) throw std::invalid_argument("el registro no cabe en una pagina");
+        if (pagina.espacio_contiguo() < largo + SLOT_SIZE) volcar(num_paginas_ + 1);
+        if (pagina.insertar(datos.data(), largo) == SLOT_INVALIDO) {
+            throw std::runtime_error("el registro no cabe en una pagina recien inicializada");
+        }
+        hay_datos = true;
+    }
+    if (hay_datos) volcar(PAGINA_INVALIDA);
+
+    primera_pagina_ = 0;
+    registros_vivos_ = registros.size();
+    cursor_ = ultima_pagina_;
+    escribir_cabecera_archivo();
+}
+
 std::uint32_t HeapFile::seleccionar_pagina(std::uint16_t necesario) {
     std::uint32_t mejor_compactable = PAGINA_INVALIDA;
     std::uint16_t mejor_muertos = 0;

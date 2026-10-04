@@ -1,0 +1,11 @@
+n,estructura,operacion,tiempo_ms,paginas_leidas,paginas_tabla,bytes
+100000,bplus_agrupado,construccion,348.817,,7711,31588352
+100000,bplus_agrupado,busqueda_puntual,0.261,5,7711,31588352
+100000,bplus_agrupado,rango_3pct,8.961,237,7711,31588352
+100000,bplus_agrupado,recorrido_completo,166.103,7698,7711,31588352
+100000,bplus_agrupado,orden_por_texto,630.831,7698,7711,31588352
+100000,heap_bplus_no_agrupado,construccion,395.713,,3709,15196160
+100000,heap_bplus_no_agrupado,busqueda_puntual,5.640,4,3709,15196160
+100000,heap_bplus_no_agrupado,rango_3pct,16.718,3033,3709,15196160
+100000,heap_bplus_no_agrupado,recorrido_completo,156.711,3709,3709,15196160
+100000,heap_bplus_no_agrupado,orden_por_texto,624.437,3709,3709,15196160

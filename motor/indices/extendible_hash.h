@@ -54,11 +54,17 @@ inline void log_hash(const std::string& mensaje, const std::filesystem::path& ru
     }
 }
 
+// Profundidad global máxima. 16 bits son 65 536 entradas de directorio: con
+// buckets de capacidad razonable alcanza de sobra para los datasets del curso,
+// y mantiene el directorio en memoria. El límite original (64) permitía que el
+// directorio creciera hasta 2^64 entradas, que no es implementable en disco.
+inline constexpr std::size_t PROFUNDIDAD_MAXIMA = 16;
+
 template <typename Clave, typename Valor, typename Hash = std::hash<Clave>>
 class ExtendibleHashing {
 public:
     explicit ExtendibleHashing(std::size_t capacidad_bucket = 4,
-                               std::size_t profundidad_maxima = 64,
+                               std::size_t profundidad_maxima = PROFUNDIDAD_MAXIMA,
                                Hash hash = Hash(),
                                std::filesystem::path ruta_log = {})
         : capacidad_bucket_(capacidad_bucket),
@@ -69,14 +75,17 @@ public:
         if (capacidad_bucket_ == 0) {
             throw std::invalid_argument("La capacidad del bucket debe ser positiva");
         }
-        if (profundidad_maxima_ >= sizeof(std::size_t) * 8) {
-            profundidad_maxima_ = sizeof(std::size_t) * 8 - 1;
+        if (profundidad_maxima_ == 0) {
+            throw std::invalid_argument("La profundidad maxima debe ser positiva");
+        }
+        if (profundidad_maxima_ > PROFUNDIDAD_MAXIMA) {
+            profundidad_maxima_ = PROFUNDIDAD_MAXIMA;
         }
     }
 
     static ExtendibleHashing construir(const std::vector<std::pair<Clave, Valor>>& registros,
                                        std::size_t capacidad_bucket = 4,
-                                       std::size_t profundidad_maxima = 64,
+                                       std::size_t profundidad_maxima = PROFUNDIDAD_MAXIMA,
                                        Hash hash = Hash(),
                                        std::filesystem::path ruta_log = {}) {
         const auto inicio = reloj::now();

@@ -502,6 +502,51 @@ void SequentialFile::reorganizar_si_corresponde() {
 // fusiona el área principal (ya ordenada) con el auxiliar (ordenado por un índice
 // en RAM de clave + ubicación) y escribe páginas nuevas en un archivo temporal
 // que luego reemplaza al original. Las tumbas no se copian.
+void SequentialFile::cargar_masivo(std::vector<Registro>& registros) {
+    if (registros_vivos_ != 0 || num_paginas_ != 0) {
+        throw std::logic_error("cargar_masivo requiere un archivo secuencial vacio");
+    }
+    if (registros.empty()) return;
+
+    std::stable_sort(registros.begin(), registros.end(),
+                     [](const Registro& a, const Registro& b) { return a.clave < b.clave; });
+    for (std::size_t i = 1; i < registros.size(); ++i) {
+        if (registros[i].clave == registros[i - 1].clave) {
+            throw std::invalid_argument("clave primaria repetida: " + std::to_string(registros[i].clave));
+        }
+    }
+
+    PaginaOrdenada destino(buffer_.data());
+    destino.inicializar();
+    // se deja libre 1 - factor_llenado de cada página para que las inserciones
+    // posteriores quepan en su sitio y no caigan al auxiliar
+    const std::size_t limite = static_cast<std::size_t>(ESPACIO_UTIL * factor_llenado_);
+
+    auto volcar = [&]() {
+        if (destino.slot_count() == 0) return;
+        escribir_pagina(num_paginas_++, buffer_.data());
+        destino.inicializar();
+    };
+    for (const Registro& r : registros) {
+        const std::vector<std::byte> datos = codificar(r);
+        const auto largo = static_cast<std::uint16_t>(datos.size());
+        if (!destino.cabe(largo) && destino.slot_count() == 0) {
+            throw std::runtime_error("el registro no cabe en una pagina");
+        }
+        const std::size_t ocupado = static_cast<std::size_t>(destino.bytes_usados()) + largo + TAM_SLOT;
+        if (destino.slot_count() > 0 && (ocupado > limite || !destino.cabe(largo))) volcar();
+        destino.insertar_en(destino.slot_count(), datos.data(), largo);
+    }
+    volcar();
+
+    paginas_principal_ = num_paginas_;
+    registros_vivos_ = registros.size();
+    registros_auxiliares_ = 0;
+    tumbas_ = 0;
+    bytes_muertos_ = 0;
+    escribir_cabecera_archivo();
+}
+
 void SequentialFile::reorganizar() {
     const auto inicio = std::chrono::steady_clock::now();
 
