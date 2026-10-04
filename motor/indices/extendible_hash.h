@@ -76,7 +76,7 @@ public:
 
     static ExtendibleHashing construir(const std::vector<std::pair<Clave, Valor>>& registros,
                                        std::size_t capacidad_bucket = 4,
-                                       std::size_t profundidad_maxima = 64,
+                                       std::size_t profundidad_maxima = 64, // Bajar el valor y testear la profundidad -> 8 o 16
                                        Hash hash = Hash(),
                                        std::filesystem::path ruta_log = {}) {
         const auto inicio = reloj::now();
