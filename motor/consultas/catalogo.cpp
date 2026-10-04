@@ -55,7 +55,9 @@ const Indice* Tabla::indice_sobre(const std::string& columna) const {
 
 std::uint16_t Tabla::tam_registro_fijo() const {
     std::size_t tam = 0;
-    for (const Columna& col : columnas) tam += col.tipo == TipoColumna::INT ? 4 : col.tam;
+    for (const Columna& col : columnas) {
+        tam += col.tipo == TipoColumna::INT ? 4 : col.tipo == TipoColumna::POINT ? 8 : col.tam;
+    }
     return static_cast<std::uint16_t>(tam);
 }
 
@@ -74,7 +76,17 @@ Organizacion organizacion_desde(const std::string& nombre) {
     return Organizacion::HEAP;
 }
 
-std::string nombre_tipo(TipoColumna t) { return t == TipoColumna::INT ? "INT" : "VARCHAR"; }
+std::string nombre_tipo(TipoColumna t) {
+    if (t == TipoColumna::INT) return "INT";
+    if (t == TipoColumna::POINT) return "POINT";
+    return "VARCHAR";
+}
+
+TipoColumna tipo_desde(const std::string& nombre) {
+    if (nombre == "INT") return TipoColumna::INT;
+    if (nombre == "POINT") return TipoColumna::POINT;
+    return TipoColumna::VARCHAR;
+}
 
 // --- filas <-> bytes ---
 
@@ -94,8 +106,15 @@ void validar_fila(const Tabla& tabla, const Fila& fila) {
             if (fila[i].entero < -2147483648LL || fila[i].entero > 2147483647LL) {
                 throw std::runtime_error("la columna " + col.nombre + " no admite " + std::to_string(fila[i].entero));
             }
+        } else if (col.tipo == TipoColumna::POINT) {
+            if (!fila[i].es_punto) throw std::runtime_error("la columna " + col.nombre + " es POINT");
+            if (fila[i].lat_e6 < -90000000 || fila[i].lat_e6 > 90000000 ||
+                fila[i].lon_e6 < -180000000 || fila[i].lon_e6 > 180000000) {
+                throw std::runtime_error("la columna " + col.nombre + " no admite " + fila[i].a_texto() +
+                                         " (lat entre -90 y 90, lon entre -180 y 180)");
+            }
         } else {
-            if (fila[i].es_entero) throw std::runtime_error("la columna " + col.nombre + " es VARCHAR");
+            if (fila[i].es_entero || fila[i].es_punto) throw std::runtime_error("la columna " + col.nombre + " es VARCHAR");
             if (fila[i].texto.size() > col.tam) {
                 throw std::runtime_error("la columna " + col.nombre + " admite " + std::to_string(col.tam) +
                                          " caracteres y se dieron " + std::to_string(fila[i].texto.size()));
@@ -110,6 +129,9 @@ std::string empaquetar_variable(const Tabla& tabla, const Fila& fila) {
         if (i == tabla.pk) continue;
         if (tabla.columnas[i].tipo == TipoColumna::INT) {
             poner_int32(salida, fila[i].entero);
+        } else if (tabla.columnas[i].tipo == TipoColumna::POINT) {
+            poner_int32(salida, fila[i].lat_e6);
+            poner_int32(salida, fila[i].lon_e6);
         } else {
             const std::uint16_t largo = static_cast<std::uint16_t>(fila[i].texto.size());
             salida.append(reinterpret_cast<const char*>(&largo), sizeof(largo));
@@ -133,6 +155,13 @@ Fila desempaquetar_variable(const Tabla& tabla, int clave, const std::string& va
             std::memcpy(&x, valor.data() + pos, 4);
             pos += 4;
             fila[i] = Valor::de_entero(x);
+        } else if (tabla.columnas[i].tipo == TipoColumna::POINT) {
+            exigir(8);
+            std::int32_t lat, lon;
+            std::memcpy(&lat, valor.data() + pos, 4);
+            std::memcpy(&lon, valor.data() + pos + 4, 4);
+            pos += 8;
+            fila[i] = Valor::de_punto(lat, lon);
         } else {
             exigir(2);
             std::uint16_t largo;
@@ -155,6 +184,12 @@ std::vector<char> empaquetar_fijo(const Tabla& tabla, const Fila& fila) {
             const std::int32_t x = static_cast<std::int32_t>(fila[i].entero);
             std::memcpy(salida.data() + pos, &x, 4);
             pos += 4;
+        } else if (col.tipo == TipoColumna::POINT) {
+            const std::int32_t lat = fila[i].lat_e6;
+            const std::int32_t lon = fila[i].lon_e6;
+            std::memcpy(salida.data() + pos, &lat, 4);
+            std::memcpy(salida.data() + pos + 4, &lon, 4);
+            pos += 8;
         } else {
             std::memcpy(salida.data() + pos, fila[i].texto.data(), fila[i].texto.size());
             pos += col.tam;
@@ -177,6 +212,12 @@ Fila desempaquetar_fijo(const Tabla& tabla, const char* datos) {
             std::memcpy(&x, datos + pos, 4);
             pos += 4;
             fila[i] = Valor::de_entero(x);
+        } else if (col.tipo == TipoColumna::POINT) {
+            std::int32_t lat, lon;
+            std::memcpy(&lat, datos + pos, 4);
+            std::memcpy(&lon, datos + pos + 4, 4);
+            pos += 8;
+            fila[i] = Valor::de_punto(lat, lon);
         } else {
             std::size_t largo = 0;
             while (largo < col.tam && datos[pos + largo] != '\0') ++largo;
@@ -263,7 +304,7 @@ void Catalogo::cargar() {
         } else if (campos[0] == "COL" && campos.size() == 4 && abierta) {
             Columna c;
             c.nombre = campos[1];
-            c.tipo = campos[2] == "INT" ? TipoColumna::INT : TipoColumna::VARCHAR;
+            c.tipo = tipo_desde(campos[2]);
             c.tam = static_cast<std::uint16_t>(std::stoul(campos[3]));
             actual.columnas.push_back(c);
         } else if (campos[0] == "IDX" && campos.size() == 5 && abierta) {

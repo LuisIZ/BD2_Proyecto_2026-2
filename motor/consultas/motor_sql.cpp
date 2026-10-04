@@ -47,6 +47,7 @@ std::string json_texto(const std::string& s) {
 }
 
 std::string json_valor(const Valor& v) {
+    if (v.es_punto) return json_texto(v.a_texto());
     return v.es_entero ? std::to_string(v.entero) : json_texto(v.texto);
 }
 
