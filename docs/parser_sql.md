@@ -7,7 +7,7 @@
 | `motor/consultas/valor.h` | `Valor` (entero o texto) y `Fila`. |
 | `motor/consultas/parser_sql.{h,cpp}` | Lexer + parser de descenso recursivo. Devuelve una `Sentencia`. |
 | `motor/consultas/catalogo.{h,cpp}` | Esquema de tablas, índices, serialización de filas a bytes y persistencia en `catalogo.txt`. |
-| `motor/consultas/ejecutor.{h,cpp}` | Planificador de acceso y ejecución sobre Heap, Sequential File, B+ agrupado y B+ no agrupado. ORDER BY y GROUP BY usan `external_algorithms.h`. |
+| `motor/consultas/ejecutor.{h,cpp}` | Planificador de acceso y ejecución sobre Heap, Sequential File, B+ agrupado, B+ no agrupado y hash extensible. ORDER BY y GROUP BY usan `external_algorithms.h`. |
 | `motor/consultas/motor_sql.cpp` | CLI: recibe SQL, responde JSON. |
 | `motor/pruebas/sql_test.cpp` | Parser + ejecutor end-to-end con las tres organizaciones e índice secundario. |
 | `api/motor_cli.py` | Envuelve el binario desde Python (compila si hace falta). Base para la API REST. |
@@ -76,7 +76,7 @@ esquema, y sigue disponible.
 
 | `USING` | Estructura | Formato de fila | Índices secundarios |
 |---|---|---|---|
-| `HEAP` (defecto) | `HeapFile`, páginas slotted | variable: clave aparte, resto empaquetado (`INT` 4 B, `VARCHAR` 2 B largo + bytes) | sí, B+ no agrupado sobre columnas `INT` |
+| `HEAP` (defecto) | `HeapFile`, páginas slotted | variable: clave aparte, resto empaquetado (`INT` 4 B, `VARCHAR` 2 B largo + bytes) | sí, B+ no agrupado o hash extensible sobre columnas `INT` |
 | `SEQUENTIAL` | `SequentialFile` | igual que heap (mismos bytes por fila) | no: la reorganización reubica registros |
 | `BPLUS` | `BPlusAgrupado` | fijo: `[pk][INT 4 B \| VARCHAR n B]...` | no: la fila vive en la hoja |
 
@@ -97,6 +97,8 @@ resolverse con una estructura y el resto se filtra en memoria:
 |---|---|---|---|
 | columna con índice B+, `=` | `busqueda_por_indice` | — | — |
 | columna con índice B+, `BETWEEN` `<` `<=` `>` `>=` | `rango_por_indice` | — | — |
+| columna con índice hash, `=` | `busqueda_por_indice` | — | — |
+| columna con índice hash, rango | `scan_completo` + `filtro` (el hash no guarda orden) | — | — |
 | clave primaria, `=` | `scan_completo` (no hay índice) | `busqueda_por_clave` | `busqueda_por_clave` |
 | clave primaria, rango | `scan_completo` | `rango_por_clave` | `rango_por_clave` |
 | cualquier otra | `scan_completo` + `filtro` | `scan_completo` + `filtro` | `scan_completo` + `filtro` |
@@ -192,9 +194,11 @@ columnas e índices para el panel de archivos.
 
 - Sin `UPDATE`, sin `JOIN`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
 - Agregados solo sobre columnas `INT`; `AVG` devuelve texto con dos decimales.
-- `CREATE INDEX ... USING HASH` responde "aún no disponible en disco" hasta que el hash
-  extensible salga de RAM. En memoria su profundidad global está limitada a 16 bits
-  (65 536 entradas de directorio); antes el límite era 64, que no es implementable.
+- `CREATE INDEX ... USING HASH` crea un hash extensible paginado en disco
+  (`motor/indices/hash_extensible_disco.h`, archivo `<tabla>__<indice>.hash`): directorio y
+  buckets en páginas de 4 KB, 255 entradas por bucket y cadenas de desborde cuando muchas
+  claves caen en el mismo bucket. Solo resuelve igualdad. Su profundidad global, igual que
+  la del hash en memoria, está limitada a 16 bits (65 536 entradas de directorio).
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.
