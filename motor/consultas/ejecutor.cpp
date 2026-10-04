@@ -707,7 +707,6 @@ Resultado Ejecutor::ejecutar(const std::string& sql) {
     const auto inicio = Reloj::now();
     const Sentencia s = parsear(sql);
     parseo_ms_ = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
-    // si la sentencia falla, el parseo no debe colarse en el EXPLAIN siguiente
     Resultado r;
     try {
         r = ejecutar(s);
@@ -876,7 +875,6 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
             r.filas.push_back({Valor::de_texto(linea)});
         }
     }
-    // los tiempos cierran el plan, como en PostgreSQL
     if (s.analyze) {
         r.filas.push_back({Valor::de_texto("Rows: " + std::to_string(ejecutada.afectadas))});
         r.filas.push_back({Valor::de_texto("Planning Time: " + con_decimales(r.planificacion_ms, 3) + " ms")});
