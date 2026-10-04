@@ -153,8 +153,7 @@ esperaba 100 filas y encontró 1 940, y por eso leyó casi 2 000 páginas.
 Los tiempos van siempre al final, como en PostgreSQL:
 
 - `Planning Time` cuenta el parseo de la sentencia, la validación de tablas y columnas y
-  la decisión del planificador. Si la sentencia llega ya parseada (por ejemplo, desde las
-  pruebas con `ejecutar(Sentencia)`), solo cuenta las dos últimas.
+  la decisión del planificador.
 - `Execution Time` cuenta solo la ejecución del árbol de operadores, así que nunca es
   menor que la suma de los `actual time` de sus nodos.
 
