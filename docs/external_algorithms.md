@@ -99,9 +99,20 @@ max_groups_in_memory = 4 * 2 = 8
 
 Se prueban 100 grupos, 12.5 veces el limite simultaneo.
 
-Importante: esta version implementa particionamiento externo a nivel logico,
-pero las particiones siguen en memoria. Para external hashing persistente se
-deben usar archivos temporales o paginas y procesar una particion por vez.
+Las particiones se agregan una por vez: cada una usa su propia tabla de hash,
+se vuelca al resultado y se libera antes de pasar a la siguiente. Como el hash
+manda todas las filas de un grupo a la misma particion, el resultado es el
+mismo que agregando todo junto, pero en memoria solo viven los grupos de la
+particion en curso. La traza registra ese maximo como `peak_groups_in_memory`
+y el plan del motor SQL lo muestra como `grupos_en_memoria`:
+
+```text
+SELECT Index, COUNT(*) FROM t GROUP BY Index    (300 claves distintas)
+grupos=300 particiones=9 grupos_en_memoria=42
+```
+
+Importante: las particiones todavia viven en `std::vector`. Para external
+hashing persistente se deben escribir en archivos temporales o paginas.
 
 ## 5. Joins
 
@@ -150,7 +161,8 @@ Ejemplo:
 INFO Plan externo: external_merge_sort buffer_pages=10 records_per_page=1000 k=9 initial_runs=10 merge_passes=1 records=100000
 ```
 
-Tambien se registran `external_hash_aggregate`, `hash_join` e
+Tambien se registran `external_hash_aggregate` (con `partitions`,
+`max_groups_in_memory` y `peak_groups_in_memory`), `hash_join` e
 `index_nested_loop_join`.
 
 ## 7. Pruebas

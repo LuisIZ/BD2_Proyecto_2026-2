@@ -192,21 +192,30 @@ public:
             buckets[hash(group) % partitions].push_back({group, value(record)});
         }
         std::unordered_map<Grupo, AggregateResult> result;
-        for (const auto& partition : buckets) {
+        std::size_t peak_groups = 0;
+        for (auto& partition : buckets) {
+            std::unordered_map<Grupo, AggregateResult> partial;
             for (const auto& [group, item] : partition) {
-                auto& state = result[group];
+                auto& state = partial[group];
                 ++state.count;
                 state.sum += item;
                 state.minimum = std::min(state.minimum, item);
                 state.maximum = std::max(state.maximum, item);
             }
+            peak_groups = std::max(peak_groups, partial.size());
+            for (auto& [group, state] : partial) {
+                state.average = state.sum / state.count;
+                result.emplace(group, state);
+            }
+            partition.clear();
+            partition.shrink_to_fit();
         }
-        for (auto& [group, state] : result) state.average = state.sum / state.count;
         if (trace_) {
             trace_->record("external_hash_aggregate", {
                 {"buffer_pages", std::to_string(buffer_pages_)},
                 {"partitions", std::to_string(partitions)},
                 {"max_groups_in_memory", std::to_string(max_groups)},
+                {"peak_groups_in_memory", std::to_string(peak_groups)},
                 {"records", std::to_string(records.size())},
                 {"groups", std::to_string(result.size())},
                 {"aggregates", std::to_string(operations.size())},
