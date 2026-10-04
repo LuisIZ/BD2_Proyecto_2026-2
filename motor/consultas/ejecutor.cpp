@@ -11,6 +11,7 @@
 #include <cctype>
 #include <chrono>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -55,6 +57,47 @@ struct FilaFisica {
     RecordId rid;  // solo heap
 };
 
+const double RADIO_TIERRA_M = 6371000.0;
+
+double distancia_m(const Valor& a, const Valor& b, const std::string& metrica) {
+    const double rad = std::acos(-1.0) / 180.0;
+    const double lat1 = a.lat_e6 / 1e6 * rad;
+    const double lat2 = b.lat_e6 / 1e6 * rad;
+    const double dlat = lat2 - lat1;
+    const double dlon = (b.lon_e6 - a.lon_e6) / 1e6 * rad;
+    if (metrica == "EUCLIDIANA") return std::sqrt(dlat * dlat + dlon * dlon) * RADIO_TIERRA_M;
+    const double h = std::sin(dlat / 2) * std::sin(dlat / 2) +
+                     std::cos(lat1) * std::cos(lat2) * std::sin(dlon / 2) * std::sin(dlon / 2);
+    return 2 * RADIO_TIERRA_M * std::asin(std::sqrt(std::min(1.0, h)));
+}
+
+bool microgrados_de(const std::string& s, int& salida) {
+    if (s.empty()) return false;
+    const bool negativo = s[0] == '-';
+    const std::string sin_signo = s.substr(negativo ? 1 : 0);
+    const std::size_t punto = sin_signo.find('.');
+    const std::string entera = sin_signo.substr(0, punto);
+    std::string decimales = punto == std::string::npos ? "" : sin_signo.substr(punto + 1);
+    if (entera.empty() || entera.size() > 3 || decimales.size() > 6) return false;
+    for (const char c : entera + decimales) if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    decimales.append(6 - decimales.size(), '0');
+    const long long v = std::stoll(entera) * 1000000 + std::stoll(decimales);
+    salida = static_cast<int>(negativo ? -v : v);
+    return true;
+}
+
+// acepta "lat lon", "lat, lon" o "POINT(lat lon)"
+bool punto_de_texto(std::string s, Valor& salida) {
+    if (s.size() >= 5 && (s.compare(0, 5, "POINT") == 0 || s.compare(0, 5, "point") == 0)) s = s.substr(5);
+    for (char& c : s) if (c == '(' || c == ')' || c == ',') c = ' ';
+    std::istringstream entrada(s);
+    std::string a, b, sobra;
+    int lat = 0, lon = 0;
+    if (!(entrada >> a >> b) || (entrada >> sobra) || !microgrados_de(a, lat) || !microgrados_de(b, lon)) return false;
+    salida = Valor::de_punto(lat, lon);
+    return true;
+}
+
 // límites [desde, hasta] que impone una condición sobre una columna entera
 bool rango_de(const Condicion& c, long long& desde, long long& hasta) {
     if (!c.valor.es_entero) return false;
@@ -71,6 +114,15 @@ bool rango_de(const Condicion& c, long long& desde, long long& hasta) {
 }
 
 bool cumple(const Valor& v, const Condicion& c) {
+    if (c.funcion == "DISTANCIA") {
+        const double d = distancia_m(v, c.punto, c.metrica);
+        const double limite = static_cast<double>(c.valor.entero);
+        if (c.op == "<") return d < limite;
+        if (c.op == "<=") return d <= limite;
+        if (c.op == ">") return d > limite;
+        if (c.op == ">=") return d >= limite;
+        return false;
+    }
     if (c.op == "=") return v == c.valor;
     if (c.op == "!=") return v != c.valor;
     if (c.op == "<") return v < c.valor;
@@ -81,7 +133,18 @@ bool cumple(const Valor& v, const Condicion& c) {
     return false;
 }
 
+std::string describir_distancia(const std::string& columna, const Valor& punto, const std::string& metrica) {
+    return "distancia(" + columna + ", " + punto.a_texto() + ") [" + (metrica == "EUCLIDIANA" ? "euclidiana" : "haversine") + "]";
+}
+
+std::string describir_orden(const Sentencia& s) {
+    const std::string sentido = s.descendente ? " DESC" : " ASC";
+    if (s.order_by_distancia) return describir_distancia(s.order_by, s.order_by_punto, s.order_by_metrica) + sentido;
+    return s.order_by + sentido;
+}
+
 std::string describir_cond(const Condicion& c) {
+    if (c.funcion == "DISTANCIA") return describir_distancia(c.columna, c.punto, c.metrica) + " " + c.op + " " + c.valor.a_texto();
     std::string s = c.columna + " " + c.op + " " + (c.valor.es_entero ? c.valor.a_texto() : "'" + c.valor.texto + "'");
     if (c.op == "BETWEEN") s += " AND " + c.hasta.a_texto();
     return s;
@@ -466,8 +529,14 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         const Condicion& c = condiciones[i];
         const int col = tabla.posicion_columna(c.columna);
         if (col < 0) throw std::runtime_error("la columna " + c.columna + " no existe en " + tabla.nombre);
+        const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
+        if (c.funcion == "DISTANCIA") {
+            if (!es_point) throw std::runtime_error("distancia necesita una columna POINT y " + c.columna + " no lo es");
+            continue;
+        }
+        if (es_point) throw std::runtime_error("la columna " + c.columna + " es POINT; comparala con distancia(...)");
         if (tabla.columnas[col].tipo == TipoColumna::INT && !c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es INT");
-        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
+        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && (c.valor.es_entero || c.valor.es_punto)) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
         if (plan.condicion_usada >= 0) continue;
 
         long long desde, hasta;
@@ -881,7 +950,7 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
                 o.nodo = "Sort";
                 o.relacion = tabla.nombre;
                 o.columna = interna.order_by;
-                o.condicion = interna.order_by + (interna.descendente ? " DESC" : " ASC");
+                o.condicion = describir_orden(interna);
                 o.filas_estimadas = filas;
                 o.costo = paso.costo;
                 o.detalles = {{"algoritmo", "external_merge_sort"}, {"orden", interna.descendente ? "DESC" : "ASC"}};
@@ -943,7 +1012,7 @@ Resultado Ejecutor::crear_tabla(const Sentencia& s) {
         if (!nombres.insert(minusculas(def.nombre)).second) throw std::runtime_error("columna repetida: " + def.nombre);
         Columna col;
         col.nombre = def.nombre;
-        col.tipo = def.tipo == "INT" ? TipoColumna::INT : TipoColumna::VARCHAR;
+        col.tipo = tipo_desde(def.tipo);
         col.tam = static_cast<std::uint16_t>(def.tam);
         if (def.pk) {
             if (pk >= 0) throw std::runtime_error("solo una columna puede ser PRIMARY KEY");
@@ -955,6 +1024,7 @@ Resultado Ejecutor::crear_tabla(const Sentencia& s) {
     if (!s.pk.empty()) {
         pk = tabla.posicion_columna(s.pk);
         if (pk < 0) throw std::runtime_error("la columna " + s.pk + " no existe");
+        if (tabla.columnas[pk].tipo != TipoColumna::INT) throw std::runtime_error("la clave primaria debe ser INT");
     }
     if (pk < 0) {
         for (std::size_t i = 0; i < tabla.columnas.size() && pk < 0; ++i) if (tabla.columnas[i].tipo == TipoColumna::INT) pk = static_cast<int>(i);
@@ -1009,6 +1079,12 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
         }
         Fila fila(ncol);
         for (std::size_t c = 0; c < ncol; ++c) {
+            if (tabla.columnas[c].tipo == TipoColumna::POINT) {
+                if (!punto_de_texto(csv[f][c], fila[c])) {
+                    throw std::runtime_error("la fila " + texto(f + 1) + " trae '" + csv[f][c] + "' en la columna POINT " + tabla.columnas[c].nombre);
+                }
+                continue;
+            }
             if (tabla.columnas[c].tipo != TipoColumna::INT) { fila[c] = Valor::de_texto(csv[f][c]); continue; }
             long long v;
             if (!es_entero(csv[f][c], v)) {
@@ -1137,6 +1213,10 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     if (tabla.organizacion != Organizacion::HEAP) throw std::runtime_error("los indices secundarios solo se admiten sobre tablas HEAP (las otras reubican registros)");
     const int col = tabla.posicion_columna(s.indice_columna);
     if (col < 0) throw std::runtime_error("la columna " + s.indice_columna + " no existe");
+    if (s.indice_tipo == "RTREE") {
+        if (tabla.columnas[col].tipo != TipoColumna::POINT) throw std::runtime_error("el indice RTREE solo se crea sobre columnas POINT");
+        throw std::runtime_error("el indice RTREE aun no esta disponible; las consultas por distancia usan recorrido secuencial");
+    }
     if (tabla.columnas[col].tipo != TipoColumna::INT) throw std::runtime_error("solo se indexan columnas INT");
     if (tabla.indice_sobre(s.indice_columna)) throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
     for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
@@ -1328,15 +1408,26 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
             col = tabla.posicion_columna(s.order_by);
         }
         if (col < 0) throw std::runtime_error("no se puede ordenar por " + s.order_by);
+        const bool por_distancia = s.order_by_distancia;
+        if (por_distancia && (hay_agregados || !s.group_by.empty())) throw std::runtime_error("ORDER BY distancia no se combina con GROUP BY ni agregados");
+        if (!hay_agregados && s.group_by.empty()) {
+            const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
+            if (por_distancia && !es_point) throw std::runtime_error("distancia necesita una columna POINT y " + s.order_by + " no lo es");
+            if (!por_distancia && es_point) throw std::runtime_error("no se puede ordenar por la columna POINT " + s.order_by + "; usa distancia(...)");
+        }
         const auto inicio_orden = Reloj::now();
         ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &traza);
-        objetivo = ordenador.ordenar(std::move(objetivo), [col](const Fila& f) { return f[col]; }, s.descendente);
+        objetivo = ordenador.ordenar(std::move(objetivo), [&](const Fila& f) {
+            if (!por_distancia) return f[col];
+            return Valor::de_entero(std::llround(distancia_m(f[col], s.order_by_punto, s.order_by_metrica) * 1000));
+        }, s.descendente);
         PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
+        if (por_distancia) paso.detalles.push_back({"clave", "distancia en milimetros"});
         for (const auto& [k, v] : traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
         paso.nodo = "Sort";
         paso.relacion = tabla.nombre;
         paso.columna = s.order_by;
-        paso.condicion = s.order_by + (s.descendente ? " DESC" : " ASC");
+        paso.condicion = describir_orden(s);
         paso.filas_reales = static_cast<long long>(objetivo.size());
         paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_orden).count();
         r.plan.push_back(paso);
@@ -1407,7 +1498,7 @@ Resultado Ejecutor::describir(const Sentencia& s) {
         const Columna& c = tabla.columnas[i];
         const Indice* indice = tabla.indice_sobre(c.nombre);
         r.filas.push_back({Valor::de_texto(c.nombre),
-                           Valor::de_texto(c.tipo == TipoColumna::INT ? "INT" : "VARCHAR(" + texto(c.tam) + ")"),
+                           Valor::de_texto(c.tipo == TipoColumna::VARCHAR ? "VARCHAR(" + texto(c.tam) + ")" : nombre_tipo(c.tipo)),
                            Valor::de_texto(i == tabla.pk ? "PK" : ""),
                            Valor::de_texto(indice ? indice->nombre + " (" + nombre_tipo_indice(*indice) + ")"
                                            : i == tabla.pk && tabla.organizacion == Organizacion::BPLUS ? "PRIMARY (B+ agrupado)"
