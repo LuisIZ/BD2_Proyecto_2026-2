@@ -121,6 +121,7 @@ EXPLAIN SELECT Index, Name FROM org_idx WHERE Index BETWEEN 10000 AND 13000;
 Index Range Scan using org_idx_index on org_idx  (cost=3004.00 rows=3001)
    Index Cond: Index BETWEEN 10000 AND 13000
    Nota: el indice no agrupado lee una pagina de datos por fila encontrada
+Nota: costo en paginas estimadas; rows supone claves densas y repartidas parejo
 Planning Time: 0.412 ms
 ```
 
@@ -141,11 +142,23 @@ Limit on org_idx  (rows=5) (actual rows=5)
      Group Key: Country
     -> Index Scan using org_idx_founded on org_idx  (cost=103.00 rows=100) (actual time=5.458 rows=1940 pages=1962)
        Index Cond: Founded = 2000
+Rows: 5
+Planning Time: 0.507 ms
 Execution Time: 20.202 ms
 ```
 
 Comparar `rows` con `actual rows` muestra dónde falló la estimación: aquí el índice
 esperaba 100 filas y encontró 1 940, y por eso leyó casi 2 000 páginas.
+
+Los tiempos van siempre al final, como en PostgreSQL:
+
+- `Planning Time` cuenta el parseo de la sentencia, la validación de tablas y columnas y
+  la decisión del planificador. Si la sentencia llega ya parseada (por ejemplo, desde las
+  pruebas con `ejecutar(Sentencia)`), solo cuenta las dos últimas.
+- `Execution Time` cuenta solo la ejecución del árbol de operadores, así que nunca es
+  menor que la suma de los `actual time` de sus nodos.
+
+Los dos se miden con `std::chrono::steady_clock` y se muestran con 3 decimales.
 
 `EXPLAIN` a secas solo describe `SELECT` y `DELETE`; para el resto hace falta `ANALYZE`,
 porque el plan de un DDL es lo que hace al ejecutarse. `EXPLAIN` abre la tabla para leer
@@ -156,13 +169,16 @@ directorio de páginas, y por eso el `Planning Time` de un heap grande no es cer
 
 ```json
 {"ok":true,"tipo":"select","mensaje":"12 filas","afectadas":12,"tiempo_ms":0.3,
- "planificacion_ms":0,"analizado":false,
+ "planificacion_ms":0,"ejecucion_ms":0,"analizado":false,
  "columnas":["Index","Name"],"filas":[[1,"Acevedo LLC"],...],
  "plan":[{"operacion":"rango_por_clave","estructura":"secuencial","paginas_leidas":"15","filas":"12",
           "nodo":"Ordered Key Scan","relacion":"demo","indice":"","columna_indice":"Index",
           "cond":"Index BETWEEN 1 AND 12","nivel":1,"costo":15,"filas_estimadas":12,
           "filas_reales":12,"nodo_ms":0.21,"nodo_paginas":15,"nodo_paginas_escritas":-1}]}
 ```
+
+`planificacion_ms` y `ejecucion_ms` son los mismos valores que `Planning Time` y
+`Execution Time`; fuera de `EXPLAIN` quedan en 0 y el tiempo total va en `tiempo_ms`.
 
 Los detalles de cada paso siguen yendo planos dentro del objeto. Los campos nuevos
 describen el nodo al estilo de `EXPLAIN`: `nodo` es su nombre visible, `indice` y
