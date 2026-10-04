@@ -1257,7 +1257,12 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
             r.filas.push_back(fila);
         }
         PasoPlan paso{"agrupacion", {{"algoritmo", "external_hash_aggregate"}, {"columna", s.group_by.empty() ? "(todo)" : s.group_by}, {"grupos", texto(r.filas.size())}}};
-        if (!traza.events.empty()) for (const auto& [k, v] : traza.last("external_hash_aggregate").details) if (k == "partitions") paso.detalles.push_back({"particiones", v});
+        if (!traza.events.empty()) {
+            for (const auto& [k, v] : traza.last("external_hash_aggregate").details) {
+                if (k == "partitions") paso.detalles.push_back({"particiones", v});
+                if (k == "peak_groups_in_memory") paso.detalles.push_back({"grupos_en_memoria", v});
+            }
+        }
         paso.nodo = "HashAggregate";
         paso.relacion = tabla.nombre;
         paso.columna = s.group_by;

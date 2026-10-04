@@ -50,6 +50,14 @@ bool tiene_paso(const Resultado& r, const std::string& operacion) {
     return false;
 }
 
+std::string detalle_paso(const Resultado& r, const std::string& operacion, const std::string& clave) {
+    for (const auto& p : r.plan) {
+        if (p.operacion != operacion) continue;
+        for (const auto& [k, v] : p.detalles) if (k == clave) return v;
+    }
+    return "";
+}
+
 void prueba_parser() {
     Sentencia s = motor::sql::parsear("select Index, name from Orgs where Founded >= 2010 and Country = 'Peru' order by Index desc limit 5");
     assert(s.tipo == TipoSentencia::SELECT && s.tabla == "Orgs" && s.items.size() == 2);
@@ -130,6 +138,10 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     r = e.ejecutar("SELECT Country, COUNT(*), SUM(Employees), MIN(Index) FROM " + t + " GROUP BY Country ORDER BY Country");
     assert(r.filas.size() == 3 && r.filas[0][0].texto == "Bolivia" && r.filas[0][1].entero == 100 && r.filas[2][3].entero == 3);
     assert(tiene_paso(r, "agrupacion"));
+    r = e.ejecutar("SELECT Index, COUNT(*) FROM " + t + " GROUP BY Index");
+    assert(r.filas.size() == 300);
+    const int grupos_en_memoria = std::stoi(detalle_paso(r, "agrupacion", "grupos_en_memoria"));
+    assert(grupos_en_memoria > 0 && grupos_en_memoria < 100);
     r = e.ejecutar("SELECT COUNT(*) FROM " + t);
     assert(r.filas[0][0].entero == 300);
 
