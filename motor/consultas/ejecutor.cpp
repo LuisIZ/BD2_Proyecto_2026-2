@@ -666,6 +666,7 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
     s += p.nodo.empty() ? p.operacion : p.nodo;
     if (!p.indice.empty()) s += " using " + p.indice;
     if (!p.relacion.empty()) s += " on " + p.relacion;
+    if (!p.indice.empty() && !p.columna.empty()) s += " (" + p.columna + ")";
     if (p.costo >= 0) s += "  (cost=" + con_decimales(p.costo, 2) + " rows=" + std::to_string(std::max<long long>(0, p.filas_estimadas)) + ")";
     else if (p.filas_estimadas >= 0) s += "  (rows=" + std::to_string(p.filas_estimadas) + ")";
     if (analizado && p.filas_reales >= 0) {

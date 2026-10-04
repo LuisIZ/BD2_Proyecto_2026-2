@@ -324,6 +324,35 @@ void prueba_tabla_manual() {
     std::cout << "tabla manual: CREATE TABLE con esquema explicito\n";
 }
 
+void prueba_pk_no_primera() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = "notas_" + org;
+        e.ejecutar("CREATE TABLE " + t + " (nombre VARCHAR(20), codigo INT PRIMARY KEY, nota INT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES ('Ana', 30, 17)");
+        e.ejecutar("INSERT INTO " + t + " VALUES ('Luis', 10, 12)");
+        e.ejecutar("INSERT INTO " + t + " VALUES ('Eva', 20, 19)");
+        Resultado r = e.ejecutar("SELECT nombre, nota FROM " + t + " WHERE codigo = 20");
+        assert(r.filas.size() == 1 && r.filas[0][0].texto == "Eva" && r.filas[0][1].entero == 19);
+        if (org != "HEAP") assert(tiene_paso(r, "busqueda_por_clave"));
+        r = e.ejecutar("SELECT codigo FROM " + t + " WHERE codigo BETWEEN 15 AND 30 ORDER BY codigo");
+        assert(r.filas.size() == 2 && r.filas[0][0].entero == 20 && r.filas[1][0].entero == 30);
+        assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES ('Otra', 10, 5)"));
+        e.ejecutar("DELETE FROM " + t + " WHERE codigo = 30");
+        assert(e.ejecutar("SELECT COUNT(*) FROM " + t).filas[0][0].entero == 2);
+    }
+
+    e.ejecutar("CREATE INDEX idx_nota ON notas_HEAP (nota)");
+    Resultado r = e.ejecutar("EXPLAIN SELECT nombre FROM notas_HEAP WHERE nota = 12");
+    assert(r.plan.back().indice == "idx_nota" && r.plan.back().columna == "nota");
+    assert(texto_del_plan(r).find("Index Scan using idx_nota on notas_HEAP (nota)") != std::string::npos);
+    assert(e.ejecutar("SELECT nombre FROM notas_HEAP WHERE nota = 12").filas[0][0].texto == "Luis");
+
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) e.ejecutar("DROP TABLE notas_" + org);
+    std::cout << "clave primaria en la segunda columna: busqueda, rango, repetidas e indice por columna\n";
+}
+
 }  // namespace
 
 int main() {
@@ -343,6 +372,7 @@ int main() {
     }
     prueba_persistencia();
     prueba_tabla_manual();
+    prueba_pk_no_primera();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }
