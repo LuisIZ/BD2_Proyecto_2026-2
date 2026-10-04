@@ -51,8 +51,8 @@ struct Resultado {
     std::string mensaje;
     std::size_t afectadas = 0;
     double tiempo_ms = 0.0;
-    double planificacion_ms = 0.0;  // EXPLAIN: parseo + validación + planificador
-    double ejecucion_ms = 0.0;      // EXPLAIN ANALYZE: solo el árbol de operadores
+    double planificacion_ms = 0.0;  // EXPLAIN: tiempo de planificar, aparte del de ejecutar
+    double ejecucion_ms = 0.0;
     bool analizado = false;         // el plan trae medidas reales
 };
 
@@ -80,8 +80,6 @@ private:
     Resultado describir(const Sentencia& s);
 
     Catalogo& catalogo_;
-    // lo que tardó parsear la última sentencia recibida como texto; EXPLAIN lo
-    // suma al Planning Time para que cubra parseo + validación + planificador
     double parseo_ms_ = 0.0;
 };
 
