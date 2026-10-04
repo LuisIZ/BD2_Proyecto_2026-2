@@ -190,6 +190,19 @@ void prueba_explain(Ejecutor& e) {
     assert(acceso.filas_reales == 10 && acceso.paginas_leidas >= 0 && acceso.tiempo_ms >= 0 && "trae medidas reales");
     assert(texto_del_plan(r).find("actual") != std::string::npos);
 
+    // Planning Time cubre el parseo y Execution Time contiene a todos sus nodos;
+    // los dos cierran el plan, en ese orden
+    r = e.ejecutar("EXPLAIN ANALYZE SELECT Index FROM org_HEAP WHERE Founded = 2005 ORDER BY Index LIMIT 3");
+    assert(r.planificacion_ms > 0 && r.ejecucion_ms > 0 && "los dos tiempos se miden");
+    double suma_nodos = 0;
+    for (const motor::sql::PasoPlan& p : r.plan) if (p.tiempo_ms >= 0) suma_nodos += p.tiempo_ms;
+    assert(r.ejecucion_ms >= suma_nodos && "la ejecucion no puede durar menos que sus nodos");
+    const std::size_t n = r.filas.size();
+    assert(r.filas[n - 2][0].texto.rfind("Planning Time: ", 0) == 0);
+    assert(r.filas[n - 1][0].texto.rfind("Execution Time: ", 0) == 0 && "los tiempos van al final");
+    r = e.ejecutar("EXPLAIN SELECT Index FROM org_HEAP WHERE Founded = 2005");
+    assert(r.planificacion_ms > 0 && r.filas.back()[0].texto.rfind("Planning Time: ", 0) == 0);
+
     // el B+ agrupado navega por la clave; el heap sin índice recorre todo
     assert(e.ejecutar("EXPLAIN SELECT * FROM org_BPLUS WHERE Index = 50").plan.back().operacion == "busqueda_por_clave");
     assert(e.ejecutar("EXPLAIN SELECT * FROM org_HEAP WHERE Employees = 7").plan.back().operacion == "scan_completo");
@@ -197,7 +210,7 @@ void prueba_explain(Ejecutor& e) {
     assert(falla_ejecucion(e, "EXPLAIN CREATE TABLE x (a INT)") && "sin ANALYZE solo describe consultas");
     assert(falla(" EXPLAIN EXPLAIN SELECT * FROM org_HEAP") && "no se anida");
     assert(falla("EXPLAIN") && "EXPLAIN necesita una sentencia");
-    std::cout << "EXPLAIN: plan estimado sin ejecutar, ANALYZE con medidas reales\n";
+    std::cout << "EXPLAIN: plan estimado sin ejecutar, ANALYZE con medidas reales y tiempos al final\n";
 }
 
 // COPY separa la definición del esquema de la carga de datos
