@@ -100,6 +100,22 @@ void prueba_parser() {
 
     const auto partes = motor::sql::separar_sentencias("SELECT 1; INSERT INTO t VALUES ('a;b') ;\n\n ; DELETE FROM t");
     assert(partes.size() == 3 && partes[1] == "INSERT INTO t VALUES ('a;b')");
+
+    s = motor::sql::parsear("CREATE TABLE tiendas (id INT PRIMARY KEY, ubicacion POINT)");
+    assert(s.columnas[1].tipo == "POINT");
+    s = motor::sql::parsear("INSERT INTO tiendas VALUES (1, POINT(-12.0464, -77.0428))");
+    assert(s.valores[1].es_punto && s.valores[1].lat_e6 == -12046400 && s.valores[1].lon_e6 == -77042800);
+    s = motor::sql::parsear("SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 5000");
+    assert(s.condiciones[0].funcion == "DISTANCIA" && s.condiciones[0].columna == "ubicacion");
+    assert(s.condiciones[0].op == "<" && s.condiciones[0].valor.entero == 5000 && s.condiciones[0].metrica == "HAVERSINE");
+    s = motor::sql::parsear("SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(1, 2), 'euclidiana') LIMIT 10");
+    assert(s.order_by_distancia && s.order_by == "ubicacion" && s.order_by_metrica == "EUCLIDIANA" && s.limite == 10);
+    assert(motor::sql::parsear("CREATE INDEX g ON tiendas (ubicacion) USING RTREE").indice_tipo == "RTREE");
+    assert(falla("SELECT * FROM t WHERE distancia(u, POINT(1, 2)) = 3"));
+    assert(falla("SELECT * FROM t WHERE distancia(u, 5) < 3"));
+    assert(falla("SELECT * FROM t WHERE distancia(u, POINT(1, 2), 'manhattan') < 3"));
+    assert(falla("INSERT INTO t VALUES (POINT(1.1234567, 2))"));
+    assert(falla("INSERT INTO t VALUES (POINT(500, 2))"));
     std::cout << "parser: sentencias, errores de sintaxis y separacion\n";
 }
 
@@ -353,6 +369,66 @@ void prueba_pk_no_primera() {
     std::cout << "clave primaria en la segunda columna: busqueda, rango, repetidas e indice por columna\n";
 }
 
+std::vector<std::string> nombres(const Resultado& r) {
+    std::vector<std::string> salida;
+    for (const auto& fila : r.filas) salida.push_back(fila[0].texto);
+    return salida;
+}
+
+void prueba_espacial() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    const std::string centro = "POINT(-12.0464, -77.0428)";
+    const std::string csv = ".build/sql_test_tiendas.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,nombre,ubicacion\n4,Barranco,-12.1494 -77.0219\n5,Callao,\"POINT(-12.0566 -77.1181)\"\n";
+    }
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = "tiendas_" + org;
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, nombre VARCHAR(20), ubicacion POINT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES (1, 'Centro', " + centro + ")");
+        e.ejecutar("INSERT INTO " + t + " VALUES (2, 'Miraflores', POINT(-12.1211, -77.0297))");
+        e.ejecutar("INSERT INTO " + t + " VALUES (3, 'San Isidro', POINT(-12.0977, -77.0365))");
+        assert(e.ejecutar("COPY " + t + " FROM FILE '" + csv + "'").afectadas == 2);
+
+        Resultado r = e.ejecutar("SELECT ubicacion FROM " + t + " WHERE id = 5");
+        assert(r.filas[0][0].es_punto && r.filas[0][0].a_texto() == "POINT(-12.056600, -77.118100)");
+
+        r = e.ejecutar("SELECT nombre FROM " + t + " WHERE distancia(ubicacion, " + centro + ") < 6000 ORDER BY nombre");
+        assert(nombres(r) == std::vector<std::string>({"Centro", "San Isidro"}));
+        r = e.ejecutar("SELECT nombre FROM " + t + " WHERE distancia(ubicacion, " + centro + ") >= 9000 ORDER BY nombre");
+        assert(nombres(r) == std::vector<std::string>({"Barranco"}));
+
+        r = e.ejecutar("SELECT nombre FROM " + t + " ORDER BY distancia(ubicacion, " + centro + ") LIMIT 3");
+        assert(nombres(r) == std::vector<std::string>({"Centro", "San Isidro", "Callao"}));
+        r = e.ejecutar("SELECT nombre FROM " + t + " ORDER BY distancia(ubicacion, " + centro + ") DESC LIMIT 1");
+        assert(nombres(r) == std::vector<std::string>({"Barranco"}));
+        r = e.ejecutar("SELECT nombre FROM " + t + " ORDER BY distancia(ubicacion, " + centro + ", 'euclidiana') LIMIT 3");
+        assert(nombres(r).size() == 3 && nombres(r)[0] == "Centro");
+
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE ubicacion = 3"));
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE distancia(nombre, " + centro + ") < 10"));
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY ubicacion"));
+        assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (9, 'Mal', POINT(95, 0))"));
+        assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (9, 'Mal', 7)"));
+    }
+
+    Resultado r = e.ejecutar("EXPLAIN SELECT nombre FROM tiendas_HEAP WHERE distancia(ubicacion, " + centro + ") < 6000");
+    assert(texto_del_plan(r).find("Filter: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] < 6000") != std::string::npos);
+    assert(r.plan.back().operacion == "scan_completo");
+    r = e.ejecutar("EXPLAIN SELECT nombre FROM tiendas_HEAP ORDER BY distancia(ubicacion, " + centro + ") LIMIT 2");
+    assert(texto_del_plan(r).find("Sort Key: distancia(ubicacion,") != std::string::npos);
+    assert(e.ejecutar("DESCRIBE tiendas_HEAP").filas[2][1].texto == "POINT");
+    assert(falla_ejecucion(e, "CREATE TABLE malo (u POINT PRIMARY KEY, id INT)"));
+    assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_HEAP (nombre) USING RTREE"));
+    assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_HEAP (ubicacion) USING HASH"));
+
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) e.ejecutar("DROP TABLE tiendas_" + org);
+    std::filesystem::remove(csv);
+    std::cout << "espacial: POINT, radio por distancia, k vecinos y validaciones en las tres organizaciones\n";
+}
+
 }  // namespace
 
 int main() {
@@ -373,6 +449,7 @@ int main() {
     prueba_persistencia();
     prueba_tabla_manual();
     prueba_pk_no_primera();
+    prueba_espacial();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }
