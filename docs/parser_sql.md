@@ -58,9 +58,11 @@ cond := col (= | != | <> | < | <= | > | >=) valor
       | col BETWEEN a AND b
 ```
 
-Tipos: `INT` (int32) y `VARCHAR(n)`. La clave primaria debe ser `INT`; si no se indica
-se toma la primera columna `INT`. `FROM FILE` infiere el esquema del CSV: `INT` si toda
-la columna son enteros, si no `VARCHAR` del largo máximo; los nombres de columna se
+Tipos: `INT` (int32) y `VARCHAR(n)`. La clave primaria debe ser `INT` y puede ser
+cualquier columna, no solo la primera (`codigo INT PRIMARY KEY` en su definición, o
+`PRIMARY KEY codigo` al final); si no se indica se toma la primera columna `INT`.
+`FROM FILE` infiere el esquema del CSV: `INT` si toda la columna son enteros, si no
+`VARCHAR` del largo máximo; los nombres de columna se
 normalizan a identificadores (`Organization Id` → `Organization_Id`). `INDEX (a, b)`
 construye un B+ no agrupado por columna cuando la carga termina, y equivale a lanzar un
 `CREATE INDEX` por cada una; solo vale sobre tablas `HEAP`.
@@ -120,13 +122,15 @@ disco. Como el motor no hace `JOIN`, el árbol siempre es una cadena.
 ```
 EXPLAIN SELECT Index, Name FROM org_idx WHERE Index BETWEEN 10000 AND 13000;
 
-Index Range Scan using org_idx_index on org_idx  (cost=3004.00 rows=3001)
+Index Range Scan using org_idx_index on org_idx (Index)  (cost=3004.00 rows=3001)
    Index Cond: Index BETWEEN 10000 AND 13000
    Nota: el indice no agrupado lee una pagina de datos por fila encontrada
 Nota: costo en paginas estimadas; rows supone claves densas y repartidas parejo
 Planning Time: 0.412 ms
 ```
 
+- Un nodo que usa un índice dice cuál y sobre qué columna:
+  `Index Scan using idx_x on tabla (columna)`.
 - `cost` son **páginas estimadas**, no la unidad arbitraria de PostgreSQL.
 - `rows` son filas estimadas. Para un rango sobre la clave se supone que las claves son
   densas y están repartidas parejo, que es lo único que el catálogo permite suponer;
@@ -142,7 +146,7 @@ EXPLAIN ANALYZE SELECT Country, COUNT(*) FROM org_idx WHERE Founded = 2000 GROUP
 Limit on org_idx  (rows=5) (actual rows=5)
   -> HashAggregate on org_idx (actual time=0.825 rows=243)
      Group Key: Country
-    -> Index Scan using org_idx_founded on org_idx  (cost=103.00 rows=100) (actual time=5.458 rows=1940 pages=1962)
+    -> Index Scan using org_idx_founded on org_idx (Founded)  (cost=103.00 rows=100) (actual time=5.458 rows=1940 pages=1962)
        Index Cond: Founded = 2000
 Rows: 5
 Planning Time: 0.507 ms
