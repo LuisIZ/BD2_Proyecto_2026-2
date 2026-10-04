@@ -11,10 +11,10 @@ namespace sql {
 
 // Gramática soportada (palabras clave sin distinguir mayúsculas):
 //
-//   CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), ...) [USING HEAP|SEQUENTIAL|BPLUS]
+//   CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), col POINT, ...) [USING HEAP|SEQUENTIAL|BPLUS]
 //   CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 //   COPY t FROM FILE 'ruta.csv'
-//   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH]
+//   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE]
 //   DROP TABLE t
 //   INSERT INTO t VALUES (v1, v2, ...)
 //   DELETE FROM t [WHERE cond]
@@ -24,7 +24,10 @@ namespace sql {
 //   DESCRIBE t
 //   EXPLAIN [ANALYZE] <sentencia>
 //
-//   cond := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
+//   cond  := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
+//          | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+//   valor := entero | 'texto' | POINT(lat, lon)
+//   ORDER BY también acepta distancia(col, POINT(lat, lon) [, metrica]) para los k vecinos más cercanos.
 //
 // EXPLAIN devuelve el plan sin tocar los datos; con ANALYZE lo ejecuta y añade
 // las filas, páginas y tiempos reales de cada nodo.
@@ -50,7 +53,7 @@ enum class TipoSentencia {
 
 struct ColumnaDef {
     std::string nombre;
-    std::string tipo;  // INT | VARCHAR
+    std::string tipo;  // INT | VARCHAR | POINT
     int tam = 0;       // largo máximo de VARCHAR
     bool pk = false;
 };
@@ -60,6 +63,9 @@ struct Condicion {
     std::string op;  // = != < <= > >= BETWEEN
     Valor valor;
     Valor hasta;     // solo BETWEEN
+    std::string funcion;  // DISTANCIA, vacía si se compara la columna
+    Valor punto;          // solo DISTANCIA
+    std::string metrica;  // HAVERSINE | EUCLIDIANA
 };
 
 struct ItemSelect {
@@ -81,7 +87,7 @@ struct Sentencia {
 
     std::string indice_nombre;
     std::string indice_columna;
-    std::string indice_tipo;   // BPLUS | HASH
+    std::string indice_tipo;   // BPLUS | HASH | RTREE
     std::vector<std::string> indices;  // INDEX (a, b) en CREATE TABLE FROM FILE
 
     // EXPLAIN [ANALYZE]: la sentencia explicada viaja en `explicada`
@@ -96,6 +102,9 @@ struct Sentencia {
     std::vector<ItemSelect> items;
     std::string group_by;
     std::string order_by;
+    bool order_by_distancia = false;  // ORDER BY distancia(order_by, order_by_punto)
+    Valor order_by_punto;
+    std::string order_by_metrica;
     bool descendente = false;
     long long limite = -1;
 };

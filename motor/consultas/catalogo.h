@@ -11,7 +11,7 @@
 namespace motor {
 namespace sql {
 
-enum class TipoColumna { INT, VARCHAR };
+enum class TipoColumna { INT, VARCHAR, POINT };
 enum class Organizacion { HEAP, SEQUENTIAL, BPLUS };
 
 struct Columna {
@@ -45,6 +45,7 @@ struct Tabla {
 std::string nombre_organizacion(Organizacion o);
 Organizacion organizacion_desde(const std::string& nombre);
 std::string nombre_tipo(TipoColumna t);
+TipoColumna tipo_desde(const std::string& nombre);
 
 // --- filas <-> bytes ---
 //
@@ -52,6 +53,7 @@ std::string nombre_tipo(TipoColumna t);
 // de columnas se empaquetan en Registro.valor: INT como int32, VARCHAR como
 // uint16 largo + bytes.
 // Fijo (B+ agrupado): [int32 pk][INT int32 | VARCHAR n bytes rellenos con 0]...
+// POINT: int32 lat + int32 lon en microgrados, en los dos formatos.
 
 int clave_de(const Tabla& tabla, const Fila& fila);
 std::string empaquetar_variable(const Tabla& tabla, const Fila& fila);

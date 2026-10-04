@@ -41,24 +41,28 @@ echo "SELECT COUNT(*) FROM t" | .build/motor_sql --db datos/db
 Palabras clave sin distinguir mayúsculas. Varias sentencias se separan con `;`.
 
 ```sql
-CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), ...) [USING HEAP | SEQUENTIAL | BPLUS]
+CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), col POINT, ...) [USING HEAP | SEQUENTIAL | BPLUS]
 CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 COPY t FROM FILE 'ruta.csv'
-CREATE INDEX nombre ON t (col) [USING BPLUS | HASH]
+CREATE INDEX nombre ON t (col) [USING BPLUS | HASH | RTREE]
 DROP TABLE t
 INSERT INTO t VALUES (v1, v2, ...)
 DELETE FROM t [WHERE cond]
 SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
-  FROM t [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
+  FROM t [WHERE cond [AND cond]...] [GROUP BY col]
+  [ORDER BY col | distancia(col, POINT(lat, lon) [, metrica]) [ASC|DESC]] [LIMIT n]
 SHOW TABLES
 DESCRIBE t
 EXPLAIN [ANALYZE] <sentencia>
 
-cond := col (= | != | <> | < | <= | > | >=) valor
-      | col BETWEEN a AND b
+cond  := col (= | != | <> | < | <= | > | >=) valor
+       | col BETWEEN a AND b
+       | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+valor := entero | 'texto' | POINT(lat, lon)
 ```
 
-Tipos: `INT` (int32) y `VARCHAR(n)`. La clave primaria debe ser `INT` y puede ser
+Tipos: `INT` (int32), `VARCHAR(n)` y `POINT` (latitud y longitud; ver
+[sql_espacial.md](sql_espacial.md)). La clave primaria debe ser `INT` y puede ser
 cualquier columna, no solo la primera (`codigo INT PRIMARY KEY` en su definición, o
 `PRIMARY KEY codigo` al final); si no se indica se toma la primera columna `INT`.
 `FROM FILE` infiere el esquema del CSV: `INT` si toda la columna son enteros, si no
@@ -203,6 +207,8 @@ columnas e índices para el panel de archivos.
   buckets en páginas de 4 KB, 255 entradas por bucket y cadenas de desborde cuando muchas
   claves caen en el mismo bucket. Solo resuelve igualdad. Su profundidad global, igual que
   la del hash en memoria, está limitada a 16 bits (65 536 entradas de directorio).
+- `CREATE INDEX ... USING RTREE` se reconoce pero todavía no crea el índice: las consultas
+  por `distancia` recorren la tabla hasta que el R-Tree esté listo.
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.

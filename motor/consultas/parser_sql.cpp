@@ -8,7 +8,7 @@ namespace sql {
 
 namespace {
 
-enum class TipoToken { IDENT, NUMERO, TEXTO, SIMBOLO, FIN };
+enum class TipoToken { IDENT, NUMERO, DECIMAL, TEXTO, SIMBOLO, FIN };
 
 struct Token {
     TipoToken tipo;
@@ -50,7 +50,11 @@ private:
             ++i_;
             while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
             if (i_ < s_.size() && s_[i_] == '.') {
-                throw std::runtime_error("solo se admiten numeros enteros: '" + s_.substr(inicio, i_ - inicio + 1) + "'");
+                ++i_;
+                const std::size_t decimales = i_;
+                while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
+                if (i_ == decimales) throw std::runtime_error("numero mal formado: '" + s_.substr(inicio, i_ - inicio) + "'");
+                return {TipoToken::DECIMAL, s_.substr(inicio, i_ - inicio)};
             }
             return {TipoToken::NUMERO, s_.substr(inicio, i_ - inicio)};
         }
@@ -189,11 +193,63 @@ private:
         avanzar();
         return nombre;
     }
+    bool es_funcion(const char* nombre) const {
+        return es(nombre) && pos_ + 1 < t_.size() && t_[pos_ + 1].tipo == TipoToken::SIMBOLO && t_[pos_ + 1].texto == "(";
+    }
+
     Valor valor() {
         const Token t = actual();
         if (t.tipo == TipoToken::NUMERO) { avanzar(); return Valor::de_entero(std::stoll(t.texto)); }
         if (t.tipo == TipoToken::TEXTO) { avanzar(); return Valor::de_texto(t.texto); }
+        if (t.tipo == TipoToken::DECIMAL) error("solo se admiten numeros enteros fuera de POINT");
+        if (es_funcion("POINT")) return punto();
         error("se esperaba un valor");
+    }
+
+    int microgrados() {
+        const Token t = actual();
+        if (t.tipo != TipoToken::NUMERO && t.tipo != TipoToken::DECIMAL) error("se esperaba una coordenada");
+        const bool negativo = t.texto[0] == '-';
+        const std::string sin_signo = t.texto.substr(negativo ? 1 : 0);
+        const std::size_t punto = sin_signo.find('.');
+        const std::string entera = sin_signo.substr(0, punto);
+        std::string decimales = punto == std::string::npos ? "" : sin_signo.substr(punto + 1);
+        if (decimales.size() > 6) error("una coordenada admite hasta 6 decimales");
+        decimales.append(6 - decimales.size(), '0');
+        if (entera.size() > 3 || std::stoll(entera) > 180) error("coordenada fuera de rango");
+        avanzar();
+        const long long v = std::stoll(entera) * 1000000 + std::stoll(decimales);
+        return static_cast<int>(negativo ? -v : v);
+    }
+
+    Valor punto() {
+        avanzar();
+        esperar_simbolo("(");
+        const int lat = microgrados();
+        esperar_simbolo(",");
+        const int lon = microgrados();
+        esperar_simbolo(")");
+        return Valor::de_punto(lat, lon);
+    }
+
+    void distancia(std::string& columna, Valor& centro, std::string& metrica) {
+        avanzar();
+        esperar_simbolo("(");
+        columna = identificador();
+        esperar_simbolo(",");
+        if (!es_funcion("POINT")) error("se esperaba POINT(lat, lon)");
+        centro = punto();
+        metrica = "HAVERSINE";
+        if (es_simbolo(",")) {
+            avanzar();
+            if (actual().tipo != TipoToken::TEXTO) error("se esperaba la metrica entre comillas");
+            const std::string m = mayusculas(actual().texto);
+            if (m == "HAVERSINE" || m == "GEODESICA") metrica = "HAVERSINE";
+            else if (m == "EUCLIDIANA") metrica = "EUCLIDIANA";
+            else error("metrica desconocida '" + actual().texto + "' (haversine o euclidiana)");
+            avanzar();
+        }
+        esperar_simbolo(")");
     }
     long long numero() {
         if (actual().tipo != TipoToken::NUMERO) error("se esperaba un numero");
@@ -234,8 +290,10 @@ private:
                     col.tam = static_cast<int>(numero());
                     esperar_simbolo(")");
                     if (col.tam <= 0) error("VARCHAR necesita un largo positivo");
+                } else if (tipo == "POINT") {
+                    col.tipo = "POINT";
                 } else {
-                    error("tipo desconocido '" + tipo + "' (INT o VARCHAR(n))");
+                    error("tipo desconocido '" + tipo + "' (INT, VARCHAR(n) o POINT)");
                 }
                 if (es("PRIMARY")) {
                     avanzar();
@@ -280,7 +338,8 @@ private:
             const std::string t = mayusculas(identificador());
             if (t == "BPLUS" || t == "BTREE") s.indice_tipo = "BPLUS";
             else if (t == "HASH") s.indice_tipo = "HASH";
-            else error("tipo de indice desconocido '" + t + "' (BPLUS o HASH)");
+            else if (t == "RTREE") s.indice_tipo = "RTREE";
+            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH o RTREE)");
         }
     }
 
@@ -308,6 +367,20 @@ private:
     void where(Sentencia& s) {
         while (true) {
             Condicion c;
+            if (es_funcion("DISTANCIA")) {
+                c.funcion = "DISTANCIA";
+                distancia(c.columna, c.punto, c.metrica);
+                if (actual().tipo != TipoToken::SIMBOLO) error("se esperaba un operador");
+                const std::string op = actual().texto;
+                if (op != "<" && op != "<=" && op != ">" && op != ">=") error("distancia solo se compara con < <= > >=");
+                avanzar();
+                c.op = op;
+                if (actual().tipo != TipoToken::NUMERO) error("la distancia se compara con un entero en metros");
+                c.valor = valor();
+                s.condiciones.push_back(c);
+                if (es("AND")) { avanzar(); continue; }
+                break;
+            }
             c.columna = identificador();
             if (es("BETWEEN")) {
                 avanzar();
@@ -366,7 +439,12 @@ private:
         if (es("ORDER")) {
             avanzar();
             esperar_palabra("BY");
-            s.order_by = identificador();
+            if (es_funcion("DISTANCIA")) {
+                s.order_by_distancia = true;
+                distancia(s.order_by, s.order_by_punto, s.order_by_metrica);
+            } else {
+                s.order_by = identificador();
+            }
             if (es("ASC")) avanzar();
             else if (es("DESC")) { avanzar(); s.descendente = true; }
         }
