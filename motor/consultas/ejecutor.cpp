@@ -703,7 +703,20 @@ bool es_entero(const std::string& s, long long& v) {
 
 // --- Ejecutor ---
 
-Resultado Ejecutor::ejecutar(const std::string& sql) { return ejecutar(parsear(sql)); }
+Resultado Ejecutor::ejecutar(const std::string& sql) {
+    const auto inicio = Reloj::now();
+    const Sentencia s = parsear(sql);
+    parseo_ms_ = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+    Resultado r;
+    try {
+        r = ejecutar(s);
+    } catch (...) {
+        parseo_ms_ = 0.0;
+        throw;
+    }
+    parseo_ms_ = 0.0;
+    return r;
+}
 
 Resultado Ejecutor::ejecutar(const Sentencia& s) {
     const auto inicio = Reloj::now();
@@ -753,8 +766,9 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
             const long long filas = filas_estimadas(elegido, almacen.registros());
             (void)costo_estimado(elegido, almacen.paginas_aprox(), almacen.registros(), filas, almacen.altura());
         }
-        r.planificacion_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_plan).count();
+        r.planificacion_ms = parseo_ms_ + std::chrono::duration<double, std::milli>(Reloj::now() - inicio_plan).count();
         ejecutada = ejecutar(interna);
+        r.ejecucion_ms = ejecutada.tiempo_ms;
         r.plan = ejecutada.plan;
     } else {
         const Tabla& tabla = catalogo_.tabla(interna.tabla);
@@ -853,7 +867,7 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
             r.plan.push_back(d);
         }
         ordenar_como_explain(r.plan);
-        r.planificacion_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_plan).count();
+        r.planificacion_ms = parseo_ms_ + std::chrono::duration<double, std::milli>(Reloj::now() - inicio_plan).count();
     }
 
     for (const PasoPlan& p : r.plan) {
@@ -862,12 +876,12 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
         }
     }
     if (s.analyze) {
-        r.filas.push_back({Valor::de_texto("Planning Time: " + con_decimales(r.planificacion_ms, 3) + " ms")});
-        r.filas.push_back({Valor::de_texto("Execution Time: " + con_decimales(ejecutada.tiempo_ms, 3) + " ms")});
         r.filas.push_back({Valor::de_texto("Rows: " + std::to_string(ejecutada.afectadas))});
-    } else {
         r.filas.push_back({Valor::de_texto("Planning Time: " + con_decimales(r.planificacion_ms, 3) + " ms")});
+        r.filas.push_back({Valor::de_texto("Execution Time: " + con_decimales(r.ejecucion_ms, 3) + " ms")});
+    } else {
         r.filas.push_back({Valor::de_texto("Nota: costo en paginas estimadas; rows supone claves densas y repartidas parejo")});
+        r.filas.push_back({Valor::de_texto("Planning Time: " + con_decimales(r.planificacion_ms, 3) + " ms")});
     }
     r.afectadas = r.filas.size();
     r.mensaje = s.analyze ? "plan con medidas reales" : "plan estimado, sin ejecutar la consulta";

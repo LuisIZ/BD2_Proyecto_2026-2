@@ -52,6 +52,7 @@ struct Resultado {
     std::size_t afectadas = 0;
     double tiempo_ms = 0.0;
     double planificacion_ms = 0.0;  // EXPLAIN: tiempo de planificar, aparte del de ejecutar
+    double ejecucion_ms = 0.0;
     bool analizado = false;         // el plan trae medidas reales
 };
 
@@ -79,6 +80,7 @@ private:
     Resultado describir(const Sentencia& s);
 
     Catalogo& catalogo_;
+    double parseo_ms_ = 0.0;
 };
 
 }  // namespace sql
