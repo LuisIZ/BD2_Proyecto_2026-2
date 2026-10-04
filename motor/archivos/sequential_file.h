@@ -61,6 +61,15 @@ public:
     // fusiona principal + auxiliar en páginas nuevas sin tumbas
     void reorganizar() override;
 
+    // Carga inicial: ordena por clave y escribe el área principal de una vez,
+    // llenando cada página al factor_llenado. Exige el archivo vacío.
+    //
+    // Insertar una a una también funciona, pero cada registro que no cabe en su
+    // página cae al área auxiliar y acaba disparando reorganizaciones: cargar
+    // 10 000 filas así deja 107 páginas auxiliares y 13 reorganizaciones, y
+    // tarda casi el triple. Esto escribe cada página una sola vez.
+    void cargar_masivo(std::vector<Registro>& registros);
+
     // búsqueda binaria sobre las páginas principales y luego recorrido del auxiliar
     std::optional<Registro> buscar(int clave) const;
     std::vector<Registro> buscar_rango(int desde, int hasta) const;

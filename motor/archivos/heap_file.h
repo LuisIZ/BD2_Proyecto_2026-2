@@ -48,6 +48,14 @@ public:
     HeapFile& operator=(const HeapFile&) = delete;
 
     RecordId insertar_bytes(const std::byte* datos, std::uint16_t largo);
+
+    // Carga inicial: llena cada página en memoria y la escribe una sola vez.
+    // Exige el archivo vacío.
+    //
+    // Insertar una a una relee y reescribe la página en cada registro: cargar
+    // 100 000 filas así mueve unos 800 MB de E/S para un archivo de 15 MB, y
+    // por eso tardaba más que el secuencial pese a ser la estructura más simple.
+    void cargar_masivo(const std::vector<std::vector<std::byte>>& registros);
     std::optional<std::vector<std::byte>> obtener(RecordId rid) const;
     bool eliminar_rid(RecordId rid);
     bool compactar_pagina(std::uint32_t page_id);

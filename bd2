@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Prepara el proyecto y abre la web:  ./bd2 run
+# Las demás acciones (setup, test, bench, clean) están en tools/motor.py.
+set -euo pipefail
+raiz="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1; then
+    exec "$py" "$raiz/tools/motor.py" "$@"
+  fi
+done
+
+echo "Error: no se encontró Python. Instala Python 3.10 o superior desde https://python.org" >&2
+exit 1

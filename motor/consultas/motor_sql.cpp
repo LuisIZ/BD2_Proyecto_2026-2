@@ -53,7 +53,9 @@ std::string json_valor(const Valor& v) {
 std::string json_resultado(const Resultado& r) {
     std::ostringstream s;
     s << "{\"ok\":true,\"tipo\":" << json_texto(r.tipo) << ",\"mensaje\":" << json_texto(r.mensaje)
-      << ",\"afectadas\":" << r.afectadas << ",\"tiempo_ms\":" << r.tiempo_ms << ",\"columnas\":[";
+      << ",\"afectadas\":" << r.afectadas << ",\"tiempo_ms\":" << r.tiempo_ms
+      << ",\"planificacion_ms\":" << r.planificacion_ms
+      << ",\"analizado\":" << (r.analizado ? "true" : "false") << ",\"columnas\":[";
     for (std::size_t i = 0; i < r.columnas.size(); ++i) s << (i ? "," : "") << json_texto(r.columnas[i]);
     s << "],\"filas\":[";
     for (std::size_t i = 0; i < r.filas.size(); ++i) {
@@ -65,8 +67,14 @@ std::string json_resultado(const Resultado& r) {
     for (std::size_t i = 0; i < r.plan.size(); ++i) {
         const PasoPlan& p = r.plan[i];
         s << (i ? ",{" : "{") << "\"operacion\":" << json_texto(p.operacion);
+        // los detalles van planos para no romper a quien ya los lee así
         for (const auto& [k, v] : p.detalles) s << "," << json_texto(k) << ":" << json_texto(v);
-        s << "}";
+        s << ",\"nodo\":" << json_texto(p.nodo) << ",\"relacion\":" << json_texto(p.relacion)
+          << ",\"indice\":" << json_texto(p.indice) << ",\"columna_indice\":" << json_texto(p.columna)
+          << ",\"cond\":" << json_texto(p.condicion) << ",\"nivel\":" << p.nivel
+          << ",\"costo\":" << p.costo << ",\"filas_estimadas\":" << p.filas_estimadas
+          << ",\"filas_reales\":" << p.filas_reales << ",\"nodo_ms\":" << p.tiempo_ms
+          << ",\"nodo_paginas\":" << p.paginas_leidas << ",\"nodo_paginas_escritas\":" << p.paginas_escritas << "}";
     }
     s << "]}";
     return s.str();

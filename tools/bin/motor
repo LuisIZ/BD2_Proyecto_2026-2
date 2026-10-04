@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# El comando `motor`. Vive aquí y no en la raíz del repo porque allí ya existe
+# la carpeta motor/ del código C++, y un archivo no puede llamarse igual que una
+# carpeta. Se enlaza a ~/.local/bin con `./bd2 install`, y entonces se escribe
+# `motor run` desde cualquier sitio.
+set -euo pipefail
+
+# resuelve los enlaces simbólicos para dar con la raíz del repo real
+origen="${BASH_SOURCE[0]}"
+while [ -L "$origen" ]; do
+  dir="$(cd -P "$(dirname "$origen")" && pwd)"
+  origen="$(readlink "$origen")"
+  [[ $origen != /* ]] && origen="$dir/$origen"
+done
+raiz="$(cd -P "$(dirname "$origen")/../.." && pwd)"
+
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1; then
+    exec "$py" "$raiz/tools/motor.py" "$@"
+  fi
+done
+
+echo "Error: no se encontró Python. Instala Python 3.10 o superior desde https://python.org" >&2
+exit 1

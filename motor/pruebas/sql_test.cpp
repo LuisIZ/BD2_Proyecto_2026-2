@@ -29,6 +29,13 @@ bool falla(const std::string& sql) {
     return false;
 }
 
+// une las líneas que devuelve EXPLAIN para poder buscar dentro
+std::string texto_del_plan(const Resultado& r) {
+    std::string s;
+    for (const auto& fila : r.filas) s += fila[0].texto + "\n";
+    return s;
+}
+
 bool falla_ejecucion(Ejecutor& e, const std::string& sql) {
     try {
         e.ejecutar(sql);
@@ -161,6 +168,82 @@ void prueba_indice_secundario(Ejecutor& e) {
     std::cout << "indice secundario: B+ no agrupado sobre heap, uso en igualdad y rango, mantenimiento\n";
 }
 
+// EXPLAIN describe sin tocar los datos; EXPLAIN ANALYZE ejecuta y mide
+void prueba_explain(Ejecutor& e) {
+    Resultado r = e.ejecutar("EXPLAIN SELECT * FROM org_HEAP WHERE Founded = 2005");
+    assert(r.tipo == "explain" && !r.analizado);
+    assert(r.columnas.size() == 1 && r.columnas[0] == "QUERY PLAN");
+    assert(!r.plan.empty() && r.plan[0].nodo == "Index Scan" && "el acceso es la hoja del plan");
+    assert(r.plan[0].indice == "idx_f" && r.plan[0].columna == "Founded" && "el plan dice qué índice y sobre qué columna");
+    assert(r.plan[0].costo >= 0 && r.plan[0].filas_estimadas > 0 && "hay estimación");
+    assert(r.plan[0].filas_reales < 0 && "sin ANALYZE no se ejecuta nada");
+    assert(texto_del_plan(r).find("Index Cond: Founded = 2005") != std::string::npos);
+
+    // el plan se lee con la raíz arriba: Limit envuelve a Sort, que envuelve al acceso
+    r = e.ejecutar("EXPLAIN SELECT Index FROM org_HEAP WHERE Founded = 2005 ORDER BY Index LIMIT 3");
+    assert(r.plan.front().nodo == "Limit" && r.plan.front().nivel == 0);
+    assert(r.plan.back().operacion == "busqueda_por_indice" && r.plan.back().nivel == static_cast<int>(r.plan.size()) - 1);
+
+    r = e.ejecutar("EXPLAIN ANALYZE SELECT Index FROM org_HEAP WHERE Founded = 2005");
+    assert(r.analizado && "ANALYZE marca el resultado");
+    const motor::sql::PasoPlan& acceso = r.plan.back();
+    assert(acceso.filas_reales == 10 && acceso.paginas_leidas >= 0 && acceso.tiempo_ms >= 0 && "trae medidas reales");
+    assert(texto_del_plan(r).find("actual") != std::string::npos);
+
+    // el B+ agrupado navega por la clave; el heap sin índice recorre todo
+    assert(e.ejecutar("EXPLAIN SELECT * FROM org_BPLUS WHERE Index = 50").plan.back().operacion == "busqueda_por_clave");
+    assert(e.ejecutar("EXPLAIN SELECT * FROM org_HEAP WHERE Employees = 7").plan.back().operacion == "scan_completo");
+
+    assert(falla_ejecucion(e, "EXPLAIN CREATE TABLE x (a INT)") && "sin ANALYZE solo describe consultas");
+    assert(falla(" EXPLAIN EXPLAIN SELECT * FROM org_HEAP") && "no se anida");
+    assert(falla("EXPLAIN") && "EXPLAIN necesita una sentencia");
+    std::cout << "EXPLAIN: plan estimado sin ejecutar, ANALYZE con medidas reales\n";
+}
+
+// COPY separa la definición del esquema de la carga de datos
+void prueba_copy(Ejecutor& e) {
+    e.ejecutar("CREATE TABLE copia (Index INT PRIMARY KEY, Name VARCHAR(20), Country VARCHAR(10), Founded INT, Employees INT) USING SEQUENTIAL");
+    assert(e.ejecutar("SELECT COUNT(*) FROM copia").filas[0][0].entero == 0 && "nace vacia");
+
+    Resultado r = e.ejecutar("COPY copia FROM FILE '" + CSV + "'");
+    assert(r.tipo == "copy" && r.afectadas == 300);
+    assert(tiene_paso(r, "carga_masiva") && "con la tabla vacia se escribe de una vez");
+    assert(e.ejecutar("SELECT COUNT(*) FROM copia").filas[0][0].entero == 300);
+    assert(e.ejecutar("SELECT Name FROM copia WHERE Index = 7").filas[0][0].texto == "Org, 7");
+
+    // una segunda carga sobre datos ya existentes choca con la clave primaria
+    assert(falla_ejecucion(e, "COPY copia FROM FILE '" + CSV + "'"));
+
+    // el CSV tiene que cuadrar con el esquema
+    e.ejecutar("CREATE TABLE otra (a INT PRIMARY KEY, b VARCHAR(5))");
+    assert(falla_ejecucion(e, "COPY otra FROM FILE '" + CSV + "'") && "distinto numero de columnas");
+    assert(falla_ejecucion(e, "COPY no_existe FROM FILE '" + CSV + "'"));
+    e.ejecutar("DROP TABLE otra");
+    e.ejecutar("DROP TABLE copia");
+    std::cout << "COPY: carga un CSV en una tabla ya creada, separada del CREATE TABLE\n";
+}
+
+// Una carga inicial en secuencial debe quedar entera en el área principal.
+// Insertando una a una, los registros que no caben en su página van al área
+// auxiliar y acaban disparando reorganizaciones.
+void prueba_carga_secuencial(Ejecutor& e) {
+    e.ejecutar("CREATE TABLE seq_carga FROM FILE '" + CSV + "' USING SEQUENTIAL");
+    const Resultado r = e.ejecutar("SHOW TABLES");
+    bool vista = false;
+    for (const auto& fila : r.filas) {
+        if (fila[0].texto != "seq_carga") continue;
+        vista = true;
+        const std::string detalle = fila[8].texto;
+        assert(detalle.find("aux=0") != std::string::npos && "la carga masiva no usa el area auxiliar");
+        assert(detalle.find("reorganizaciones=0") != std::string::npos && "ni dispara reorganizaciones");
+        std::cout << "carga secuencial: " << detalle << "\n";
+    }
+    assert(vista && "falta seq_carga");
+    assert(e.ejecutar("SELECT COUNT(*) FROM seq_carga").filas[0][0].entero == 300);
+    assert(e.ejecutar("SELECT Name FROM seq_carga WHERE Index = 150").filas[0][0].texto == "Org, 150");
+    e.ejecutar("DROP TABLE seq_carga");
+}
+
 void prueba_persistencia() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -203,6 +286,9 @@ int main() {
         Ejecutor e(catalogo);
         for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) prueba_organizacion(e, org);
         prueba_indice_secundario(e);
+        prueba_explain(e);
+        prueba_copy(e);
+        prueba_carga_secuencial(e);
     }
     prueba_persistencia();
     prueba_tabla_manual();

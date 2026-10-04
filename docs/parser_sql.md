@@ -42,7 +42,8 @@ Palabras clave sin distinguir mayúsculas. Varias sentencias se separan con `;`.
 
 ```sql
 CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), ...) [USING HEAP | SEQUENTIAL | BPLUS]
-CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col]
+CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
+COPY t FROM FILE 'ruta.csv'
 CREATE INDEX nombre ON t (col) [USING BPLUS | HASH]
 DROP TABLE t
 INSERT INTO t VALUES (v1, v2, ...)
@@ -51,6 +52,7 @@ SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
   FROM t [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
 SHOW TABLES
 DESCRIBE t
+EXPLAIN [ANALYZE] <sentencia>
 
 cond := col (= | != | <> | < | <= | > | >=) valor
       | col BETWEEN a AND b
@@ -59,7 +61,16 @@ cond := col (= | != | <> | < | <= | > | >=) valor
 Tipos: `INT` (int32) y `VARCHAR(n)`. La clave primaria debe ser `INT`; si no se indica
 se toma la primera columna `INT`. `FROM FILE` infiere el esquema del CSV: `INT` si toda
 la columna son enteros, si no `VARCHAR` del largo máximo; los nombres de columna se
-normalizan a identificadores (`Organization Id` → `Organization_Id`).
+normalizan a identificadores (`Organization Id` → `Organization_Id`). `INDEX (a, b)`
+construye un B+ no agrupado por columna cuando la carga termina, y equivale a lanzar un
+`CREATE INDEX` por cada una; solo vale sobre tablas `HEAP`.
+
+`COPY t FROM FILE 'ruta.csv'` carga datos en una tabla que **ya existe**, y así separa la
+definición del esquema de la carga. Los encabezados del CSV deben coincidir en nombre y
+orden con las columnas de la tabla. Si la tabla está vacía y no tiene índices se usa carga
+masiva; si ya tiene datos, una inserción por fila para mantener el orden y los índices.
+`CREATE TABLE ... FROM FILE` es el atajo que hace las dos cosas de una vez infiriendo el
+esquema, y sigue disponible.
 
 ## 4. Cómo se guarda una tabla
 
@@ -69,8 +80,11 @@ normalizan a identificadores (`Organization Id` → `Organization_Id`).
 | `SEQUENTIAL` | `SequentialFile` | igual que heap (mismos bytes por fila) | no: la reorganización reubica registros |
 | `BPLUS` | `BPlusAgrupado` | fijo: `[pk][INT 4 B \| VARCHAR n B]...` | no: la fila vive en la hoja |
 
-La carga con `FROM FILE` usa `cargar_masivo` en el B+ agrupado (hojas al 90 %) e inserción
-una a una en heap y secuencial. La clave primaria se verifica siempre al insertar: el B+
+La carga con `FROM FILE` y `COPY` usa `cargar_masivo` en las tres organizaciones: el B+
+agrupado construye las hojas al 90 %, el secuencial escribe el área principal de una vez
+(sin auxiliares ni reorganizaciones) y el heap llena cada página en memoria antes de
+escribirla. Insertar fila a fila también funciona, pero tardaba entre 2 y 10 veces más;
+ver [carga_masiva.md](carga_masiva.md). La clave primaria se verifica siempre al insertar: el B+
 agrupado la rechaza solo; en heap se consulta el índice sobre la clave si existe (si no,
 recorrido completo); en secuencial, búsqueda binaria.
 
@@ -88,22 +102,72 @@ resolverse con una estructura y el resto se filtra en memoria:
 | cualquier otra | `scan_completo` + `filtro` | `scan_completo` + `filtro` | `scan_completo` + `filtro` |
 
 Después: `agrupacion` (`ExternalHashAggregate`), `ordenamiento` (`ExternalMergeSort`
-k-way, reporta `initial_runs` y `merge_passes`), `proyeccion` y `limite`. Cada paso lleva
-`paginas_leidas` de la estructura que tocó, así el panel de plan muestra el costo real:
+k-way, reporta `initial_runs` y `merge_passes`), `proyeccion` y `limite`.
+
+La decisión vive en `planificar()`, que solo mira el catálogo y no abre ningún archivo de
+datos. El ejecutor obedece esa decisión y mide lo que costó. Gracias a esa separación,
+`EXPLAIN` sin `ANALYZE` puede mostrar el mismo plan que correrá la consulta sin leer una
+sola página.
+
+## 5.1. EXPLAIN
+
+El plan se arma en orden de ejecución y se invierte al final, así que se lee como en
+PostgreSQL: el nodo 0 es la raíz (lo último que corre) y el más profundo es el acceso a
+disco. Como el motor no hace `JOIN`, el árbol siempre es una cadena.
 
 ```
-[3] select: 12 filas  (0.30 ms)
-      rango_por_clave   estructura=secuencial  condicion=Index BETWEEN 1 AND 12  paginas_leidas=15  filas=12
-      proyeccion        columnas=4
+EXPLAIN SELECT Index, Name FROM org_idx WHERE Index BETWEEN 10000 AND 13000;
+
+Index Range Scan using org_idx_index on org_idx  (cost=3004.00 rows=3001)
+   Index Cond: Index BETWEEN 10000 AND 13000
+   Nota: el indice no agrupado lee una pagina de datos por fila encontrada
+Planning Time: 0.412 ms
 ```
+
+- `cost` son **páginas estimadas**, no la unidad arbitraria de PostgreSQL.
+- `rows` son filas estimadas. Para un rango sobre la clave se supone que las claves son
+  densas y están repartidas parejo, que es lo único que el catálogo permite suponer;
+  para un filtro sin estructura se estima que pasa el 10 %.
+- El costo de un acceso por índice no agrupado cuenta **la altura del árbol más una
+  página de datos por fila**, que es justo lo que lo vuelve caro en rangos anchos.
+
+Con `ANALYZE` la consulta se ejecuta de verdad y cada nodo añade lo medido:
+
+```
+EXPLAIN ANALYZE SELECT Country, COUNT(*) FROM org_idx WHERE Founded = 2000 GROUP BY Country LIMIT 5;
+
+Limit on org_idx  (rows=5) (actual rows=5)
+  -> HashAggregate on org_idx (actual time=0.825 rows=243)
+     Group Key: Country
+    -> Index Scan using org_idx_founded on org_idx  (cost=103.00 rows=100) (actual time=5.458 rows=1940 pages=1962)
+       Index Cond: Founded = 2000
+Execution Time: 20.202 ms
+```
+
+Comparar `rows` con `actual rows` muestra dónde falló la estimación: aquí el índice
+esperaba 100 filas y encontró 1 940, y por eso leyó casi 2 000 páginas.
+
+`EXPLAIN` a secas solo describe `SELECT` y `DELETE`; para el resto hace falta `ANALYZE`,
+porque el plan de un DDL es lo que hace al ejecutarse. `EXPLAIN` abre la tabla para leer
+sus estadísticas, igual que PostgreSQL consulta `pg_class`; en un heap eso implica leer su
+directorio de páginas, y por eso el `Planning Time` de un heap grande no es cero.
 
 ## 6. Formato JSON
 
 ```json
 {"ok":true,"tipo":"select","mensaje":"12 filas","afectadas":12,"tiempo_ms":0.3,
+ "planificacion_ms":0,"analizado":false,
  "columnas":["Index","Name"],"filas":[[1,"Acevedo LLC"],...],
- "plan":[{"operacion":"rango_por_clave","estructura":"secuencial","paginas_leidas":"15","filas":"12"}]}
+ "plan":[{"operacion":"rango_por_clave","estructura":"secuencial","paginas_leidas":"15","filas":"12",
+          "nodo":"Ordered Key Scan","relacion":"demo","indice":"","columna_indice":"Index",
+          "cond":"Index BETWEEN 1 AND 12","nivel":1,"costo":15,"filas_estimadas":12,
+          "filas_reales":12,"nodo_ms":0.21,"nodo_paginas":15,"nodo_paginas_escritas":-1}]}
 ```
+
+Los detalles de cada paso siguen yendo planos dentro del objeto. Los campos nuevos
+describen el nodo al estilo de `EXPLAIN`: `nodo` es su nombre visible, `indice` y
+`columna_indice` dicen qué índice se usa y sobre qué columna, `nivel` es la profundidad en
+el árbol (0 = raíz) y los valores `-1` significan "no aplica" o "no se midió".
 
 Errores: `{"ok":false,"error":"la columna Foo no existe en demo"}`. Con `--sql` la
 respuesta es un arreglo con un objeto por sentencia. `--catalogo` devuelve tablas,
@@ -114,7 +178,8 @@ columnas e índices para el panel de archivos.
 - Sin `UPDATE`, sin `JOIN`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
 - Agregados solo sobre columnas `INT`; `AVG` devuelve texto con dos decimales.
 - `CREATE INDEX ... USING HASH` responde "aún no disponible en disco" hasta que el hash
-  extensible salga de RAM.
+  extensible salga de RAM. En memoria su profundidad global está limitada a 16 bits
+  (65 536 entradas de directorio); antes el límite era 64, que no es implementable.
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.
