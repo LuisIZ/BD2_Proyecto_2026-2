@@ -54,7 +54,7 @@ std::string json_resultado(const Resultado& r) {
     std::ostringstream s;
     s << "{\"ok\":true,\"tipo\":" << json_texto(r.tipo) << ",\"mensaje\":" << json_texto(r.mensaje)
       << ",\"afectadas\":" << r.afectadas << ",\"tiempo_ms\":" << r.tiempo_ms
-      << ",\"planificacion_ms\":" << r.planificacion_ms
+      << ",\"planificacion_ms\":" << r.planificacion_ms << ",\"ejecucion_ms\":" << r.ejecucion_ms
       << ",\"analizado\":" << (r.analizado ? "true" : "false") << ",\"columnas\":[";
     for (std::size_t i = 0; i < r.columnas.size(); ++i) s << (i ? "," : "") << json_texto(r.columnas[i]);
     s << "],\"filas\":[";
