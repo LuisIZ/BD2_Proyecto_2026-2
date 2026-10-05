@@ -240,6 +240,8 @@ private:
         const int lat = microgrados();
         esperar_simbolo(",");
         const int lon = microgrados();
+        if (lat < -90000000 || lat > 90000000) error("latitud fuera de rango");
+        if (lon < -180000000 || lon > 180000000) error("longitud fuera de rango");
         esperar_simbolo(")");
         return Valor::de_punto(lat, lon);
     }
@@ -392,6 +394,8 @@ private:
                 while (true) {
                     const int lat = microgrados();
                     const int lon = microgrados();
+                    if (lat < -90000000 || lat > 90000000) error("latitud fuera de rango");
+                    if (lon < -180000000 || lon > 180000000) error("longitud fuera de rango");
                     c.poligono.push_back(Valor::de_punto(lat, lon));
                     if (es_simbolo(",")) { avanzar(); continue; }
                     break;

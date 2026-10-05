@@ -157,7 +157,14 @@ WHERE dentro(ubicacion, POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.02, -1
 Con los puntos de la prueba, el rectángulo del ejemplo devuelve Miraflores y San Isidro, y
 el triángulo que usa la misma base pero corta en diagonal devuelve solo Miraflores.
 
-## 6. Pendiente
+## 6. Benchmark PostGIS
 
-- Para comparar con PostGIS (#29) hay que invertir el orden: PostGIS usa
-  `POINT(lon lat)`.
+La comparación reproducible con PostGIS `geography(Point,4326)` y GiST está en
+[`datos/resultados/postgis_bench.sql`](../datos/resultados/postgis_bench.sql), y su
+metodología y comandos están en
+[`docs/comparacion_espacial/README.md`](comparacion_espacial/README.md). PostGIS recibe
+coordenadas como `POINT(lon lat)`, por lo que el benchmark construye la geometría con
+longitud primero, aunque el motor recibe `POINT(lat, lon)`.
+
+El parser valida que la latitud esté entre -90 y 90 y la longitud entre -180 y 180, tanto
+en literales `POINT` como en los vértices de `POLYGON`.

@@ -32,6 +32,36 @@ Los tiempos del motor incluyen abrir los archivos y leer el catálogo en cada co
 mientras que los de PostgreSQL no. Por eso la comparación justa entre el R-Tree y GiST es
 la forma en que crece cada uno, no el valor absoluto.
 
+## 1.1 Comparación adicional con PostGIS
+
+El benchmark GiST anterior usa `point` nativo y distancia euclidiana; **no es PostGIS**.
+Para medir PostGIS con coordenadas geográficas y una métrica comparable a la predeterminada
+del motor, se incluye `datos/resultados/postgis_bench.sql`:
+
+```bash
+make bench-espacial-haversine
+# En pgAdmin, ejecutar datos/resultados/postgis_bench.sql en PostgreSQL con PostGIS.
+# Exportar el resultado de postgis_resultados como datos/resultados/postgis_bench.csv.
+python docs/comparacion_espacial/graficar_postgis.py
+```
+
+El SQL crea `geography(Point,4326)`, un índice `GiST`, y usa `ST_DWithin(..., false)` para
+radios geodésicos y `<->` para k-NN. Ambas estrategias PostGIS (secuencial y GiST) se
+comparan con los mismos puntos generados con semilla 42 que el R-Tree del motor; se miden
+100 consultas por combinación de tamaño y parámetro. Antes de terminar, el script verifica
+que los IDs devueltos por secuencial y GiST coincidan en cada consulta.
+
+El archivo adicional de almacenamiento `postgis_almacenamiento` registra por separado los
+bytes del heap y del índice. `postgis_resultados.bytes` contiene el tamaño del índice en la
+fila de construcción. Las mediciones de espacio son persistentes; no se reporta memoria
+residente del servidor. El tiempo absoluto tampoco es una comparación directa de motores:
+el motor y PostgreSQL/PostGIS tienen distinta caché, almacenamiento y sobrecarga de consulta.
+
+El benchmark necesita una instalación PostgreSQL con la extensión PostGIS disponible; no
+instala ni inicia el servidor. No se deben presentar mediciones como reales hasta ejecutar
+el SQL y exportar sus resultados. Las figuras existentes de GiST nativo se conservan aparte
+de las nuevas figuras PostGIS.
+
 ## 2. Resultados
 
 ### Construcción del índice

@@ -64,7 +64,7 @@ BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_fil
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-espacial demo-transacciones clean
+.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-espacial bench-espacial-haversine demo-transacciones clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -116,6 +116,11 @@ bench-indices: $(BUILD)/indices_bench$(EXE)
 bench-espacial: $(BUILD)/espacial_bench$(EXE)
 	@$(call MKDIR,datos/resultados)
 	$(call RUN,$(BUILD)/espacial_bench$(EXE))
+
+# Mismos datos y consultas geodésicas para comparar con PostGIS geography/GiST.
+bench-espacial-haversine: $(BUILD)/espacial_bench$(EXE)
+	@$(call MKDIR,datos/resultados)
+	$(call RUN,$(BUILD)/espacial_bench$(EXE)) --metrica haversine --salida datos/resultados/espacial_haversine_bench.csv
 
 # transacciones (seccion 2.1.4): hilos con y sin locks sobre la misma cuenta
 demo-transacciones: $(BUILD)/transacciones_demo$(EXE)

@@ -3,6 +3,7 @@
 // POINT, se miden 100 consultas por caso sin índice y luego con CREATE INDEX ... USING RTREE.
 //
 //   espacial_bench [--salida datos/resultados/espacial_bench.csv] [--consultas 100]
+//                  [--metrica euclidiana|haversine]
 //
 // Los puntos salen de un generador congruencial con semilla 42, el mismo que usa
 // datos/resultados/gist_bench.sql, así PostgreSQL mide exactamente los mismos puntos.
@@ -81,14 +82,21 @@ Medida medir(Ejecutor& e, const std::vector<std::string>& consultas) {
 
 int main(int argc, char** argv) {
     std::string salida = "datos/resultados/espacial_bench.csv";
+    std::string metrica = "euclidiana";
     int num_consultas = 100;
     for (int i = 1; i + 1 < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--salida") salida = argv[++i];
         else if (a == "--consultas") num_consultas = std::atoi(argv[++i]);
+        else if (a == "--metrica") metrica = argv[++i];
     }
+    if (metrica != "euclidiana" && metrica != "haversine") {
+        throw std::invalid_argument("--metrica debe ser euclidiana o haversine");
+    }
+    if (num_consultas <= 0) throw std::invalid_argument("--consultas debe ser mayor que cero");
 
     std::ofstream csv(salida);
+    if (!csv) throw std::runtime_error("no se pudo abrir el archivo de salida: " + salida);
     csv << "estructura,n,operacion,parametro,tiempo_ms,filas,paginas,bytes\n";
 
     for (const int n : {1000, 10000, 100000}) {
@@ -122,14 +130,14 @@ int main(int argc, char** argv) {
         for (const int radio : {1000, 5000, 10000}) {
             std::vector<std::string> sql;
             for (const PuntoBench& c : centros) {
-                sql.push_back("SELECT id FROM puntos WHERE distancia(p, " + punto_sql(c) + ", 'euclidiana') < " + std::to_string(radio));
+                sql.push_back("SELECT id FROM puntos WHERE distancia(p, " + punto_sql(c) + ", '" + metrica + "') < " + std::to_string(radio));
             }
             casos.push_back({"rango," + std::to_string(radio), sql});
         }
         for (const int k : {10, 50, 100}) {
             std::vector<std::string> sql;
             for (const PuntoBench& c : centros) {
-                sql.push_back("SELECT id FROM puntos ORDER BY distancia(p, " + punto_sql(c) + ", 'euclidiana') LIMIT " + std::to_string(k));
+                sql.push_back("SELECT id FROM puntos ORDER BY distancia(p, " + punto_sql(c) + ", '" + metrica + "') LIMIT " + std::to_string(k));
             }
             casos.push_back({"knn," + std::to_string(k), sql});
         }

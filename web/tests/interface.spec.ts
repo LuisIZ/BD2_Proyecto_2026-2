@@ -193,6 +193,17 @@ test("el mapa carga puntos y resalta resultados espaciales y filas", async ({
   await expect(page.getByText("Fila seleccionada en el mapa")).toBeVisible();
 
   await editor.fill(
+    `SELECT * FROM ${tableName} WHERE dentro(ubicacion, POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.02, -12.09 -77.05)));`,
+  );
+  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Ejecutar", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText("Polígono de búsqueda", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "San Isidro" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "Miraflores" })).toBeVisible();
+
+  await editor.fill(
     `SELECT * FROM ${tableName} WHERE distancia(ubicacion, POINT(-12.5, -77.5)) < 1;`,
   );
   await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
