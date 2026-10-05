@@ -819,10 +819,114 @@ Resultado Ejecutor::ejecutar(const std::string& sql) {
     return r;
 }
 
+void Ejecutor::usar_locks(transacciones::GestorLocks* gestor, int txn) {
+    if (en_transaccion_) throw std::runtime_error("no se puede cambiar el gestor de locks dentro de una transaccion");
+    locks_ = gestor ? gestor : &locks_propios_;
+    txn_ = txn;
+}
+
 Resultado Ejecutor::ejecutar(const Sentencia& s) {
+    const bool de_transaccion = s.tipo == TipoSentencia::BEGIN_TRANSACTION || s.tipo == TipoSentencia::COMMIT ||
+                                s.tipo == TipoSentencia::ROLLBACK;
+    if (de_transaccion && profundidad_ > 0) throw std::runtime_error("BEGIN, END y ROLLBACK no se pueden explicar");
+    if (s.tipo == TipoSentencia::BEGIN_TRANSACTION) return iniciar_transaccion();
+    if (s.tipo == TipoSentencia::COMMIT) return terminar_transaccion(true);
+    if (s.tipo == TipoSentencia::ROLLBACK) return terminar_transaccion(false);
+    if (profundidad_ > 0) return ejecutar_sentencia(s);
+
+    const Sentencia& efectiva = s.tipo == TipoSentencia::EXPLAIN && s.analyze && s.explicada ? *s.explicada : s;
+    const bool ddl = efectiva.tipo == TipoSentencia::CREATE_TABLE || efectiva.tipo == TipoSentencia::CREATE_TABLE_FROM_FILE ||
+                     efectiva.tipo == TipoSentencia::COPY_FROM_FILE || efectiva.tipo == TipoSentencia::CREATE_INDEX ||
+                     efectiva.tipo == TipoSentencia::DROP_TABLE;
+    if (ddl && en_transaccion_) throw std::runtime_error("no se permiten CREATE, DROP ni COPY dentro de una transaccion");
+    const bool escribe = ddl || efectiva.tipo == TipoSentencia::INSERT || efectiva.tipo == TipoSentencia::DELETE_FROM;
+    const bool lee = efectiva.tipo == TipoSentencia::SELECT || s.tipo == TipoSentencia::EXPLAIN;
+
+    if ((escribe || lee) && !efectiva.tabla.empty()) {
+        const transacciones::ModoLock modo = escribe ? transacciones::ModoLock::EXCLUSIVO : transacciones::ModoLock::COMPARTIDO;
+        if (!locks_->adquirir(txn_, minusculas(efectiva.tabla), modo)) {
+            const bool habia = en_transaccion_;
+            if (habia) deshacer_cambios();
+            en_transaccion_ = false;
+            deshacer_.clear();
+            locks_->liberar_todo(txn_);
+            throw std::runtime_error("deadlock: la transaccion T" + std::to_string(txn_) + " fue elegida como victima" +
+                                     (habia ? " y se deshicieron sus cambios" : ""));
+        }
+    }
+    Resultado r;
+    try {
+        std::lock_guard<std::mutex> latch(locks_->latch());
+        r = ejecutar_sentencia(s);
+    } catch (...) {
+        if (!en_transaccion_) locks_->liberar_todo(txn_);
+        throw;
+    }
+    if (!en_transaccion_) locks_->liberar_todo(txn_);
+    return r;
+}
+
+Resultado Ejecutor::iniciar_transaccion() {
+    if (en_transaccion_) throw std::runtime_error("ya hay una transaccion abierta; terminala con END o ROLLBACK");
+    en_transaccion_ = true;
+    deshacer_.clear();
+    Resultado r;
+    r.tipo = "begin";
+    r.mensaje = "transaccion T" + std::to_string(txn_) + " iniciada";
+    r.plan.push_back({"iniciar_transaccion", {{"txn", std::to_string(txn_)}, {"locks", "2PL estricto por tabla"}}});
+    return r;
+}
+
+Resultado Ejecutor::terminar_transaccion(bool confirmar) {
+    if (!en_transaccion_) throw std::runtime_error("no hay una transaccion abierta");
+    const std::size_t cambios = deshacer_.size();
+    if (!confirmar) deshacer_cambios();
+    en_transaccion_ = false;
+    deshacer_.clear();
+    locks_->liberar_todo(txn_);
+    Resultado r;
+    r.tipo = confirmar ? "commit" : "rollback";
+    r.afectadas = cambios;
+    r.mensaje = "transaccion T" + std::to_string(txn_) + (confirmar ? " confirmada" : " deshecha") + " (" + texto(cambios) + " cambios)";
+    r.plan.push_back({confirmar ? "confirmar" : "deshacer", {{"txn", std::to_string(txn_)}, {"cambios", texto(cambios)}}});
+    return r;
+}
+
+void Ejecutor::deshacer_cambios() {
+    std::lock_guard<std::mutex> latch(locks_->latch());
+    en_transaccion_ = false;
+    for (auto it = deshacer_.rbegin(); it != deshacer_.rend(); ++it) {
+        const Tabla& tabla = catalogo_.tabla(it->tabla);
+        Sentencia s;
+        s.tabla = it->tabla;
+        if (it->fue_insert) {
+            s.tipo = TipoSentencia::DELETE_FROM;
+            Condicion c;
+            c.columna = tabla.columnas[tabla.pk].nombre;
+            c.op = "=";
+            c.valor = it->fila[tabla.pk];
+            s.condiciones.push_back(c);
+            eliminar(s);
+        } else {
+            s.tipo = TipoSentencia::INSERT;
+            s.valores = it->fila;
+            insertar(s);
+        }
+    }
+}
+
+Resultado Ejecutor::ejecutar_sentencia(const Sentencia& s) {
+    ++profundidad_;
+    struct Salida {
+        int& p;
+        ~Salida() { --p; }
+    } salida{profundidad_};
     const auto inicio = Reloj::now();
     Resultado r;
     switch (s.tipo) {
+        case TipoSentencia::BEGIN_TRANSACTION: r = iniciar_transaccion(); break;
+        case TipoSentencia::COMMIT: r = terminar_transaccion(true); break;
+        case TipoSentencia::ROLLBACK: r = terminar_transaccion(false); break;
         case TipoSentencia::CREATE_TABLE: r = crear_tabla(s); break;
         case TipoSentencia::CREATE_TABLE_FROM_FILE: r = crear_tabla_desde_csv(s); break;
         case TipoSentencia::COPY_FROM_FILE: r = copiar_desde_csv(s); break;
@@ -1256,6 +1360,7 @@ Resultado Ejecutor::insertar(const Sentencia& s) {
     Almacen almacen(catalogo_, tabla, false);
     almacen.reiniciar_contadores();
     almacen.insertar(s.valores);
+    if (en_transaccion_) deshacer_.push_back({tabla.nombre, true, s.valores});
     Resultado r;
     r.tipo = "insert";
     r.afectadas = 1;
@@ -1283,7 +1388,10 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
     filtrar(acceso, tabla, r.plan);
 
     almacen.reiniciar_contadores();
-    for (const FilaFisica& f : acceso.filas) almacen.eliminar(f);
+    for (const FilaFisica& f : acceso.filas) {
+        almacen.eliminar(f);
+        if (en_transaccion_) deshacer_.push_back({tabla.nombre, false, f.fila});
+    }
     r.afectadas = acceso.filas.size();
     r.mensaje = texto(r.afectadas) + " filas eliminadas de " + tabla.nombre;
     PasoPlan paso{"eliminar", {{"estructura", almacen.estructura()}, {"filas", texto(r.afectadas)},

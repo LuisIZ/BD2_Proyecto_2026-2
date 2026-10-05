@@ -54,6 +54,7 @@ SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
 SHOW TABLES
 DESCRIBE t
 EXPLAIN [ANALYZE] <sentencia>
+BEGIN [TRANSACTION] | END [TRANSACTION] | COMMIT | ROLLBACK
 
 cond  := col (= | != | <> | < | <= | > | >=) valor
        | col BETWEEN a AND b
@@ -212,4 +213,5 @@ columnas e índices para el panel de archivos.
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.
-- Sin transacciones ni locks (sección 2.1.4 pendiente).
+- Las transacciones viven dentro de un lote y los locks son por tabla; ver
+  [transacciones.md](transacciones.md).

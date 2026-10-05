@@ -160,6 +160,18 @@ private:
             avanzar();
             s.tipo = TipoSentencia::DESCRIBE;
             s.tabla = identificador();
+        } else if (es("BEGIN") || es("START")) {
+            avanzar();
+            if (es("TRANSACTION")) avanzar();
+            s.tipo = TipoSentencia::BEGIN_TRANSACTION;
+        } else if (es("END") || es("COMMIT")) {
+            avanzar();
+            if (es("TRANSACTION")) avanzar();
+            s.tipo = TipoSentencia::COMMIT;
+        } else if (es("ROLLBACK")) {
+            avanzar();
+            if (es("TRANSACTION")) avanzar();
+            s.tipo = TipoSentencia::ROLLBACK;
         } else {
             error("sentencia no reconocida");
         }

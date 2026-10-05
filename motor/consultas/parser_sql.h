@@ -23,6 +23,7 @@ namespace sql {
 //   SHOW TABLES
 //   DESCRIBE t
 //   EXPLAIN [ANALYZE] <sentencia>
+//   BEGIN [TRANSACTION] | END [TRANSACTION] | COMMIT | ROLLBACK
 //
 //   cond  := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
 //          | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
@@ -48,7 +49,10 @@ enum class TipoSentencia {
     DELETE_FROM,
     SELECT,
     SHOW_TABLES,
-    DESCRIBE
+    DESCRIBE,
+    BEGIN_TRANSACTION,
+    COMMIT,
+    ROLLBACK
 };
 
 struct ColumnaDef {
