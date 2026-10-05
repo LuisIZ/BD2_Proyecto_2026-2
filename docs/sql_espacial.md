@@ -129,9 +129,35 @@ Si el `ORDER BY distancia` va junto con otras condiciones en el `WHERE`, no se u
 del índice, porque los k más cercanos podrían no cumplirlas; se recorre y se ordena como
 sin índice. Las pruebas comparan las dos formas y dan el mismo resultado.
 
-## 5. Pendiente
+## 5. Intersección con polígono
 
-- Intersección con polígono: la sintaxis propuesta es
-  `dentro(col, POLYGON((lat lon, lat lon, ...)))`; todavía no está implementada.
+```sql
+SELECT nombre FROM tiendas
+WHERE dentro(ubicacion, POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.02, -12.09 -77.05)));
+```
+
+- Los vértices van como `lat lon` separados por comas, en orden (horario o antihorario);
+  hacen falta al menos 3 y el polígono se cierra solo.
+- `dentro` no lleva operador de comparación y se puede unir con otras condiciones con `AND`.
+- La pertenencia se decide con *ray casting*: desde el punto se traza un rayo y se cuentan
+  los lados que cruza; si son impares, el punto está dentro. Las cuentas se hacen en
+  microgrados con enteros de 64 bits, así que un punto sobre un borde se detecta de forma
+  exacta y cuenta como dentro.
+- Sin índice es un filtro sobre el recorrido. Con R-Tree, el planificador usa la ruta
+  `poligono_espacial`: pide al índice los puntos de la caja que envuelve al polígono
+  (`en_caja`) y el filtro hace la prueba exacta, igual que con el radio:
+
+```
+-> Filter on tiendas (actual time=0.002 rows=1)
+   Filter: dentro(ubicacion, POLYGON(3 vertices))
+  -> Index Scan using idx_geo on tiendas (ubicacion)  (cost=4.00 rows=1) (actual time=0.037 rows=2 pages=3)
+     Index Cond: dentro(ubicacion, POLYGON(3 vertices))
+```
+
+Con los puntos de la prueba, el rectángulo del ejemplo devuelve Miraflores y San Isidro, y
+el triángulo que usa la misma base pero corta en diagonal devuelve solo Miraflores.
+
+## 6. Pendiente
+
 - Para comparar con PostGIS (#29) hay que invertir el orden: PostGIS usa
   `POINT(lon lat)`.
