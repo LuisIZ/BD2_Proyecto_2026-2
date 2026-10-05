@@ -282,7 +282,9 @@ export default function App() {
                           <small>
                             {index.tipo === "HASH"
                               ? "Hash extensible"
-                              : "B+ no agrupado"}{" "}
+                              : index.tipo === "RTREE"
+                                ? "R-Tree"
+                                : "B+ no agrupado"}{" "}
                             · {index.columna}
                           </small>
                         </li>
