@@ -49,7 +49,12 @@ Esa distancia nunca es mayor que la de cualquier punto dentro del rectángulo, a
 primer punto que sale de la cola es el más cercano, el segundo el siguiente, y así hasta k.
 La salida ya viene ordenada.
 
-Las dos consultas guardan `nodos_visitados()` para el plan de ejecución.
+**Caja.** `en_caja(minimo, maximo)` devuelve los puntos dentro de un rectángulo bajando
+solo por los MBR que lo cortan. El ejecutor la usa para la intersección con polígonos: pide
+la caja que envuelve al polígono y después descarta con *ray casting* los puntos que quedan
+fuera.
+
+Las tres consultas guardan `nodos_visitados()` para el plan de ejecución.
 
 ## 4. Eliminación
 

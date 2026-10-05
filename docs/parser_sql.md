@@ -59,6 +59,7 @@ BEGIN [TRANSACTION] | END [TRANSACTION] | COMMIT | ROLLBACK
 cond  := col (= | != | <> | < | <= | > | >=) valor
        | col BETWEEN a AND b
        | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+       | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
 valor := entero | 'texto' | POINT(lat, lon)
 ```
 
