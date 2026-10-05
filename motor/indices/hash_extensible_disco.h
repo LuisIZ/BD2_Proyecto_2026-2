@@ -82,8 +82,9 @@ class HashExtensibleDisco {
     static constexpr int TAM_PAGINA = detalle_bplus_no_agrupado::TAM_PAGINA;
 
 public:
-    explicit HashExtensibleDisco(const std::string& ruta, bool truncar = false)
-        : gestor_(ruta, truncar), pool_(gestor_) {
+    explicit HashExtensibleDisco(const std::string& ruta, bool truncar = false,
+                                 int profundidad_maxima = detalle_hash_disco::PROFUNDIDAD_MAXIMA)
+        : gestor_(ruta, truncar), pool_(gestor_), profundidad_maxima_(profundidad_maxima) {
         if (gestor_.num_paginas == 0) crear();
         else abrir();
     }
@@ -259,7 +260,7 @@ private:
     }
 
     void duplicar_directorio() {
-        if (cab_.profundidad_global >= detalle_hash_disco::PROFUNDIDAD_MAXIMA) {
+        if (cab_.profundidad_global >= profundidad_maxima_) {
             throw std::runtime_error("el directorio del indice hash llego a su profundidad maxima");
         }
         const std::uint64_t total = 1ull << cab_.profundidad_global;
@@ -376,7 +377,7 @@ private:
 
     bool conviene_dividir(PageId cabeza) {
         const int pl = profundidad_local(cabeza);
-        if (pl >= detalle_hash_disco::PROFUNDIDAD_MAXIMA) return false;
+        if (pl >= profundidad_maxima_) return false;
         const std::uint64_t bit = 1ull << pl;
         bool primero = true;
         bool referencia = false;
@@ -451,4 +452,5 @@ private:
     GestorPaginas gestor_;
     BufferPool pool_;
     CabeceraHash cab_{};
+    int profundidad_maxima_;
 };
