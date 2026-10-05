@@ -59,12 +59,12 @@ MOTOR_SQL := $(BUILD)/motor_sql$(EXE)
 TESTS := pagina_slotted_test heap_file_test sequential_file_test bplus_agrupado_test \
          extendible_hash_test hash_disco_test distancia_test transacciones_test external_algorithms_test sql_test
 BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_file_escala_test indices_bench \
-          extendible_hash_csv_test ejemplo_heap
+          extendible_hash_csv_test ejemplo_heap transacciones_demo
 
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all run setup gui motor test bench bench-indices bench-agrupado clean
+.PHONY: all run setup gui motor test bench bench-indices bench-agrupado demo-transacciones clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -110,6 +110,11 @@ bench-indices: $(BUILD)/indices_bench$(EXE)
 	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 100000
 	$(call RUN,$(BUILD)/indices_bench$(EXE)) --n 100000 --barajar
 	$(PYTHON) docs/comparacion_indices/graficar.py
+
+# transacciones (seccion 2.1.4): hilos con y sin locks sobre la misma cuenta
+demo-transacciones: $(BUILD)/transacciones_demo$(EXE)
+	@$(call MKDIR,datos/resultados)
+	$(call RUN,$(BUILD)/transacciones_demo$(EXE))
 
 # Un solo comando para usuarios nuevos: instala todo, compila y abre la web.
 # Equivale a ./bd2 run (en Windows, bd2 run).
