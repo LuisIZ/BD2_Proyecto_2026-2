@@ -83,7 +83,9 @@ en Lima, las dos casi coinciden.
 
 ## 4. Plan de ejecución
 
-Mientras no exista el R-Tree, toda consulta espacial recorre la tabla:
+### Sin índice
+
+Toda consulta espacial recorre la tabla. El radio es un filtro sobre la distancia:
 
 ```
 EXPLAIN SELECT nombre FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 6000;
@@ -93,22 +95,42 @@ Filter: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] < 6000
   -> Seq Scan on tiendas  (cost=1.00 rows=5)
 ```
 
-El k-NN ordena con el mismo `ExternalMergeSort` de `ORDER BY`, usando la distancia en
-milímetros como clave, y `LIMIT` corta:
+y el k-NN ordena toda la tabla con el `ExternalMergeSort` de `ORDER BY`, usando la
+distancia en milímetros como clave, antes de que `LIMIT` corte.
+
+### Con R-Tree
+
+```sql
+CREATE INDEX idx_geo ON tiendas (ubicacion) USING RTREE;
+```
+
+crea un R-Tree paginado ([rtree.md](rtree.md)) sobre una columna `POINT` de una tabla
+`HEAP`, y se mantiene con cada `INSERT` y `DELETE`. El planificador lo usa en dos casos:
+
+| Consulta | Acceso |
+|---|---|
+| `WHERE distancia(col, POINT(...)) < r` (o `<=`) | `rango_espacial`: el R-Tree devuelve los puntos a `r` metros o menos y un filtro conserva el operador exacto |
+| `ORDER BY distancia(col, POINT(...)) LIMIT k`, sin otras condiciones y en orden ascendente | `knn_espacial`: el R-Tree devuelve solo los k más cercanos y el `Sort` ordena esas k filas |
 
 ```
-Limit on tiendas  (rows=3) (actual rows=3)
-  -> Projection on tiendas (actual rows=5)
-    -> Sort on tiendas (actual time=0.506 rows=5)
-       Sort Key: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] ASC
-      -> Seq Scan on tiendas  (cost=1.00 rows=5) (actual time=0.013 rows=5 pages=1)
+EXPLAIN ANALYZE SELECT nombre FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 6000 ORDER BY nombre;
+
+Projection on tiendas (actual rows=2)
+  -> Sort on tiendas (actual time=0.371 rows=2)
+     Sort Key: nombre ASC
+    -> Filter on tiendas (actual time=0.003 rows=2)
+       Filter: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] < 6000
+      -> Index Scan using idx_geo on tiendas (ubicacion)  (cost=4.00 rows=1) (actual time=0.041 rows=2 pages=3)
+         Index Cond: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] < 6000
 ```
+
+El detalle `nodos_visitados` del paso de acceso dice cuántos nodos del R-Tree se leyeron.
+Si el `ORDER BY distancia` va junto con otras condiciones en el `WHERE`, no se usa el k-NN
+del índice, porque los k más cercanos podrían no cumplirlas; se recorre y se ordena como
+sin índice. Las pruebas comparan las dos formas y dan el mismo resultado.
 
 ## 5. Pendiente
 
-- `CREATE INDEX ... USING RTREE` ya se reconoce, pero responde que el índice aún no está
-  disponible. Cuando el R-Tree (#24) esté en `main`, el planificador lo usará para el
-  radio y el k-NN en lugar del recorrido.
 - Intersección con polígono: la sintaxis propuesta es
   `dentro(col, POLYGON((lat lon, lat lon, ...)))`; todavía no está implementada.
 - Para comparar con PostGIS (#29) hay que invertir el orden: PostGIS usa
