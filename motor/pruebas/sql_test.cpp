@@ -424,9 +424,37 @@ void prueba_espacial() {
     assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_HEAP (nombre) USING RTREE"));
     assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_HEAP (ubicacion) USING HASH"));
 
+    const std::string radio = "SELECT nombre FROM tiendas_HEAP WHERE distancia(ubicacion, " + centro + ") < 6000 ORDER BY nombre";
+    const std::string knn = "SELECT nombre FROM tiendas_HEAP ORDER BY distancia(ubicacion, " + centro + ") LIMIT 3";
+    const std::vector<std::string> sin_indice_radio = nombres(e.ejecutar(radio));
+    const std::vector<std::string> sin_indice_knn = nombres(e.ejecutar(knn));
+    assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_SEQUENTIAL (ubicacion) USING RTREE"));
+    assert(e.ejecutar("CREATE INDEX idx_geo ON tiendas_HEAP (ubicacion) USING RTREE").afectadas == 5);
+
+    r = e.ejecutar(radio);
+    assert(nombres(r) == sin_indice_radio && tiene_paso(r, "rango_espacial"));
+    assert(!detalle_paso(r, "rango_espacial", "nodos_visitados").empty());
+    r = e.ejecutar(knn);
+    assert(nombres(r) == sin_indice_knn && tiene_paso(r, "knn_espacial"));
+    assert(texto_del_plan(e.ejecutar("EXPLAIN " + knn)).find("Index Scan using idx_geo on tiendas_HEAP (ubicacion)") != std::string::npos);
+    r = e.ejecutar("SELECT nombre FROM tiendas_HEAP WHERE id > 0 ORDER BY distancia(ubicacion, " + centro + ") LIMIT 3");
+    assert(!tiene_paso(r, "knn_espacial") && nombres(r) == sin_indice_knn);
+
+    e.ejecutar("INSERT INTO tiendas_HEAP VALUES (6, 'Cercado', POINT(-12.0470, -77.0430))");
+    assert(nombres(e.ejecutar(knn))[1] == "Cercado");
+    e.ejecutar("DELETE FROM tiendas_HEAP WHERE id = 6");
+    assert(nombres(e.ejecutar(knn)) == sin_indice_knn);
+    {
+        Catalogo otro(DB);
+        Ejecutor e2(otro);
+        r = e2.ejecutar(knn);
+        assert(tiene_paso(r, "knn_espacial") && nombres(r) == sin_indice_knn);
+    }
+
     for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) e.ejecutar("DROP TABLE tiendas_" + org);
     std::filesystem::remove(csv);
-    std::cout << "espacial: POINT, radio por distancia, k vecinos y validaciones en las tres organizaciones\n";
+    std::cout << "espacial: POINT, radio por distancia, k vecinos y validaciones en las tres organizaciones;\n"
+              << "          con R-Tree el radio y el k-NN dan lo mismo que sin indice\n";
 }
 
 }  // namespace

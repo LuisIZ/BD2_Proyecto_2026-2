@@ -53,6 +53,8 @@
   Omar Chavarria\par
   \vfill
   {\large Lima, 4 de octubre de 2026\par}
+  \vspace{0.3cm}
+  Repositorio: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}\par
 \end{titlepage}
 
 \tableofcontents
@@ -65,7 +67,7 @@ El proyecto consiste en construir desde cero un gestor de bases de datos que sop
 
 El objetivo del curso no es competir con un motor comercial, sino entender cómo funciona por dentro. Por eso el equipo escribió cada estructura sobre páginas de 4 KB y midió cuántas páginas lee y escribe cada operación. Esa medida, más que el tiempo, es la que permite explicar por qué una técnica conviene más que otra.
 
-El informe sigue la estructura pedida en la sección de entregables: primero la arquitectura y el dominio de datos, luego la explicación de cada técnica implementada y al final la comparación experimental. La última sección resume lo que quedó pendiente.
+El informe sigue la estructura pedida en la sección de entregables: primero la arquitectura y el dominio de datos, luego la explicación de cada técnica implementada y al final la comparación experimental. La última sección resume lo que quedó pendiente. El código fuente, la documentación técnica de cada módulo y este informe están en el repositorio del proyecto: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}.
 
 %-------------------------------------------------------------------------------
 \section{Arquitectura del sistema}
@@ -81,7 +83,7 @@ El sistema está dividido en capas. Cada capa solo conoce a la que tiene debajo,
 \node[capa, below=0.35cm of web] (api) {API (Python + FastAPI): recibe el SQL y llama al binario \texttt{motor\_sql}};
 \node[capa, below=0.35cm of api] (sql) {Consultas (C++): parser, planificador, ejecutor, EXPLAIN, transacciones};
 \node[capa, below=0.35cm of sql] (alg) {Algoritmos externos: merge sort k-way y external hashing};
-\node[capa, below=0.35cm of alg] (idx) {Índices: B+ agrupado, B+ no agrupado, hash extensible en disco};
+\node[capa, below=0.35cm of alg] (idx) {Índices: B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco};
 \node[capa, below=0.35cm of idx] (arc) {Archivos: Heap File con páginas slotted y archivo secuencial paginado};
 \node[capa, below=0.35cm of arc] (pag) {Páginas de 4 KB en disco, gestor de páginas y buffer pool de 64 marcos};
 \foreach \a/\b in {web/api, api/sql, sql/alg, alg/idx, idx/arc, arc/pag} \draw[flecha] (\a) -- (\b);
@@ -98,7 +100,7 @@ motor/
   comun/          interfaz IFileOrganization y Registro, compartidos
   archivos/       heap_file, sequential_file, pagina_slotted
   indices/        bplus_agrupado, bplus_no_agrupado, hash_extensible_disco,
-                  gestor_paginas, buffer_pool
+                  rtree, gestor_paginas, buffer_pool
   consultas/      parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
   espacial/       distancia.h (métricas euclidiana y haversine)
   transacciones/  gestor_locks.h (2PL estricto y deadlocks)
@@ -250,11 +252,29 @@ SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) < 50
 SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.0464, -77.0428)) LIMIT 10;
 \end{lstlisting}
 
-La consulta por radio se resuelve como un filtro sobre la distancia y la de k vecinos ordena por distancia con el mismo merge sort externo del \texttt{ORDER BY}, cortando con \texttt{LIMIT}. Antes de ejecutar se valida que \texttt{distancia} reciba una columna \texttt{POINT} y que una columna \texttt{POINT} no se compare con \texttt{=} o \texttt{<}. Con cinco puntos de Lima, la consulta de los tres más cercanos al centro devuelve centro, San Isidro y Callao, y la de radio de 6 km devuelve centro y San Isidro, en las tres organizaciones de archivo.
+Sin índice, la consulta por radio se resuelve como un filtro sobre la distancia y la de k vecinos ordena por distancia con el mismo merge sort externo del \texttt{ORDER BY}, cortando con \texttt{LIMIT}. Con un índice R-Tree, ambas se resuelven con el índice, como se explica en la siguiente subsección. Antes de ejecutar se valida que \texttt{distancia} reciba una columna \texttt{POINT} y que una columna \texttt{POINT} no se compare con \texttt{=} o \texttt{<}. Con cinco puntos de Lima, la consulta de los tres más cercanos al centro devuelve centro, San Isidro y Callao, y la de radio de 6 km devuelve centro y San Isidro, en las tres organizaciones de archivo.
+
+\subsection{Índice R-Tree}
+
+El R-Tree guarda los puntos en nodos de 4 KB, igual que los demás índices, con 170 entradas por nodo. Cada entrada tiene un rectángulo mínimo envolvente (MBR) en microgrados y una referencia: en una hoja es la posición del registro y en un nodo interno es la página del hijo. Para insertar se baja por la entrada cuyo MBR crece menos, y cuando un nodo se llena se divide con el split cuadrático de Guttman, que elige como semillas las dos entradas que más área desperdiciarían juntas y reparte el resto según cuánto crece cada grupo.
+
+Las consultas usan las métricas del módulo de distancias:
+
+\begin{itemize}
+  \item Rango por radio: se calcula la caja de grados que contiene al círculo y solo se baja por los nodos cuyo MBR la corta; en las hojas se filtra con la distancia exacta.
+  \item k vecinos: búsqueda \emph{best-first} con una cola de prioridad ordenada por la distancia mínima del punto a cada MBR. Como esa distancia nunca supera la de un punto dentro del rectángulo, los puntos salen de la cola ya ordenados del más cercano al más lejano.
+\end{itemize}
+
+Desde SQL, \texttt{CREATE INDEX idx\_geo ON tiendas (ubicacion) USING RTREE} construye el índice sobre una columna \texttt{POINT} de una tabla \texttt{HEAP} y el motor lo mantiene en cada \texttt{INSERT} y \texttt{DELETE}. El planificador lo usa para \texttt{distancia(...) < r} y para \texttt{ORDER BY distancia(...) LIMIT k}, y el plan lo muestra así:
+
+\begin{lstlisting}
+-> Index Scan using idx_geo on tiendas (ubicacion)  (cost=4.00 rows=1) (actual time=0.041 rows=2 pages=3)
+   Index Cond: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] < 6000
+\end{lstlisting}
 
 \subsection{Estado de la Parte 2}
 
-El parser ya reconoce \texttt{CREATE INDEX ... USING RTREE}, pero el índice R-Tree todavía no está terminado, así que las consultas espaciales recorren la tabla completa. Tampoco están listos el panel de mapa con Leaflet, la intersección con polígonos ni la comparación con el índice GiST de PostgreSQL. Estos puntos se detallan en la sección \ref{sec:pendiente}.
+Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL y el índice R-Tree conectado al planificador. No están listos la intersección con polígonos, el panel de mapa con Leaflet ni la comparación con el índice GiST de PostgreSQL. Estos puntos se detallan en la sección \ref{sec:pendiente}.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
@@ -372,6 +392,28 @@ con BEGIN/END y 2PL: esperado 2000, obtenido 2000, deadlocks detectados 31
 
 Sin transacciones, cada sentencia es atómica, pero entre la lectura y la escritura otro hilo lee el mismo saldo y uno de los depósitos se pierde (\emph{lost update}). En las corridas realizadas se perdieron entre 13 y 15 de los 20 depósitos. Con \texttt{BEGIN ... END}, el lock compartido de la lectura se mantiene hasta escribir; cuando dos hilos leen y luego quieren escribir, se produce un deadlock que el gestor detecta, la víctima se deshace y reintenta, y el saldo final siempre es 2\,000. El número exacto de deadlocks varía entre corridas porque depende de cómo el sistema operativo reparte los hilos, pero la conclusión no cambia. Los eventos de locks se exportan a \texttt{datos/resultados/transacciones\_eventos.json} para que la interfaz pueda dibujarlos.
 
+\subsection{Parte 2: R-Tree frente a búsqueda secuencial}
+
+La prueba \texttt{rtree\_test} inserta 100\,000 puntos al azar alrededor de Lima (semilla 42) y compara el R-Tree con una búsqueda secuencial sobre los mismos puntos:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+Medida & Valor \\
+\midrule
+Altura del árbol & 3 \\
+Nodos & 872 \\
+Tamaño en disco & 3\,492 KB \\
+Nodos visitados, radio de 1 km & 14 de 872 \\
+Nodos visitados, k = 10 & 8 de 872 \\
+\bottomrule
+\end{tabular}
+\caption{R-Tree con 100\,000 puntos.}
+\end{table}
+
+Las 60 consultas de rango (radios de 1, 5 y 10 km con las dos métricas) y las 30 de k vecinos (k = 10, 50 y 100) devuelven exactamente lo mismo que la búsqueda secuencial. La diferencia está en lo que se lee: la búsqueda secuencial siempre recorre los 100\,000 puntos, mientras que el R-Tree resuelve un radio de 1 km leyendo 14 nodos y los 10 vecinos más cercanos leyendo 8. La comparación de tiempos con el índice GiST de PostgreSQL, que pide la sección 2.2.4, queda pendiente.
+
 \subsection{Cuándo usar cada técnica}
 
 \begin{table}[H]
@@ -386,6 +428,7 @@ Secuencial & se busca por clave o por rango y se inserta poco & inserciones lent
 B+ agrupado & se consulta por rango o se lista ordenado por la clave primaria & solo uno por tabla; ocupa más páginas \\
 B+ no agrupado & se necesita un índice secundario con repetidos, por igualdad o rango & una lectura del heap por cada fila devuelta \\
 Hash extensible & solo hay búsquedas por igualdad & no sirve para rangos ni para ordenar \\
+R-Tree & se busca por distancia a un punto: radio o vecinos & solo sirve para columnas \texttt{POINT} \\
 \bottomrule
 \end{tabular}
 \caption{Resumen de ventajas y desventajas.}
@@ -399,7 +442,7 @@ El proyecto permitió comprobar en la práctica varias ideas que en clase se ven
 
 La Parte 1 está completa, con dos límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro.
 
-De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia y la extensión SQL con consultas por radio y por k vecinos. Quedan pendientes el índice R-Tree, que hoy obliga a recorrer la tabla en cada consulta espacial, la intersección con polígonos, el panel de mapa y la comparación con GiST de PostgreSQL. El parser ya reconoce \texttt{USING RTREE}, así que el siguiente paso es conectar el índice al planificador.
+De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL y el índice R-Tree, que el planificador usa para las consultas por radio y por k vecinos. Con 100\,000 puntos, el R-Tree responde las mismas consultas que la búsqueda secuencial leyendo una fracción pequeña de sus nodos. Quedan pendientes la intersección con polígonos, el panel de mapa con Leaflet y la comparación de tiempos con el índice GiST de PostgreSQL.
 
 \section*{Referencias}
 \begin{enumerate}

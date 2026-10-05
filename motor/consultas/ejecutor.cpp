@@ -7,6 +7,7 @@
 #include "../indices/bplus_agrupado.h"
 #include "../indices/bplus_no_agrupado.h"
 #include "../indices/hash_extensible_disco.h"
+#include "../indices/rtree.h"
 
 #include <algorithm>
 #include <cctype>
@@ -141,17 +142,23 @@ std::string describir_cond(const Condicion& c) {
     return s;
 }
 
+espacial::Punto punto_de(const Valor& v) { return {v.lat_e6, v.lon_e6}; }
+
 struct IndiceAbierto {
     const Indice* meta = nullptr;
     std::unique_ptr<BPlusNoAgrupado> bplus;
     std::unique_ptr<HashExtensibleDisco> hash;
+    std::unique_ptr<RTree> rtree;
 
-    void insertar(int clave, long long pos) {
-        if (hash) hash->insertar(clave, pos, false);
-        else bplus->insertar(clave, pos);
+    void insertar(const Valor& clave, long long pos) {
+        if (rtree) rtree->insertar(punto_de(clave), pos);
+        else if (hash) hash->insertar(static_cast<int>(clave.entero), pos, false);
+        else bplus->insertar(static_cast<int>(clave.entero), pos);
     }
-    bool eliminar_entrada(int clave, long long pos) {
-        return hash ? hash->eliminar_entrada(clave, pos) : bplus->eliminar_entrada(clave, pos);
+    bool eliminar_entrada(const Valor& clave, long long pos) {
+        if (rtree) return rtree->eliminar(punto_de(clave), pos);
+        const int k = static_cast<int>(clave.entero);
+        return hash ? hash->eliminar_entrada(k, pos) : bplus->eliminar_entrada(k, pos);
     }
     std::vector<long long> buscar(int clave) { return hash ? hash->buscar(clave) : bplus->buscar(clave); }
     std::vector<long long> buscar_rango(int desde, int hasta) {
@@ -159,19 +166,31 @@ struct IndiceAbierto {
         return bplus->buscar_rango(desde, hasta);
     }
     void sincronizar() {
-        if (hash) hash->sincronizar();
+        if (rtree) rtree->sincronizar();
+        else if (hash) hash->sincronizar();
         else bplus->sincronizar();
     }
-    long paginas_leidas() const { return hash ? hash->paginas_leidas() : bplus->paginas_leidas(); }
-    long num_entradas() const { return hash ? hash->num_entradas() : bplus->num_entradas(); }
-    long tamano_en_disco() { return hash ? hash->tamano_en_disco() : bplus->tamano_en_disco(); }
+    long paginas_leidas() const {
+        if (rtree) return rtree->paginas_leidas();
+        return hash ? hash->paginas_leidas() : bplus->paginas_leidas();
+    }
+    long num_entradas() const {
+        if (rtree) return rtree->num_entradas();
+        return hash ? hash->num_entradas() : bplus->num_entradas();
+    }
+    long tamano_en_disco() {
+        if (rtree) return rtree->tamano_en_disco();
+        return hash ? hash->tamano_en_disco() : bplus->tamano_en_disco();
+    }
 };
 
 std::string estructura_indice(const Indice& indice) {
+    if (indice.tipo == "RTREE") return "r_tree";
     return indice.tipo == "HASH" ? "hash_extensible" : "bplus_no_agrupado";
 }
 
 std::string nombre_tipo_indice(const Indice& indice) {
+    if (indice.tipo == "RTREE") return "R-Tree";
     return indice.tipo == "HASH" ? "hash extensible" : "B+ no agrupado";
 }
 
@@ -195,7 +214,8 @@ public:
         for (const Indice& indice : tabla.indices) {
             IndiceAbierto abierto;
             abierto.meta = &indice;
-            if (indice.tipo == "HASH") abierto.hash = std::make_unique<HashExtensibleDisco>(indice.archivo, false);
+            if (indice.tipo == "RTREE") abierto.rtree = std::make_unique<RTree>(indice.archivo, false);
+            else if (indice.tipo == "HASH") abierto.hash = std::make_unique<HashExtensibleDisco>(indice.archivo, false);
             else abierto.bplus = std::make_unique<BPlusNoAgrupado>(indice.archivo, false);
             indices_.push_back(std::move(abierto));
         }
@@ -282,10 +302,22 @@ public:
     }
 
     std::vector<FilaFisica> rango_indice(const Indice* i, long long desde, long long hasta) {
-        std::vector<FilaFisica> salida;
         IndiceAbierto* abierto = indice(i);
-        const std::vector<long long> posiciones = desde == hasta ? abierto->buscar(a_int(desde))
-                                                                  : abierto->buscar_rango(a_int(desde), a_int(hasta));
+        return leer_posiciones(desde == hasta ? abierto->buscar(a_int(desde)) : abierto->buscar_rango(a_int(desde), a_int(hasta)));
+    }
+
+    // radio > 0: puntos a menos de radio metros; si no, los k más cercanos
+    std::vector<FilaFisica> espacial(const Indice* i, const Valor& centro, double radio, long long k, const std::string& metrica, long& visitados) {
+        RTree& arbol = *indice(i)->rtree;
+        const espacial::Metrica m = espacial::metrica_desde(metrica);
+        std::vector<long long> posiciones = radio > 0 ? arbol.rango(punto_de(centro), radio, m)
+                                                      : arbol.knn(punto_de(centro), static_cast<int>(k), m);
+        visitados = arbol.nodos_visitados();
+        return leer_posiciones(posiciones);
+    }
+
+    std::vector<FilaFisica> leer_posiciones(const std::vector<long long>& posiciones) {
+        std::vector<FilaFisica> salida;
         for (long long pos : posiciones) {
             const RecordId rid = rid_de(pos);
             auto bytes = heap_->obtener(rid);
@@ -309,7 +341,7 @@ public:
             const std::vector<std::byte> bytes = codificar_registro({clave, empaquetar_variable(tabla_, fila)});
             const RecordId rid = heap_->insertar_bytes(bytes.data(), static_cast<std::uint16_t>(bytes.size()));
             for (IndiceAbierto& abierto : indices_) {
-                abierto.insertar(static_cast<int>(fila[tabla_.posicion_columna(abierto.meta->columna)].entero), pos_de(rid));
+                abierto.insertar(fila[tabla_.posicion_columna(abierto.meta->columna)], pos_de(rid));
             }
         } else if (seq_) {
             if (seq_->buscar(clave)) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
@@ -325,7 +357,7 @@ public:
         if (heap_) {
             heap_->eliminar_rid(f.rid);
             for (IndiceAbierto& abierto : indices_) {
-                abierto.eliminar_entrada(static_cast<int>(f.fila[tabla_.posicion_columna(abierto.meta->columna)].entero), pos_de(f.rid));
+                abierto.eliminar_entrada(f.fila[tabla_.posicion_columna(abierto.meta->columna)], pos_de(f.rid));
             }
         } else if (seq_) {
             seq_->eliminar(clave);
@@ -379,7 +411,7 @@ public:
             Registro r;
             if (decodificar_registro(datos, largo, r)) {
                 const Fila fila = desempaquetar_variable(tabla_, r.clave, r.valor);
-                abierto.insertar(static_cast<int>(fila[col].entero), pos_de(rid));
+                abierto.insertar(fila[col], pos_de(rid));
             }
             return true;
         });
@@ -474,7 +506,7 @@ private:
 // EXPLAIN a secas puede mostrar el mismo plan que correrá EXPLAIN ANALYZE sin
 // tocar una sola página de datos, como hace PostgreSQL.
 
-enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO };
+enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, ESPACIAL_RANGO, ESPACIAL_KNN };
 
 struct Plan {
     Via via = Via::SCAN;
@@ -485,6 +517,10 @@ struct Plan {
     std::string columna;
     std::string condicion;
     std::vector<Condicion> restantes;
+    Valor centro;
+    double radio = 0;
+    long long k = 0;
+    std::string metrica;
 };
 
 std::string nombre_nodo(Via via, const Tabla& tabla) {
@@ -493,7 +529,9 @@ std::string nombre_nodo(Via via, const Tabla& tabla) {
         case Via::PK_RANGO:
             // en el B+ agrupado y el secuencial la clave manda sobre el orden físico
             return tabla.organizacion == Organizacion::BPLUS ? "Clustered Index Scan" : "Ordered Key Scan";
-        case Via::INDICE_IGUAL: return "Index Scan";
+        case Via::INDICE_IGUAL:
+        case Via::ESPACIAL_RANGO:
+        case Via::ESPACIAL_KNN: return "Index Scan";
         case Via::INDICE_RANGO: return "Index Range Scan";
         case Via::SCAN: break;
     }
@@ -506,13 +544,16 @@ std::string id_operacion(Via via) {
         case Via::PK_RANGO: return "rango_por_clave";
         case Via::INDICE_IGUAL: return "busqueda_por_indice";
         case Via::INDICE_RANGO: return "rango_por_indice";
+        case Via::ESPACIAL_RANGO: return "rango_espacial";
+        case Via::ESPACIAL_KNN: return "knn_espacial";
         case Via::SCAN: break;
     }
     return "scan_completo";
 }
 
 // valida tipos y elige con qué estructura resolver el WHERE; no toca disco
-Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, bool indices_disponibles) {
+Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, bool indices_disponibles,
+                const Sentencia* s = nullptr) {
     Plan plan;
     const std::string pk = tabla.columnas[tabla.pk].nombre;
 
@@ -523,6 +564,18 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
         if (c.funcion == "DISTANCIA") {
             if (!es_point) throw std::runtime_error("distancia necesita una columna POINT y " + c.columna + " no lo es");
+            const Indice* indice = indices_disponibles ? tabla.indice_sobre(c.columna) : nullptr;
+            const bool acota = (c.op == "<" || c.op == "<=") && c.valor.entero > 0;
+            if (plan.condicion_usada < 0 && indice && indice->tipo == "RTREE" && acota) {
+                plan.via = Via::ESPACIAL_RANGO;
+                plan.indice = indice;
+                plan.condicion_usada = static_cast<int>(i);
+                plan.centro = c.punto;
+                plan.radio = static_cast<double>(c.valor.entero);
+                plan.metrica = c.metrica;
+                plan.columna = c.columna;
+                plan.condicion = describir_cond(c);
+            }
             continue;
         }
         if (es_point) throw std::runtime_error("la columna " + c.columna + " es POINT; comparala con distancia(...)");
@@ -555,8 +608,24 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         plan.condicion = describir_cond(c);
     }
 
+    // el R-Tree devuelve candidatos a radio <= r; el filtro conserva el operador exacto
     for (std::size_t i = 0; i < condiciones.size(); ++i) {
-        if (static_cast<int>(i) != plan.condicion_usada) plan.restantes.push_back(condiciones[i]);
+        if (static_cast<int>(i) != plan.condicion_usada || plan.via == Via::ESPACIAL_RANGO) plan.restantes.push_back(condiciones[i]);
+    }
+
+    const bool agrupa = s && (!s->group_by.empty() || std::any_of(s->items.begin(), s->items.end(),
+                                                                   [](const ItemSelect& it) { return !it.agregado.empty(); }));
+    if (s && indices_disponibles && condiciones.empty() && s->order_by_distancia && !s->descendente && s->limite > 0 && !agrupa) {
+        const Indice* indice = tabla.indice_sobre(s->order_by);
+        if (indice && indice->tipo == "RTREE") {
+            plan.via = Via::ESPACIAL_KNN;
+            plan.indice = indice;
+            plan.centro = s->order_by_punto;
+            plan.k = s->limite;
+            plan.metrica = s->order_by_metrica;
+            plan.columna = s->order_by;
+            plan.condicion = describir_orden(*s) + " LIMIT " + std::to_string(s->limite);
+        }
     }
     return plan;
 }
@@ -578,6 +647,8 @@ long long filas_estimadas(const Plan& plan, std::size_t registros) {
             const long long ancho = plan.hasta - plan.desde + 1;
             return std::max<long long>(1, std::min(n, ancho));
         }
+        case Via::ESPACIAL_RANGO: return std::max<long long>(1, n / 10);
+        case Via::ESPACIAL_KNN: return std::min(n, plan.k);
         case Via::SCAN: break;
     }
     return n;
@@ -597,7 +668,9 @@ double costo_estimado(const Plan& plan, std::size_t paginas, std::size_t registr
             return alto + std::min(total, std::max(1.0, total * fraccion));
         }
         case Via::INDICE_IGUAL:
-        case Via::INDICE_RANGO: return alto + static_cast<double>(filas);
+        case Via::INDICE_RANGO:
+        case Via::ESPACIAL_RANGO:
+        case Via::ESPACIAL_KNN: return alto + static_cast<double>(filas);
         case Via::SCAN: break;
     }
     return total;
@@ -610,18 +683,25 @@ struct Acceso {
 };
 
 // ejecuta la vía que eligió el planificador y mide lo que costó de verdad
-Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion>& condiciones) {
-    const Plan plan = planificar(tabla, condiciones, true);
+Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion>& condiciones, const Sentencia* s = nullptr) {
+    const Plan plan = planificar(tabla, condiciones, true, s);
     Acceso acceso;
     acceso.restantes = plan.restantes;
 
     const auto inicio = Reloj::now();
     almacen.reiniciar_contadores();
+    long visitados = -1;
     switch (plan.via) {
         case Via::PK_IGUAL: acceso.filas = almacen.buscar_pk(plan.desde); break;
         case Via::PK_RANGO: acceso.filas = almacen.rango_pk(plan.desde, plan.hasta); break;
         case Via::INDICE_IGUAL:
         case Via::INDICE_RANGO: acceso.filas = almacen.rango_indice(plan.indice, plan.desde, plan.hasta); break;
+        case Via::ESPACIAL_RANGO:
+            acceso.filas = almacen.espacial(plan.indice, plan.centro, plan.radio, 0, plan.metrica, visitados);
+            break;
+        case Via::ESPACIAL_KNN:
+            acceso.filas = almacen.espacial(plan.indice, plan.centro, 0, plan.k, plan.metrica, visitados);
+            break;
         case Via::SCAN: acceso.filas = almacen.escanear(); break;
     }
     const double ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
@@ -645,6 +725,7 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
         paso.detalles = {{"indice", plan.indice->nombre}, {"estructura", estructura_indice(*plan.indice)}, {"columna", plan.columna},
                          {"condicion", plan.condicion}, {"paginas_indice", texto(p_indice)},
                          {"paginas_heap", texto(p_datos)}, {"filas", texto(acceso.filas.size())}};
+        if (visitados >= 0) paso.detalles.push_back({"nodos_visitados", texto(static_cast<std::size_t>(visitados))});
     } else {
         paso.paginas_leidas = static_cast<long long>(almacen.paginas_leidas());
         paso.detalles = {{"estructura", almacen.estructura()}};
@@ -967,7 +1048,7 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
         if (consulta) {
             const Tabla& tabla = catalogo_.tabla(interna.tabla);
             Almacen almacen(catalogo_, tabla, false);
-            const Plan elegido = planificar(tabla, interna.condiciones, true);
+            const Plan elegido = planificar(tabla, interna.condiciones, true, &interna);
             const long long filas = filas_estimadas(elegido, almacen.registros());
             (void)costo_estimado(elegido, almacen.paginas_aprox(), almacen.registros(), filas, almacen.altura());
         }
@@ -979,7 +1060,7 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
         const Tabla& tabla = catalogo_.tabla(interna.tabla);
         // abrir la tabla solo lee la cabecera: es lo que PostgreSQL saca de pg_class
         Almacen almacen(catalogo_, tabla, false);
-        const Plan plan = planificar(tabla, interna.condiciones, true);
+        const Plan plan = planificar(tabla, interna.condiciones, true, &interna);
 
         PasoPlan paso;
         paso.operacion = id_operacion(plan.via);
@@ -1308,24 +1389,25 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     if (tabla.organizacion != Organizacion::HEAP) throw std::runtime_error("los indices secundarios solo se admiten sobre tablas HEAP (las otras reubican registros)");
     const int col = tabla.posicion_columna(s.indice_columna);
     if (col < 0) throw std::runtime_error("la columna " + s.indice_columna + " no existe");
-    if (s.indice_tipo == "RTREE") {
-        if (tabla.columnas[col].tipo != TipoColumna::POINT) throw std::runtime_error("el indice RTREE solo se crea sobre columnas POINT");
-        throw std::runtime_error("el indice RTREE aun no esta disponible; las consultas por distancia usan recorrido secuencial");
-    }
-    if (tabla.columnas[col].tipo != TipoColumna::INT) throw std::runtime_error("solo se indexan columnas INT");
+    const bool es_rtree = s.indice_tipo == "RTREE";
+    if (es_rtree && tabla.columnas[col].tipo != TipoColumna::POINT) throw std::runtime_error("el indice RTREE solo se crea sobre columnas POINT");
+    if (!es_rtree && tabla.columnas[col].tipo != TipoColumna::INT) throw std::runtime_error("solo se indexan columnas INT");
     if (tabla.indice_sobre(s.indice_columna)) throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
     for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
 
     const bool es_hash = s.indice_tipo == "HASH";
-    Indice indice{s.indice_nombre, tabla.columnas[col].nombre, es_hash ? "HASH" : "BPLUS",
-                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), es_hash ? ".hash" : ".bplus")};
+    const std::string tipo = es_rtree ? "RTREE" : es_hash ? "HASH" : "BPLUS";
+    const std::string extension = es_rtree ? ".rtree" : es_hash ? ".hash" : ".bplus";
+    Indice indice{s.indice_nombre, tabla.columnas[col].nombre, tipo,
+                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), extension)};
     long entradas = 0;
     long disco = 0;
     {
         Almacen almacen(catalogo_, tabla, false);
         IndiceAbierto abierto;
         abierto.meta = &indice;
-        if (es_hash) abierto.hash = std::make_unique<HashExtensibleDisco>(indice.archivo, true);
+        if (es_rtree) abierto.rtree = std::make_unique<RTree>(indice.archivo, true);
+        else if (es_hash) abierto.hash = std::make_unique<HashExtensibleDisco>(indice.archivo, true);
         else abierto.bplus = std::make_unique<BPlusNoAgrupado>(indice.archivo, true);
         almacen.construir_indice(indice, abierto);
         entradas = abierto.num_entradas();
@@ -1383,7 +1465,7 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
     Resultado r;
     r.tipo = "delete";
 
-    Acceso acceso = acceder(almacen, tabla, s.condiciones);
+    Acceso acceso = acceder(almacen, tabla, s.condiciones, &s);
     r.plan.push_back(acceso.paso);
     filtrar(acceso, tabla, r.plan);
 
@@ -1411,7 +1493,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     Resultado r;
     r.tipo = "select";
 
-    Acceso acceso = acceder(almacen, tabla, s.condiciones);
+    Acceso acceso = acceder(almacen, tabla, s.condiciones, &s);
     r.plan.push_back(acceso.paso);
     filtrar(acceso, tabla, r.plan);
 

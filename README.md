@@ -19,7 +19,7 @@ API (Python + FastAPI)      recibe el SQL y llama al binario motor_sql
         │  proceso
 Consultas (C++)             parser, planificador, ejecutor, EXPLAIN [ANALYZE], transacciones
 Algoritmos externos         external merge sort (ORDER BY) y external hashing (GROUP BY)
-Índices                     B+ agrupado, B+ no agrupado, hash extensible en disco
+Índices                     B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco
 Archivos                    Heap File con páginas slotted y archivo secuencial paginado
 Páginas de 4 KB             gestor de páginas y buffer pool
 ```
@@ -48,8 +48,9 @@ páginas leídas; la API solo traduce peticiones HTTP a llamadas a ese binario.
 |---|---|
 | Tipo `POINT` (lat, lon en microgrados) | listo |
 | Métricas euclidiana y haversine | listo ([sql_espacial](docs/sql_espacial.md)) |
-| SQL: `distancia(col, POINT(...)) < metros` y `ORDER BY distancia(...) LIMIT k` | listo, con recorrido secuencial |
-| Índice R-Tree, intersección con polígonos, mapa y comparación con GiST | pendiente |
+| SQL: `distancia(col, POINT(...)) < metros` y `ORDER BY distancia(...) LIMIT k` | listo |
+| Índice R-Tree paginado (`CREATE INDEX ... USING RTREE`) usado por el planificador | listo ([rtree](docs/rtree.md)) |
+| Intersección con polígonos, mapa y comparación con GiST | pendiente |
 
 Ejemplo de consultas:
 
@@ -65,6 +66,7 @@ ROLLBACK;
 
 CREATE TABLE tiendas (id INT PRIMARY KEY, nombre VARCHAR(20), ubicacion POINT);
 INSERT INTO tiendas VALUES (1, 'Centro', POINT(-12.0464, -77.0428));
+CREATE INDEX idx_geo ON tiendas (ubicacion) USING RTREE;
 SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.05, -77.04)) LIMIT 3;
 ```
 
@@ -75,7 +77,7 @@ BD2_Proyecto_2026-2/
 ├── motor/                C++: todo lo que toca el disco y ejecuta consultas
 │   ├── comun/            interfaz IFileOrganization y Registro
 │   ├── archivos/         heap_file, sequential_file, pagina_slotted
-│   ├── indices/          bplus_agrupado, bplus_no_agrupado, hash_extensible_disco, buffer_pool
+│   ├── indices/          bplus_agrupado, bplus_no_agrupado, hash_extensible_disco, rtree, buffer_pool
 │   ├── consultas/        parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
 │   ├── espacial/         distancia.h (euclidiana y haversine)
 │   ├── transacciones/    gestor_locks.h (2PL estricto y deadlocks)
