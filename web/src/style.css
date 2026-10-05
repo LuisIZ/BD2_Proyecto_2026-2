@@ -458,6 +458,55 @@ td.num {
 .results {
   min-height: 160px;
 }
+.selectable-row {
+  cursor: pointer;
+}
+.selectable-row:hover,
+.selectable-row:focus-visible {
+  outline: 2px solid rgba(182, 255, 59, 0.45);
+  outline-offset: -2px;
+}
+.spatial-map-panel {
+  min-width: 0;
+}
+.spatial-map {
+  width: 100%;
+  height: clamp(460px, 62vh, 680px);
+  background: #dbe2e5;
+  z-index: 0;
+}
+.map-state {
+  margin: 10px 16px;
+  font-size: 12px;
+}
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 10px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.map-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2a78d6;
+}
+.map-dot.result {
+  background: #ef7b35;
+}
+.map-dot.selected {
+  background: #b6ff3b;
+  border: 1px solid #405520;
+}
 .empty-small {
   padding: 16px;
   color: var(--muted);

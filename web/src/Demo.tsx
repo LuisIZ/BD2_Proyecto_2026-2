@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { request } from "./api";
 import type { Result } from "./types";
 import { Plan, Results, labels } from "./Results";
-import { demoScript, demoSections } from "./demo";
+import { demoScript, demoSections } from "./demoScript";
 import { accessStep, formatNumber, pagesRead } from "./structures";
 import { datasetLabel, datasetRows } from "./sql";
 
