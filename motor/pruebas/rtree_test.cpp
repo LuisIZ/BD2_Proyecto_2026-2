@@ -73,6 +73,28 @@ void prueba_rango(RTree& arbol, const std::vector<Punto>& puntos) {
               << arbol.num_nodos() << " nodos\n";
 }
 
+void prueba_caja(RTree& arbol, const std::vector<Punto>& puntos) {
+    std::mt19937 generador(13);
+    std::uniform_int_distribution<int> lat(-12300000, -11900000);
+    std::uniform_int_distribution<int> lon(-77200000, -76900000);
+    std::uniform_int_distribution<int> lado(10000, 100000);
+    for (int q = 0; q < 10; ++q) {
+        const Punto minimo{lat(generador), lon(generador)};
+        const Punto maximo{minimo.lat_e6 + lado(generador), minimo.lon_e6 + lado(generador)};
+        std::vector<long long> obtenido = arbol.en_caja(minimo, maximo);
+        std::sort(obtenido.begin(), obtenido.end());
+        std::vector<long long> esperado;
+        for (int i = 0; i < N; ++i) {
+            const Punto& p = puntos[i];
+            if (p.lat_e6 >= minimo.lat_e6 && p.lat_e6 <= maximo.lat_e6 && p.lon_e6 >= minimo.lon_e6 && p.lon_e6 <= maximo.lon_e6) {
+                esperado.push_back(i);
+            }
+        }
+        assert(obtenido == esperado && "la caja coincide con la busqueda secuencial");
+    }
+    std::cout << "caja: 10 rectangulos al azar iguales a la busqueda secuencial\n";
+}
+
 void prueba_knn(RTree& arbol, const std::vector<Punto>& puntos) {
     std::mt19937 generador(11);
     for (int q = 0; q < 10; ++q) {
@@ -125,6 +147,7 @@ int main() {
         RTree arbol(RUTA, true);
         prueba_construccion(arbol, puntos);
         prueba_rango(arbol, puntos);
+        prueba_caja(arbol, puntos);
         prueba_knn(arbol, puntos);
         prueba_eliminar(arbol, puntos);
         arbol.sincronizar();
