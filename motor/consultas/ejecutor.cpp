@@ -105,7 +105,27 @@ bool rango_de(const Condicion& c, long long& desde, long long& hasta) {
     return true;
 }
 
+// ray casting en microgrados; un punto sobre un borde cuenta como dentro
+bool dentro_de_poligono(const Valor& p, const std::vector<Valor>& vertices) {
+    const long long y = p.lat_e6, x = p.lon_e6;
+    bool dentro = false;
+    for (std::size_t i = 0, j = vertices.size() - 1; i < vertices.size(); j = i++) {
+        const long long yi = vertices[i].lat_e6, xi = vertices[i].lon_e6;
+        const long long yj = vertices[j].lat_e6, xj = vertices[j].lon_e6;
+        const long long cruz = (xj - xi) * (y - yi) - (yj - yi) * (x - xi);
+        if (cruz == 0 && std::min(xi, xj) <= x && x <= std::max(xi, xj) && std::min(yi, yj) <= y && y <= std::max(yi, yj)) {
+            return true;
+        }
+        if ((yi > y) != (yj > y)) {
+            const double corte = static_cast<double>(xj - xi) * static_cast<double>(y - yi) / static_cast<double>(yj - yi) + static_cast<double>(xi);
+            if (static_cast<double>(x) < corte) dentro = !dentro;
+        }
+    }
+    return dentro;
+}
+
 bool cumple(const Valor& v, const Condicion& c) {
+    if (c.funcion == "DENTRO") return dentro_de_poligono(v, c.poligono);
     if (c.funcion == "DISTANCIA") {
         const double d = distancia_m(v, c.punto, c.metrica);
         const double limite = static_cast<double>(c.valor.entero);
@@ -136,6 +156,7 @@ std::string describir_orden(const Sentencia& s) {
 }
 
 std::string describir_cond(const Condicion& c) {
+    if (c.funcion == "DENTRO") return "dentro(" + c.columna + ", POLYGON(" + std::to_string(c.poligono.size()) + " vertices))";
     if (c.funcion == "DISTANCIA") return describir_distancia(c.columna, c.punto, c.metrica) + " " + c.op + " " + c.valor.a_texto();
     std::string s = c.columna + " " + c.op + " " + (c.valor.es_entero ? c.valor.a_texto() : "'" + c.valor.texto + "'");
     if (c.op == "BETWEEN") s += " AND " + c.hasta.a_texto();
@@ -312,6 +333,13 @@ public:
         const espacial::Metrica m = espacial::metrica_desde(metrica);
         std::vector<long long> posiciones = radio > 0 ? arbol.rango(punto_de(centro), radio, m)
                                                       : arbol.knn(punto_de(centro), static_cast<int>(k), m);
+        visitados = arbol.nodos_visitados();
+        return leer_posiciones(posiciones);
+    }
+
+    std::vector<FilaFisica> en_caja(const Indice* i, const Valor& minimo, const Valor& maximo, long& visitados) {
+        RTree& arbol = *indice(i)->rtree;
+        std::vector<long long> posiciones = arbol.en_caja(punto_de(minimo), punto_de(maximo));
         visitados = arbol.nodos_visitados();
         return leer_posiciones(posiciones);
     }
@@ -506,7 +534,7 @@ private:
 // EXPLAIN a secas puede mostrar el mismo plan que correrá EXPLAIN ANALYZE sin
 // tocar una sola página de datos, como hace PostgreSQL.
 
-enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, ESPACIAL_RANGO, ESPACIAL_KNN };
+enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, ESPACIAL_RANGO, ESPACIAL_KNN, ESPACIAL_CAJA };
 
 struct Plan {
     Via via = Via::SCAN;
@@ -521,6 +549,8 @@ struct Plan {
     double radio = 0;
     long long k = 0;
     std::string metrica;
+    Valor caja_min;
+    Valor caja_max;
 };
 
 std::string nombre_nodo(Via via, const Tabla& tabla) {
@@ -531,7 +561,8 @@ std::string nombre_nodo(Via via, const Tabla& tabla) {
             return tabla.organizacion == Organizacion::BPLUS ? "Clustered Index Scan" : "Ordered Key Scan";
         case Via::INDICE_IGUAL:
         case Via::ESPACIAL_RANGO:
-        case Via::ESPACIAL_KNN: return "Index Scan";
+        case Via::ESPACIAL_KNN:
+        case Via::ESPACIAL_CAJA: return "Index Scan";
         case Via::INDICE_RANGO: return "Index Range Scan";
         case Via::SCAN: break;
     }
@@ -546,6 +577,7 @@ std::string id_operacion(Via via) {
         case Via::INDICE_RANGO: return "rango_por_indice";
         case Via::ESPACIAL_RANGO: return "rango_espacial";
         case Via::ESPACIAL_KNN: return "knn_espacial";
+        case Via::ESPACIAL_CAJA: return "poligono_espacial";
         case Via::SCAN: break;
     }
     return "scan_completo";
@@ -562,6 +594,27 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         const int col = tabla.posicion_columna(c.columna);
         if (col < 0) throw std::runtime_error("la columna " + c.columna + " no existe en " + tabla.nombre);
         const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
+        if (c.funcion == "DENTRO") {
+            if (!es_point) throw std::runtime_error("dentro necesita una columna POINT y " + c.columna + " no lo es");
+            const Indice* indice = indices_disponibles ? tabla.indice_sobre(c.columna) : nullptr;
+            if (plan.condicion_usada < 0 && indice && indice->tipo == "RTREE") {
+                Valor minimo = c.poligono.front(), maximo = c.poligono.front();
+                for (const Valor& v : c.poligono) {
+                    minimo.lat_e6 = std::min(minimo.lat_e6, v.lat_e6);
+                    minimo.lon_e6 = std::min(minimo.lon_e6, v.lon_e6);
+                    maximo.lat_e6 = std::max(maximo.lat_e6, v.lat_e6);
+                    maximo.lon_e6 = std::max(maximo.lon_e6, v.lon_e6);
+                }
+                plan.via = Via::ESPACIAL_CAJA;
+                plan.indice = indice;
+                plan.condicion_usada = static_cast<int>(i);
+                plan.caja_min = minimo;
+                plan.caja_max = maximo;
+                plan.columna = c.columna;
+                plan.condicion = describir_cond(c);
+            }
+            continue;
+        }
         if (c.funcion == "DISTANCIA") {
             if (!es_point) throw std::runtime_error("distancia necesita una columna POINT y " + c.columna + " no lo es");
             const Indice* indice = indices_disponibles ? tabla.indice_sobre(c.columna) : nullptr;
@@ -608,9 +661,10 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         plan.condicion = describir_cond(c);
     }
 
-    // el R-Tree devuelve candidatos a radio <= r; el filtro conserva el operador exacto
+    // el R-Tree devuelve candidatos (radio <= r o la caja del poligono); el filtro hace la prueba exacta
+    const bool filtra_tambien = plan.via == Via::ESPACIAL_RANGO || plan.via == Via::ESPACIAL_CAJA;
     for (std::size_t i = 0; i < condiciones.size(); ++i) {
-        if (static_cast<int>(i) != plan.condicion_usada || plan.via == Via::ESPACIAL_RANGO) plan.restantes.push_back(condiciones[i]);
+        if (static_cast<int>(i) != plan.condicion_usada || filtra_tambien) plan.restantes.push_back(condiciones[i]);
     }
 
     const bool agrupa = s && (!s->group_by.empty() || std::any_of(s->items.begin(), s->items.end(),
@@ -649,6 +703,7 @@ long long filas_estimadas(const Plan& plan, std::size_t registros) {
         }
         case Via::ESPACIAL_RANGO: return std::max<long long>(1, n / 10);
         case Via::ESPACIAL_KNN: return std::min(n, plan.k);
+        case Via::ESPACIAL_CAJA: return std::max<long long>(1, n / 10);
         case Via::SCAN: break;
     }
     return n;
@@ -670,7 +725,8 @@ double costo_estimado(const Plan& plan, std::size_t paginas, std::size_t registr
         case Via::INDICE_IGUAL:
         case Via::INDICE_RANGO:
         case Via::ESPACIAL_RANGO:
-        case Via::ESPACIAL_KNN: return alto + static_cast<double>(filas);
+        case Via::ESPACIAL_KNN:
+        case Via::ESPACIAL_CAJA: return alto + static_cast<double>(filas);
         case Via::SCAN: break;
     }
     return total;
@@ -701,6 +757,9 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
             break;
         case Via::ESPACIAL_KNN:
             acceso.filas = almacen.espacial(plan.indice, plan.centro, 0, plan.k, plan.metrica, visitados);
+            break;
+        case Via::ESPACIAL_CAJA:
+            acceso.filas = almacen.en_caja(plan.indice, plan.caja_min, plan.caja_max, visitados);
             break;
         case Via::SCAN: acceso.filas = almacen.escanear(); break;
     }
