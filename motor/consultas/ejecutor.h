@@ -2,6 +2,7 @@
 
 #include "catalogo.h"
 #include "parser_sql.h"
+#include "../transacciones/gestor_locks.h"
 
 #include <string>
 #include <utility>
@@ -66,7 +67,21 @@ public:
     Resultado ejecutar(const std::string& sql);
     Resultado ejecutar(const Sentencia& sentencia);
 
+    // comparte un gestor de locks entre varios ejecutores (uno por hilo)
+    void usar_locks(transacciones::GestorLocks* gestor, int txn);
+    bool en_transaccion() const { return en_transaccion_; }
+
 private:
+    struct Deshacer {
+        std::string tabla;
+        bool fue_insert = false;
+        Fila fila;
+    };
+
+    Resultado ejecutar_sentencia(const Sentencia& s);
+    Resultado iniciar_transaccion();
+    Resultado terminar_transaccion(bool confirmar);
+    void deshacer_cambios();
     Resultado explicar(const Sentencia& s);
     Resultado crear_tabla(const Sentencia& s);
     Resultado crear_tabla_desde_csv(const Sentencia& s);
@@ -81,6 +96,13 @@ private:
 
     Catalogo& catalogo_;
     double parseo_ms_ = 0.0;
+
+    transacciones::GestorLocks locks_propios_;
+    transacciones::GestorLocks* locks_ = &locks_propios_;
+    int txn_ = 1;
+    bool en_transaccion_ = false;
+    int profundidad_ = 0;
+    std::vector<Deshacer> deshacer_;
 };
 
 }  // namespace sql
