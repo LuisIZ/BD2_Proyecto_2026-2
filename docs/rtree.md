@@ -58,7 +58,14 @@ contienen al punto, y se quita la entrada. Los MBR de los ancestros no se encoge
 siendo correctos porque contienen a lo que queda, aunque puedan quedar más grandes de lo
 necesario. Es una simplificación frente al *CondenseTree* de Guttman.
 
-## 5. Resultados con 100 000 puntos
+## 5. Uso desde SQL
+
+`CREATE INDEX idx_geo ON tiendas (ubicacion) USING RTREE` construye el índice recorriendo el
+heap y lo guarda en `<tabla>__<indice>.rtree`. El ejecutor lo mantiene en cada `INSERT` y
+`DELETE` y lo usa para `distancia(...) < r` y `ORDER BY distancia(...) LIMIT k`; el detalle
+se explica en [sql_espacial.md](sql_espacial.md).
+
+## 6. Resultados con 100 000 puntos
 
 Puntos al azar (semilla 42) en una caja alrededor de Lima:
 

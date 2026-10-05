@@ -208,8 +208,8 @@ columnas e índices para el panel de archivos.
   buckets en páginas de 4 KB, 255 entradas por bucket y cadenas de desborde cuando muchas
   claves caen en el mismo bucket. Solo resuelve igualdad. Su profundidad global, igual que
   la del hash en memoria, está limitada a 16 bits (65 536 entradas de directorio).
-- `CREATE INDEX ... USING RTREE` se reconoce pero todavía no crea el índice: las consultas
-  por `distancia` recorren la tabla hasta que el R-Tree esté listo.
+- `CREATE INDEX ... USING RTREE` crea un R-Tree sobre una columna `POINT` de una tabla
+  `HEAP`; el planificador lo usa para el radio y el k-NN (ver [sql_espacial.md](sql_espacial.md)).
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.

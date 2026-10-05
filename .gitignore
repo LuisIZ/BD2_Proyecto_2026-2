@@ -297,3 +297,7 @@ datos/db/
 
 # el Makefile del proyecto es nuestro, no generado por CMake
 !/Makefile
+
+# compilacion de LaTeX
+*.aux
+*.toc
