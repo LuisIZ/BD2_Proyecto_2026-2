@@ -59,9 +59,27 @@ SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428), 'euc
 Con los puntos de la prueba, desde el centro de Lima: San Isidro queda a unos 5.7 km,
 Callao a 8.3 km, Miraflores a 8.4 km y Barranco a 11.6 km.
 
-Esta implementación de `distancia_m` vive en `motor/consultas/ejecutor.cpp` y se
-reemplaza por la de la tarjeta de métricas (#26) cuando esté lista, sin cambiar la
-sintaxis.
+Las dos métricas viven en `motor/espacial/distancia.h`, que es el módulo compartido por
+el ejecutor y por el R-Tree:
+
+```cpp
+struct Punto { int lat_e6, lon_e6; };              // microgrados, orden (lat, lon)
+enum class Metrica { EUCLIDIANA, HAVERSINE };
+double distancia_m(Punto a, Punto b, Metrica m);   // metros
+```
+
+`motor/pruebas/distancia_test.cpp` las verifica con distancias conocidas:
+
+| Caso | Haversine | Euclidiana |
+|---|---:|---:|
+| 1° de latitud, o 1° de longitud sobre el ecuador | 111 194.9 m | 111 194.9 m |
+| Lima centro a San Isidro | 5 745.3 m | 5 747.2 m |
+| Lima a Cusco | 574.6 km | 588.0 km |
+| 1° de longitud a latitud 60° | 55 596.9 m | 111 194.9 m |
+
+La última fila muestra el límite de la euclidiana: trata un grado de longitud como si
+midiera lo mismo en cualquier latitud, cuando a 60° mide la mitad. Cerca del ecuador, como
+en Lima, las dos casi coinciden.
 
 ## 4. Plan de ejecución
 
