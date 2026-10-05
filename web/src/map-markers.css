@@ -1,0 +1,18 @@
+.leaflet-marker-icon.selected-marker {
+  filter: hue-rotate(75deg) saturate(1.8) drop-shadow(0 0 5px rgba(182, 255, 59, .85));
+  z-index: 1000 !important;
+}
+
+.leaflet-marker-icon.match-marker {
+  filter: hue-rotate(45deg) saturate(1.7) drop-shadow(0 0 4px rgba(182, 255, 59, .65));
+  z-index: 800 !important;
+}
+
+.leaflet-container a.leaflet-popup-close-button {
+  color: #243126;
+}
+
+.popup-match {
+  color: #4c7d00;
+  font-weight: 700;
+}
