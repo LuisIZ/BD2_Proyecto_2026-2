@@ -1,85 +1,142 @@
 # BD2_Proyecto_2026-2
 
-Minigestor de base de datos implementado desde cero para el curso de Base de Datos 2.
-Incluye gestión de archivos, índices, procesamiento de consultas SQL, transacciones e interfaz web.
+Minigestor de base de datos multimodal construido desde cero para el curso de Base de
+Datos 2 (UTEC, ciclo 2026-2). Esta entrega cubre la Parte 1 (base de datos relacional con
+tablas y SQL) y la Parte 2 (datos espaciales con coordenadas geográficas).
 
-**Stack:** C++17 (motor) · Python + FastAPI (API) · React + TypeScript (web)
+Stack: C++17 para el motor, Python con FastAPI para la API y React con TypeScript para la web.
 
-## Estructura del proyecto
+Informe del proyecto: [docs/informe/informe.pdf](docs/informe/informe.pdf).
+
+## Arquitectura
+
+El sistema está organizado en capas; cada una solo usa a la que tiene debajo.
+
+```text
+Interfaz web (React)        archivos, consultas, resultados, plan de ejecución y comparación
+        │  HTTP
+API (Python + FastAPI)      recibe el SQL y llama al binario motor_sql
+        │  proceso
+Consultas (C++)             parser, planificador, ejecutor, EXPLAIN [ANALYZE], transacciones
+Algoritmos externos         external merge sort (ORDER BY) y external hashing (GROUP BY)
+Índices                     B+ agrupado, B+ no agrupado, hash extensible en disco
+Archivos                    Heap File con páginas slotted y archivo secuencial paginado
+Páginas de 4 KB             gestor de páginas y buffer pool
+```
+
+Todo lo que toca el disco está en C++ y se prueba sin la interfaz. El binario
+`motor_sql` recibe un lote de sentencias y responde en JSON con las filas, el plan y las
+páginas leídas; la API solo traduce peticiones HTTP a llamadas a ese binario.
+
+## Funcionalidades
+
+### Parte 1: base de datos relacional
+
+| Sección | Qué se implementó | Documento |
+|---|---|---|
+| 2.1.1 Archivos | Heap File con páginas slotted y reutilización de espacio; archivo secuencial con área auxiliar, eliminación lazy y reorganización al 30 % | [heap](docs/heap_file_slotted_pages.md), [secuencial](docs/sequential_file_paged.md) |
+| 2.1.2 Índices | B+ agrupado, B+ no agrupado, hash extensible paginado en disco | [comparación](docs/comparacion_indices/README.md), [hash](docs/extendible_hash.md) |
+| 2.1.2 Algoritmos externos | merge sort k-way para `ORDER BY`, external hashing por particiones para `GROUP BY` | [external_algorithms](docs/external_algorithms.md) |
+| 2.1.3 SQL | parser, planificador por reglas, `EXPLAIN` y `EXPLAIN ANALYZE` con Planning Time y Execution Time | [parser_sql](docs/parser_sql.md) |
+| 2.1.4 Transacciones | `BEGIN`/`END`/`ROLLBACK`, 2PL estricto, detección de deadlocks y demo con hilos | [transacciones](docs/transacciones.md) |
+| 2.1.5 Interfaz | paneles de archivos, consultas, resultados y plan (árbol y grafo) | [web/INSTRUCTIVO.md](web/INSTRUCTIVO.md) |
+| 2.1.6 Comparación | Heap vs Secuencial y B+ agrupado vs no agrupado vs hash | [informe](docs/informe/informe.pdf) |
+
+### Parte 2: base de datos espacial
+
+| Sección | Estado |
+|---|---|
+| Tipo `POINT` (lat, lon en microgrados) | listo |
+| Métricas euclidiana y haversine | listo ([sql_espacial](docs/sql_espacial.md)) |
+| SQL: `distancia(col, POINT(...)) < metros` y `ORDER BY distancia(...) LIMIT k` | listo, con recorrido secuencial |
+| Índice R-Tree, intersección con polígonos, mapa y comparación con GiST | pendiente |
+
+Ejemplo de consultas:
+
+```sql
+CREATE TABLE org FROM FILE 'datos/organizations-10000.csv' USING HEAP PRIMARY KEY Index;
+CREATE INDEX idx_f ON org (Founded);
+CREATE INDEX idx_emp ON org (Number_of_employees) USING HASH;
+EXPLAIN ANALYZE SELECT Name FROM org WHERE Founded = 2000 ORDER BY Name LIMIT 5;
+
+BEGIN TRANSACTION;
+DELETE FROM org WHERE Index <= 10;
+ROLLBACK;
+
+CREATE TABLE tiendas (id INT PRIMARY KEY, nombre VARCHAR(20), ubicacion POINT);
+INSERT INTO tiendas VALUES (1, 'Centro', POINT(-12.0464, -77.0428));
+SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.05, -77.04)) LIMIT 3;
+```
+
+## Organización del código
 
 ```text
 BD2_Proyecto_2026-2/
-├── motor/          # C++: todo lo que toca el disco y ejecuta consultas
-│   ├── comun/      # lo compartido: pagina.h, indice.h, tabla.h
-│   ├── archivos/   # heap y secuencial
-│   ├── indices/    # B+ agrupado, B+ no agrupado, hash
-│   ├── consultas/  # parser y ejecución
-│   └── pruebas/
-├── api/            # Para guardar las métricas de comparación técnica
-├── api/            # Python: conecta el motor con la web
-├── web/            # React: la interfaz
-├── datos/          # CSVs y resultados de los experimentos
-└── docs/           # informe y diagramas
+├── motor/                C++: todo lo que toca el disco y ejecuta consultas
+│   ├── comun/            interfaz IFileOrganization y Registro
+│   ├── archivos/         heap_file, sequential_file, pagina_slotted
+│   ├── indices/          bplus_agrupado, bplus_no_agrupado, hash_extensible_disco, buffer_pool
+│   ├── consultas/        parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
+│   ├── espacial/         distancia.h (euclidiana y haversine)
+│   ├── transacciones/    gestor_locks.h (2PL estricto y deadlocks)
+│   └── pruebas/          pruebas de cada módulo y benchmarks
+├── api/                  Python: conecta el motor con la web
+├── web/                  React: la interfaz
+├── tools/                comando motor (instala, compila y abre la web)
+├── datos/                datasets CSV y resultados de los experimentos
+└── docs/                 documentación técnica e informe
 ```
 
-`motor/comun/` es la única carpeta compartida: define los tipos y las interfaces
-que todos usamos. Cambiar algo ahí se avisa al grupo. En las demás carpetas,
-cada quien trabaja sin pedir permiso.
+## Manual de instalación
 
-## Compilar y correr
+### Requisitos
 
-### Interfaz React
+- `g++` con soporte de C++17 (Windows: MinGW-w64; Linux: `sudo apt install g++`; macOS: `xcode-select --install`).
+- Python 3.10 o superior.
+- Node.js 22.12 o superior (solo para la interfaz web).
+- `make` es opcional (en Windows viene como `mingw32-make`).
 
-La interfaz web de la primera entrega está en [`web/`](web/README.md). Incluye los cuatro paneles, carga CSV, consultas reales, una comparación de Heap, Secuencial, B+ agrupado y B+ no agrupado con las mismas consultas y un visor de mediciones.
+### Opción 1: un solo comando
 
-Desde la raíz del repo recién clonado, **un solo comando**:
+Desde la raíz del repositorio:
 
 ```bash
 motor run
 ```
 
-Instala las dependencias de Python y de npm, compila el motor C++ y abre
-http://127.0.0.1:5173. No hay que crear entornos virtuales ni activar nada a
-mano. La primera vez tarda cerca de un minuto; las siguientes arrancan en
-segundos, porque cada paso se salta si ya está hecho. `Ctrl + C` cierra la API y
-la web a la vez.
-
-La primerísima vez, en Linux y macOS, hay que lanzarlo una vez como `./bd2 run`:
-eso instala el comando `motor` en `~/.local/bin` y a partir de ahí `motor run`
-funciona desde cualquier carpeta. (El ejecutable vive en `tools/bin/motor` y no
-en la raíz porque ahí ya está la carpeta `motor/` del código C++, y un archivo no
-puede llamarse igual que una carpeta. En Windows no hace falta: `motor.cmd` está
-en la raíz y `motor run` funciona desde el primer momento.)
-
-Con `make` instalado, `make run` hace lo mismo sin instalar nada.
-
-Las demás acciones:
+Instala las dependencias de Python y de npm, compila el motor y abre
+http://127.0.0.1:5173. La primera vez tarda cerca de un minuto. En Linux y macOS, la
+primera vez se lanza como `./bd2 run`, que instala el comando `motor` en `~/.local/bin`.
+En Windows, `motor.cmd` ya está en la raíz. Con `make` instalado, `make run` hace lo mismo.
 
 | Comando | Qué hace |
 |---|---|
-| `motor run` | prepara todo y abre la web (lo normal) |
-| `motor test` | prepara todo y corre las pruebas del motor y de la interfaz |
-| `motor setup` | solo instala y compila, sin abrir nada |
-| `motor bench` | benchmarks de las estructuras, a `datos/resultados/` |
-| `motor clean` | borra `.venv`, `node_modules` y `.build`; no toca `datos/db` |
+| `motor run` | prepara todo y abre la web |
+| `motor test` | corre las pruebas del motor y de la interfaz |
+| `motor setup` | solo instala y compila |
+| `motor bench` | benchmarks de las estructuras en `datos/resultados/` |
+| `motor clean` | borra `.venv`, `node_modules` y `.build` |
 
-Requisitos: **Node.js 22.12+**, **Python 3.10+** y **`g++`** en el PATH. El
-comando los comprueba al arrancar y dice qué falta y cómo instalarlo.
+### Opción 2: el motor con make
 
-Si algo falla:
+```bash
+make test                 # compila y corre todas las pruebas del motor
+make motor                # solo el binario .build/motor_sql
+make demo-transacciones   # demo de concurrencia con hilos (2.1.4)
+make bench                # heap, secuencial y B+ agrupado con 1k, 10k y 100k filas
+make bench-indices        # comparación de índices y sus gráficas
+make gui                  # cliente de escritorio en Tkinter
+```
 
-| Síntoma | Causa y arreglo |
-|---|---|
-| `motor: orden no encontrada` | Lánzalo una vez como `./bd2 run`; si avisa de que `~/.local/bin` no está en el PATH, sigue lo que indica y abre una terminal nueva |
-| `No se encontró Node.js` pero sí lo tienes | Lo gestiona nvm, fnm o volta, que solo entran al PATH al abrir una terminal. El comando los busca solo; si aun así falla, abre una terminal nueva o `source ~/.nvm/nvm.sh` |
-| `no se encontro Python` | Instala Python 3.10 o superior desde python.org |
-| `No se encontró g++` | Windows: MinGW-w64 · Linux: `sudo apt install g++` · macOS: `xcode-select --install` |
-| `No se pudo crear el entorno virtual` | En Debian o Ubuntu falta: `sudo apt install python3-venv` |
-| El puerto 5173 u 8000 está ocupado | Queda un `motor run` anterior abierto; ciérralo |
-| Algo quedó a medias | `motor clean` y vuelve a empezar |
+En Windows con MinGW se usa `mingw32-make` en lugar de `make`.
 
-<details>
-<summary>Levantarlo a mano, sin el comando</summary>
+El binario también se puede usar directo desde la consola:
+
+```bash
+.build/motor_sql --db datos/db --sql "CREATE TABLE t FROM FILE 'datos/organizations-1000.csv'; SELECT COUNT(*) FROM t"
+```
+
+### Opción 3: la web a mano
 
 ```bash
 python3 -m venv .venv
@@ -87,38 +144,24 @@ python3 -m venv .venv
 cd web && npm install && npm run dev
 ```
 
-En Windows, `python`, `.venv\Scripts\pip` y `npm.cmd`.
-</details>
+En Windows: `python`, `.venv\Scripts\pip` y `npm.cmd`.
 
-La interfaz incluye `EXPLAIN` y `EXPLAIN ANALYZE` con el plan en árbol y en grafo, la
-elección de clave primaria e índices al cargar un CSV, y gráficas comparativas que se
-regeneran con cada medición.
+### Problemas frecuentes
 
-Manual: [web/INSTRUCTIVO.md](web/INSTRUCTIVO.md). Gramática y planificador:
-[docs/parser_sql.md](docs/parser_sql.md). Por qué el B+ agrupado gana en búsquedas y
-pierde en recorridos: [docs/bplus_agrupado_vs_no_agrupado.md](docs/bplus_agrupado_vs_no_agrupado.md).
-Por qué la carga de heap y secuencial era lenta: [docs/carga_masiva.md](docs/carga_masiva.md).
-
-### Motor y cliente de escritorio
-
-```bash
-make gui        # compila el motor y abre la interfaz (tablas, consulta, resultados, plan)
-make test       # todas las pruebas
-make bench      # benchmarks de heap, secuencial y B+ agrupado en datos/resultados/
-make bench-agrupado  # B+ agrupado vs heap + B+ no agrupado, a traves del motor SQL
-make clean
-```
-
-En Windows con MinGW: `mingw32-make gui`. Sin make, `python api/ui_sql.py` compila el
-motor por su cuenta. Consola: `python3 api/motor_cli.py "SHOW TABLES"`. Gramática y
-planificador en [docs/parser_sql.md](docs/parser_sql.md).
+| Síntoma | Causa y solución |
+|---|---|
+| `motor: orden no encontrada` | lanzarlo una vez como `./bd2 run` y abrir una terminal nueva |
+| `No se encontró g++` | instalar g++ y comprobar que esté en el PATH |
+| `No se pudo crear el entorno virtual` | en Debian o Ubuntu: `sudo apt install python3-venv` |
+| El puerto 5173 u 8000 está ocupado | cerrar un `motor run` anterior |
+| Algo quedó a medias | `motor clean` y volver a empezar |
 
 ## Equipo
 
-- @DayaneRojas1506
-- @OmarUTEC
-- @LuisIZ
-- @NoeParedes
-- @jimena-mr
+- Luis Izaguirre (@LuisIZ)
+- Dayane Rojas (@DayaneRojas1506)
+- Noe Paredes (@NoeParedes)
+- Jimena Huamani (@jimena-mr)
+- Omar Chavarria (@OmarUTEC)
 
-Planificación en el [Project board](https://github.com/users/LuisIZ/projects/1)
+Planificación en el [Project board](https://github.com/users/LuisIZ/projects/1).
