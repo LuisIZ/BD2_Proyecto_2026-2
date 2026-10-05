@@ -6,7 +6,7 @@ test("CSV, consultas reales, plan, paginación, errores y pantalla móvil", asyn
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  await expect(page.getByRole("status")).toContainText("tablas");
+  await expect(page.getByRole("status").first()).toContainText("tablas");
   await page.getByRole("button", { name: "Cargar CSV", exact: true }).click();
   await page.getByRole("button", { name: "Cargar tabla", exact: true }).click();
   await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 45000 });
@@ -220,7 +220,7 @@ test("comparación de las cuatro estructuras", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
-  await expect(page.getByRole("status")).toContainText("tabla");
+  await expect(page.getByRole("status").first()).toContainText("tabla");
   await page
     .getByRole("button", { name: "Comparar estructuras", exact: true })
     .click();
