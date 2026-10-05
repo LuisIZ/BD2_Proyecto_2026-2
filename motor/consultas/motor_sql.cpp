@@ -124,6 +124,11 @@ std::string ejecutar_lote(Ejecutor& ejecutor, const std::string& sql) {
             salida += json_error(e.what());
         }
     }
+    if (ejecutor.en_transaccion()) {
+        Resultado r = ejecutor.ejecutar(motor::sql::parsear("ROLLBACK"));
+        r.mensaje = "el lote termino con la transaccion abierta: " + r.mensaje;
+        salida += (primera ? "" : ",") + json_resultado(r);
+    }
     return salida + "]";
 }
 
