@@ -1,18 +1,18 @@
 :root {
   font-family: "Inter", "Segoe UI", system-ui, Arial, sans-serif;
-  color: #e9eee6;
-  background: #06080a;
+  color: #202923;
+  background: #f4f7f5;
   font-synthesis: none;
   font-size: 14px;
   line-height: 1.5;
-  --accent: #b6ff3b;
-  --ink: #f4f6f2;
-  --border: rgba(255, 255, 255, 0.09);
-  --muted: #8d968f;
-  --surface: #0d1210;
+  --accent: #287a4b;
+  --ink: #202923;
+  --border: #dce5df;
+  --muted: #66736b;
+  --surface: #ffffff;
   --serif: "Instrument Serif", Georgia, serif;
   --mono: "JetBrains Mono", Consolas, "Courier New", monospace;
-  color-scheme: dark;
+  color-scheme: light;
 }
 * {
   box-sizing: border-box;
@@ -21,9 +21,9 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(60% 45% at 25% 85%, rgba(120, 160, 20, 0.2), transparent 70%),
-    radial-gradient(50% 40% at 85% 10%, rgba(60, 90, 20, 0.16), transparent 70%),
-    #06080a;
+    radial-gradient(60% 45% at 25% 85%, rgba(40, 122, 75, 0.07), transparent 70%),
+    radial-gradient(50% 40% at 85% 10%, rgba(40, 122, 75, 0.05), transparent 70%),
+    #f4f7f5;
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
 }
@@ -1299,86 +1299,84 @@ kbd {
   }
 }
 
-/* ---- Tema oscuro con acento lima ---- */
+/* ---- Tema claro ---- */
 button.primary,
 button.primary:hover:not(:disabled) {
-  color: #0a1200;
+  color: #ffffff;
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
-  background: #c8ff63;
-  box-shadow: 0 6px 24px rgba(182, 255, 59, 0.3);
+  background: #21683f;
+  box-shadow: 0 4px 14px rgba(40, 122, 75, 0.2);
 }
 button {
-  background: rgba(255, 255, 255, 0.05);
+  background: #ffffff;
   border-color: var(--border);
-  color: #dfe5db;
+  color: var(--ink);
 }
 button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(182, 255, 59, 0.45);
+  background: #f3f7f4;
+  border-color: rgba(40, 122, 75, 0.45);
 }
 button:focus-visible,
 summary:focus-visible,
 input:focus,
 select:focus,
 textarea:focus {
-  outline: 2px solid rgba(182, 255, 59, 0.6);
+  outline: 2px solid rgba(40, 122, 75, 0.35);
 }
 input,
 select,
 textarea {
-  background: rgba(0, 0, 0, 0.35);
+  background: #ffffff;
   border-color: var(--border);
-  color: #e9eee6;
+  color: var(--ink);
 }
 select option {
-  background: #0d1210;
-  color: #e9eee6;
+  background: #ffffff;
+  color: var(--ink);
 }
 ::placeholder {
-  color: #5f6862;
+  color: #87938b;
 }
 code {
-  background: rgba(255, 255, 255, 0.07);
-  color: #d4f59a;
+  background: #eef4ef;
+  color: #245f3c;
 }
 .topbar {
-  background: rgba(8, 11, 9, 0.75);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(255, 255, 255, 0.94);
   position: sticky;
   top: 0;
   z-index: 20;
 }
 .app-name {
-  color: var(--accent);
+  color: #246b41;
   letter-spacing: -0.02em;
 }
 .tabs button[aria-current] {
   box-shadow: 0 8px 14px -10px var(--accent);
 }
 .panel {
-  background: linear-gradient(180deg, rgba(18, 24, 20, 0.8), rgba(11, 15, 13, 0.8));
+  background: #ffffff;
   border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: 0 8px 28px rgba(32, 55, 41, 0.07);
 }
 .panel-heading h2 {
   letter-spacing: -0.01em;
 }
 .table-list button.selected {
-  color: var(--accent);
+  color: #246b41;
   box-shadow: inset 2px 0 0 var(--accent);
 }
 .schema li {
-  border-bottom-color: rgba(255, 255, 255, 0.06);
+  border-bottom-color: var(--border);
 }
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: #cbd6ce;
   border-radius: 8px;
 }
 ::-webkit-scrollbar-track {
@@ -1402,7 +1400,7 @@ code {
 }
 .segmented button[aria-pressed="true"] {
   background: var(--accent);
-  color: #0a1200;
+  color: #ffffff;
   font-weight: 600;
 }
 .plan-list.nested li:not(:last-child):before {
@@ -1426,7 +1424,7 @@ code {
   color: var(--muted);
 }
 .plan-costs .actual {
-  color: #9be36b;
+  color: #267446;
 }
 .plan-cond {
   margin: 3px 0 0;
@@ -1450,15 +1448,15 @@ code {
   overflow: visible;
 }
 .plan-box {
-  fill: rgba(255, 255, 255, 0.04);
+  fill: #f7faf8;
   stroke: var(--border);
 }
 .plan-node.active .plan-box {
   stroke: var(--accent);
-  fill: rgba(182, 255, 59, 0.08);
+  fill: #eaf4ed;
 }
 .plan-node.costly .plan-box {
-  stroke: rgba(227, 180, 72, 0.55);
+  stroke: rgba(181, 128, 30, 0.6);
 }
 .plan-node {
   cursor: default;
@@ -1467,11 +1465,11 @@ code {
   fill: var(--accent);
 }
 .plan-edge {
-  stroke: rgba(255, 255, 255, 0.25);
+  stroke: #9aa89e;
   stroke-width: 1.5;
 }
 .plan-arrow-head {
-  fill: rgba(255, 255, 255, 0.35);
+  fill: #9aa89e;
 }
 .plan-title {
   fill: var(--ink);
@@ -1494,7 +1492,7 @@ code {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
-  background: rgba(0, 0, 0, 0.3);
+  background: #f8faf8;
   font-size: 11px;
 }
 .plan-tip strong {
@@ -1572,7 +1570,7 @@ label.check input {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px 4px;
-  background: rgba(0, 0, 0, 0.22);
+  background: #fbfcfb;
   min-width: 0;
 }
 .compare-chart figcaption {
@@ -1607,4 +1605,128 @@ label.check input {
   font-weight: 400;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* Keep the query, result, and visualization surfaces readable in the light theme. */
+.editor-wrap,
+.editor-gutter,
+.editor-wrap textarea,
+.result-summary,
+.sql-preview,
+.task,
+.chart-tooltip,
+.plan-tip,
+.compare-chart {
+  background: #ffffff;
+}
+.editor-gutter,
+.editor-wrap textarea,
+.sql-preview,
+.task,
+.demo-sql,
+.demo-selected code,
+dialog {
+  color: var(--ink);
+}
+.editor-gutter,
+.editor-footer,
+.result-summary,
+.sql-preview,
+.task {
+  border-color: var(--border);
+}
+.editor-gutter {
+  color: var(--muted);
+}
+.result-summary > span:first-child,
+.check.ok,
+.demo-result.ok,
+.demo-result.expected,
+.plan-costs .actual {
+  color: #267446;
+}
+.message.error,
+.check.bad,
+.demo-result.error,
+.db-status.offline {
+  color: #a83228;
+}
+th {
+  background: #f2f6f3;
+  color: #34423a;
+}
+th,
+td,
+.row-number,
+.schema li,
+.plan-list li:not(:last-child):before {
+  border-color: var(--border);
+}
+.row-number,
+.schema small,
+.legend,
+.chart-tooltip span,
+.findings,
+.chart-area .axis-label {
+  color: #526158;
+}
+tbody tr:hover,
+tr.current td,
+.table-list button.selected,
+.statement-tabs button[aria-pressed="true"],
+.segmented button[aria-pressed="true"]:not(.primary),
+.demo-step.current,
+.demo-step[aria-current] {
+  background: #f0f6f1;
+}
+.plan-list dd,
+.text-button,
+details summary {
+  color: #246b41;
+}
+.step-number {
+  background: #f1f6f2;
+  border-color: var(--border);
+  color: #246b41;
+}
+.chart-area .tick {
+  fill: #647168;
+}
+.chart-area .axis-label {
+  fill: #526158;
+}
+.chart-area .grid,
+.chart-area .crosshair {
+  stroke: #d7e0da;
+}
+.plan-graph .plan-edge {
+  stroke: #9aa89e;
+}
+.plan-share,
+.plan-sub {
+  fill: #287a4b;
+}
+.demo-step.ok .step-number,
+.demo-step.error .step-number,
+.demo-step.expected .step-number,
+.demo-step.skipped .step-number,
+.demo-step.running .step-number {
+  color: #ffffff;
+}
+.demo-step.ok .step-number,
+.demo-step.expected .step-number {
+  background: #287a4b;
+  border-color: #287a4b;
+}
+.demo-step.error .step-number {
+  background: #a83228;
+  border-color: #a83228;
+}
+.demo-step.skipped .step-number {
+  background: #77847b;
+  border-color: #77847b;
+}
+.demo-step.running .step-number {
+  background: #287a4b;
+  border-color: #287a4b;
 }
