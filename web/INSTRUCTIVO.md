@@ -118,7 +118,7 @@ El índice no agrupado deja de convenir entre 250 y 500 filas (2,5 % a 5 % de la
 
 ## 7. Mediciones
 
-Lee los CSV de `datos/resultados/` generados por `make bench` (o `mingw32-make bench`). Elige archivo y métrica. Los campos `_us` están en microsegundos y el espacio en bytes.
+Lee resultados CSV y JSON de `datos/resultados/` generados por los harnesses. Elige archivo, operación, tamaño del dataset, métrica y estructuras a comparar; puedes activar la escala logarítmica. Los campos `_us` están en microsegundos, `_ms` en milisegundos y el espacio en bytes. Los gráficos se construyen con las filas del archivo, de modo que nuevos nombres de estructuras —incluidos R-Tree o GiST— no requieren cambiar una lista fija.
 
 ## 8. Problemas frecuentes
 

@@ -18,3 +18,5 @@ Si prefieres hacerlo a mano: crea el `.venv` en la raíz, instala
 `api/requirements.txt`, y desde `web/` lanza `npm install && npm run dev`.
 
 Consulta el [instructivo completo](INSTRUCTIVO.md) y la [revisión de requisitos](../docs/revision_entrega_1.md).
+
+La pestaña **Mediciones** genera gráficas desde CSV y JSON de los harnesses. Permite filtrar operación, tamaño, métrica y estructuras, y alternar a escala logarítmica; las series no están atadas a nombres concretos de índices.

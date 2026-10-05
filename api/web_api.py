@@ -1,6 +1,7 @@
 """API local para React. Arranque: python -m uvicorn api.web_api:app."""
 
 import csv
+import json
 import os
 import re
 import threading
@@ -218,8 +219,79 @@ def importar(datos: Importacion):
 @app.get("/api/experimentos")
 def experimentos():
     archivos = []
-    for ruta in sorted((RAIZ / "datos" / "resultados").glob("*.csv")):
-        with ruta.open(encoding="utf-8-sig", newline="") as archivo:
-            lector = csv.DictReader(archivo)
-            archivos.append({"nombre": ruta.name, "columnas": lector.fieldnames or [], "filas": list(lector)})
+    directorio = RAIZ / "datos" / "resultados"
+    for ruta in sorted(
+        (path for path in directorio.iterdir() if path.suffix.lower() in {".csv", ".json"}),
+        key=lambda path: path.name,
+    ):
+        if ruta.suffix.lower() == ".csv":
+            with ruta.open(encoding="utf-8-sig", newline="") as archivo:
+                lector = csv.DictReader(archivo)
+                archivos.append(
+                    {
+                        "nombre": ruta.name,
+                        "formato": "csv",
+                        "columnas": lector.fieldnames or [],
+                        "filas": list(lector),
+                    }
+                )
+            continue
+
+        try:
+            with ruta.open(encoding="utf-8") as archivo:
+                contenido = json.load(archivo)
+        except json.JSONDecodeError as error:
+            raise HTTPException(
+                500, f"JSON inválido en {ruta.name}: {error.msg}"
+            ) from error
+
+        filas = contenido if isinstance(contenido, list) else None
+        if isinstance(contenido, dict):
+            filas = next(
+                (
+                    contenido[key]
+                    for key in (
+                        "filas",
+                        "rows",
+                        "mediciones",
+                        "measurements",
+                        "resultados",
+                        "results",
+                        "datos",
+                        "data",
+                    )
+                    if isinstance(contenido.get(key), list)
+                ),
+                None,
+            )
+            if filas is None and all(
+                not isinstance(value, (dict, list)) for value in contenido.values()
+            ):
+                filas = [contenido]
+        if not isinstance(filas, list) or not all(
+            isinstance(fila, dict) for fila in filas
+        ):
+            filas = []
+
+        columnas = list(dict.fromkeys(key for fila in filas for key in fila))
+        archivos.append(
+            {
+                "nombre": ruta.name,
+                "formato": "json",
+                "columnas": columnas,
+                "filas": [
+                    {
+                        key: (
+                            value
+                            if isinstance(value, str)
+                            else json.dumps(value, ensure_ascii=False)
+                            if value is not None
+                            else ""
+                        )
+                        for key, value in fila.items()
+                    }
+                    for fila in filas
+                ],
+            }
+        )
     return {"archivos": archivos}

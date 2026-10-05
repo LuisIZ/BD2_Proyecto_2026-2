@@ -1,11 +1,8 @@
 import { useState } from "react";
-import { structures } from "./structures";
-import type { StructureId } from "./structures";
 
 /**
- * Barras comparativas de las cuatro organizaciones. Se redibuja cada vez que se
- * corre un caso, así que la gráfica siempre refleja la última medición en vez
- * de una tabla que hay que leer número por número.
+ * Gráfica comparativa reutilizable: sus series provienen de mediciones reales y
+ * no dependen de una lista cerrada de organizaciones.
  *
  * La escala es logarítmica cuando la diferencia pasa de dos órdenes de
  * magnitud: con un heap que lee 3 687 páginas y un B+ que lee 3, en escala
@@ -13,9 +10,10 @@ import type { StructureId } from "./structures";
  */
 
 export interface Bar {
-  id: StructureId;
+  id: string;
+  label: string;
+  color: string;
   value: number;
-  /** texto bajo la barra: la operación que eligió el planificador */
   note?: string;
 }
 
@@ -30,11 +28,13 @@ export default function CompareChart({
   title,
   format,
   unit,
+  logarithmic,
 }: {
   bars: Bar[];
   title: string;
   format: (value: number) => string;
   unit: string;
+  logarithmic?: boolean;
 }) {
   const [hover, setHover] = useState<number>();
   const values = bars.map((bar) => bar.value);
@@ -42,7 +42,9 @@ export default function CompareChart({
   const positive = values.filter((value) => value > 0);
   const min = positive.length ? Math.min(...positive) : 0;
   // con tres órdenes de magnitud entre la mayor y la menor, lineal no sirve
-  const log = min > 0 && max / min >= 100;
+  const log =
+    min > 0 &&
+    (logarithmic === undefined ? max / min >= 100 : logarithmic);
   const top = max <= 0 ? 1 : max;
 
   const scale = (value: number) => {
@@ -97,8 +99,15 @@ export default function CompareChart({
         >
           {unit}
         </text>
+        <text
+          className="axis-label"
+          x={margin.left + plotWidth / 2}
+          y={height - 4}
+          textAnchor="middle"
+        >
+          Estructuras
+        </text>
         {bars.map((bar, i) => {
-          const s = structures.find((item) => item.id === bar.id)!;
           const barHeight = Math.max(bar.value > 0 ? 2 : 0, scale(bar.value));
           const x = margin.left + slot * i + (slot - barWidth) / 2;
           const y = margin.top + plotHeight - barHeight;
@@ -116,7 +125,7 @@ export default function CompareChart({
                 width={barWidth}
                 height={barHeight}
                 rx={4}
-                fill={s.color}
+                fill={bar.color}
                 opacity={hover === undefined || hover === i ? 1 : 0.55}
               />
               <text
@@ -134,7 +143,7 @@ export default function CompareChart({
                 y={margin.top + plotHeight + 18}
                 textAnchor="middle"
               >
-                {s.label}
+                {bar.label}
               </text>
               {bar.note && (
                 <text

@@ -70,6 +70,12 @@ export default function Comparison({
   const [statement, setStatement] = useState(0);
   const [sweep, setSweep] = useState<SweepRow[]>();
   const [metric, setMetric] = useState<"pages" | "ms">("pages");
+  const [chartStructures, setChartStructures] = useState<StructureId[]>(
+    structures.map((structure) => structure.id),
+  );
+  const [chartScale, setChartScale] = useState<"auto" | "linear" | "log">(
+    "auto",
+  );
 
   useEffect(() => {
     if (!connected) return;
@@ -217,7 +223,54 @@ export default function Comparison({
     !!signatures?.every((s) => s === signatures[0]) &&
     (runInfo?.compare !== "changes" || signatures?.[0] === "[1,1,1,0]");
   const detail = rows?.find((row) => row.id === selected);
+  const chartRows = rows?.filter((row) => chartStructures.includes(row.id));
   const returned = rows?.[0]?.last[0]?.filas?.length ?? 0;
+  const chartControls = (
+    <div className="chart-controls">
+      <fieldset className="structure-filter">
+        <legend>Estructuras mostradas</legend>
+        <div className="structure-options">
+          {structures.map((structure) => (
+            <label key={structure.id}>
+              <input
+                type="checkbox"
+                aria-label={`Estructura ${structure.label}`}
+                checked={chartStructures.includes(structure.id)}
+                onChange={(event) =>
+                  setChartStructures((previous) =>
+                    event.target.checked
+                      ? [...previous, structure.id]
+                      : previous.filter((item) => item !== structure.id),
+                  )
+                }
+              />
+              <span
+                className="swatch"
+                style={{ background: structure.color }}
+              />
+              {structure.label}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <label className="scale-toggle">
+        Escala
+        <select
+          aria-label="Escala del gráfico"
+          value={chartScale}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "auto" || value === "linear" || value === "log")
+              setChartScale(value);
+          }}
+        >
+          <option value="auto">Automática</option>
+          <option value="linear">Lineal</option>
+          <option value="log">Logarítmica</option>
+        </select>
+      </label>
+    </div>
+  );
 
   function exportCase() {
     if (!run || !rows) return;
@@ -317,6 +370,7 @@ export default function Comparison({
           {busy ? task : error}
         </p>
       )}
+      {(run || sweep) && chartControls}
 
       <section className="panel">
         <div className="panel-heading">
@@ -537,24 +591,59 @@ export default function Comparison({
                 : "✗ Los resultados no coinciden entre tablas. Revisa el detalle de cada una."}
             </p>
             {/* las gráficas se rehacen con cada corrida: siempre muestran la última */}
-            <div className="chart-pair">
-              <CompareChart
-                title="Páginas leídas"
-                unit="páginas"
-                format={(value) => formatNumber(value)}
-                bars={rows.map((row) => ({
-                  id: row.id,
-                  value: row.read,
-                  note: labels[row.step?.operacion ?? ""] ?? row.step?.operacion,
-                }))}
-              />
-              <CompareChart
-                title={`Tiempo${run.reps > 1 ? " (mediana)" : ""}`}
-                unit="milisegundos"
-                format={(value) => formatNumber(value, value < 10 ? 2 : 0)}
-                bars={rows.map((row) => ({ id: row.id, value: row.ms }))}
-              />
-            </div>
+            {chartRows?.length ? (
+              <div className="chart-pair">
+                <CompareChart
+                  title="Páginas leídas"
+                  unit="páginas"
+                  format={(value) => formatNumber(value)}
+                  logarithmic={
+                    chartScale === "auto"
+                      ? undefined
+                      : chartScale === "log"
+                  }
+                  bars={chartRows.map((row) => {
+                    const structure = structures.find(
+                      (item) => item.id === row.id,
+                    )!;
+                    return {
+                      id: row.id,
+                      label: structure.label,
+                      color: structure.color,
+                      value: row.read,
+                      note:
+                        labels[row.step?.operacion ?? ""] ??
+                        row.step?.operacion,
+                    };
+                  })}
+                />
+                <CompareChart
+                  title={`Tiempo${run.reps > 1 ? " (mediana)" : ""}`}
+                  unit="milisegundos"
+                  format={(value) => formatNumber(value, value < 10 ? 2 : 0)}
+                  logarithmic={
+                    chartScale === "auto"
+                      ? undefined
+                      : chartScale === "log"
+                  }
+                  bars={chartRows.map((row) => {
+                    const structure = structures.find(
+                      (item) => item.id === row.id,
+                    )!;
+                    return {
+                      id: row.id,
+                      label: structure.label,
+                      color: structure.color,
+                      value: row.ms,
+                    };
+                  })}
+                />
+              </div>
+            ) : (
+              <p className="empty-small" role="status">
+                Selecciona al menos una estructura para mostrar los gráficos.
+              </p>
+            )}
             <div className="table-scroll">
               <table>
                 <thead>
@@ -709,25 +798,45 @@ export default function Comparison({
                 Tiempo (ms)
               </button>
             </div>
-            <RangeChart
-              points={sweep.map((point) => ({
-                rows: point.rows,
-                values: Object.fromEntries(
-                  structures.map((s) => [
-                    s.id,
-                    metric === "pages"
-                      ? point.data[s.id].pages
-                      : point.data[s.id].ms,
-                  ]),
-                ) as Record<StructureId, number>,
-              }))}
-              yLabel={metric === "pages" ? "páginas leídas" : "tiempo (ms)"}
-              format={(value) =>
-                metric === "pages"
-                  ? formatNumber(value)
-                  : `${formatNumber(value, 3)} ms`
-              }
-            />
+            {chartStructures.length ? (
+              <RangeChart
+                logarithmic={chartScale !== "linear"}
+                series={structures
+                  .filter((structure) =>
+                    chartStructures.includes(structure.id),
+                  )
+                  .map((structure) => ({
+                    id: structure.id,
+                    label: structure.label,
+                    color: structure.color,
+                  }))}
+                points={sweep.map((point) => ({
+                  rows: point.rows,
+                  values: Object.fromEntries(
+                    structures
+                      .filter((structure) =>
+                        chartStructures.includes(structure.id),
+                      )
+                      .map((structure) => [
+                        structure.id,
+                        metric === "pages"
+                          ? point.data[structure.id].pages
+                          : point.data[structure.id].ms,
+                      ]),
+                  ),
+                }))}
+                yLabel={metric === "pages" ? "páginas leídas" : "tiempo (ms)"}
+                format={(value) =>
+                  metric === "pages"
+                    ? formatNumber(value)
+                    : `${formatNumber(value, 3)} ms`
+                }
+              />
+            ) : (
+              <p className="empty-small" role="status">
+                Selecciona al menos una estructura para mostrar el gráfico.
+              </p>
+            )}
             <ul className="findings">
               <li>
                 Con {formatNumber(lastPoint.rows)} filas el B+ agrupado leyó{" "}

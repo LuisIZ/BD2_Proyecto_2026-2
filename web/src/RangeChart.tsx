@@ -1,11 +1,15 @@
 import { useRef, useState } from "react";
 import type { PointerEvent } from "react";
-import { structures } from "./structures";
-import type { StructureId } from "./structures";
 
 export interface ChartPoint {
   rows: number;
-  values: Record<StructureId, number>;
+  values: Record<string, number>;
+}
+
+export interface ChartSeries {
+  id: string;
+  label: string;
+  color: string;
 }
 
 const width = 720;
@@ -16,6 +20,7 @@ const plotHeight = height - margin.top - margin.bottom;
 
 function logDomain(values: number[]) {
   const positive = values.filter((value) => value > 0);
+  if (!positive.length) return [0, 1];
   const low = Math.floor(Math.log10(Math.min(...positive)));
   const high = Math.ceil(Math.log10(Math.max(...positive)));
   return [low, high === low ? low + 1 : high];
@@ -23,28 +28,39 @@ function logDomain(values: number[]) {
 
 export default function RangeChart({
   points,
+  series,
   yLabel,
   format,
+  logarithmic = true,
 }: {
   points: ChartPoint[];
+  series: ChartSeries[];
   yLabel: string;
   format: (value: number) => string;
+  logarithmic?: boolean;
 }) {
   const svg = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number>();
   const [xLow, xHigh] = logDomain(points.map((point) => point.rows));
-  const [yLow, yHigh] = logDomain(
-    points.flatMap((point) => Object.values(point.values)),
+  const yValues = points.flatMap((point) =>
+    series.map((item) => point.values[item.id]).filter(Number.isFinite),
   );
+  const positiveYValues = yValues.filter((value) => value > 0);
+  const logY = logarithmic && positiveYValues.length > 0;
+  const [yLow, yHigh] = logDomain(yValues);
+  const yMax = Math.max(1, ...yValues);
   const x = (value: number) =>
     margin.left + ((Math.log10(value) - xLow) / (xHigh - xLow)) * plotWidth;
   const y = (value: number) =>
     margin.top +
     plotHeight -
-    ((Math.log10(Math.max(value, 10 ** yLow)) - yLow) / (yHigh - yLow)) *
-      plotHeight;
+    (logY
+      ? ((Math.log10(Math.max(value, 10 ** yLow)) - yLow) / (yHigh - yLow)) *
+        plotHeight
+      : (Math.max(0, value) / yMax) * plotHeight);
   const decades = (low: number, high: number) =>
     Array.from({ length: high - low + 1 }, (_, i) => 10 ** (low + i));
+  const yTicks = logY ? decades(yLow, yHigh) : [0, yMax / 2, yMax];
 
   function move(event: PointerEvent<SVGRectElement>) {
     const box = svg.current!.getBoundingClientRect();
@@ -66,10 +82,10 @@ export default function RangeChart({
   return (
     <div className="chart">
       <ul className="legend">
-        {structures.map((s) => (
-          <li key={s.id}>
-            <span className="line-key" style={{ background: s.color }} />
-            {s.label}
+        {series.map((item) => (
+          <li key={item.id}>
+            <span className="line-key" style={{ background: item.color }} />
+            {item.label}
           </li>
         ))}
       </ul>
@@ -81,7 +97,7 @@ export default function RangeChart({
             role="img"
             aria-label={`${yLabel} según filas del rango`}
           >
-            {decades(yLow, yHigh).map((tick) => (
+            {yTicks.map((tick) => (
               <g key={`y${tick}`}>
                 <line
                   className="grid"
@@ -124,7 +140,8 @@ export default function RangeChart({
               transform={`translate(14 ${margin.top + plotHeight / 2}) rotate(-90)`}
               textAnchor="middle"
             >
-              {yLabel} (escala log)
+              {yLabel}
+              {logY ? " (escala log)" : " (escala lineal)"}
             </text>
             {active && (
               <line
@@ -135,25 +152,28 @@ export default function RangeChart({
                 y2={margin.top + plotHeight}
               />
             )}
-            {structures.map((s) => (
-              <g key={s.id}>
+            {series.map((item) => (
+              <g key={item.id}>
                 <polyline
                   fill="none"
-                  stroke={s.color}
+                  stroke={item.color}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   points={points
-                    .map((point) => `${x(point.rows)},${y(point.values[s.id])}`)
+                    .map(
+                      (point) =>
+                        `${x(point.rows)},${y(point.values[item.id] ?? 0)}`,
+                    )
                     .join(" ")}
                 />
                 {points.map((point, i) => (
                   <circle
                     key={point.rows}
                     cx={x(point.rows)}
-                    cy={y(point.values[s.id])}
+                    cy={y(point.values[item.id] ?? 0)}
                     r={i === hover ? 5 : 4}
-                    fill={s.color}
+                    fill={item.color}
                     stroke="#fff"
                     strokeWidth={2}
                   />
@@ -176,11 +196,11 @@ export default function RangeChart({
               style={{ left: `${left}%` }}
             >
               <strong>{active.rows.toLocaleString("es-PE")} filas</strong>
-              {structures.map((s) => (
-                <span key={s.id}>
-                  <i style={{ background: s.color }} />
-                  {s.label}
-                  <b>{format(active.values[s.id])}</b>
+              {series.map((item) => (
+                <span key={item.id}>
+                  <i style={{ background: item.color }} />
+                  {item.label}
+                  <b>{format(active.values[item.id] ?? 0)}</b>
                 </span>
               ))}
             </div>

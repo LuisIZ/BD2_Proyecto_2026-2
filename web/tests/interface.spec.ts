@@ -85,7 +85,36 @@ test("CSV, consultas reales, plan, paginación, errores y pantalla móvil", asyn
   await page
     .getByLabel("Archivo", { exact: true })
     .selectOption("heap_bench.csv");
-  await expect(page.getByLabel(/Gráfica de/)).toBeVisible();
+  await expect(page.getByRole("img", { name: /Gráfica de/ })).toBeVisible();
+  await page.getByLabel("Operación", { exact: true }).selectOption("Búsqueda");
+  await page
+    .locator(".experiments")
+    .getByRole("combobox", { name: "Tamaño del dataset" })
+    .selectOption("1000");
+  await expect(page.locator(".compare-bar")).toHaveCount(1);
+  await page
+    .getByLabel("Escala logarítmica", { exact: true })
+    .check();
+  await expect(page.locator(".compare-chart figcaption")).toContainText(
+    "escala log",
+  );
+  await page
+    .getByLabel("Archivo", { exact: true })
+    .selectOption("indices_bench.csv");
+  await page.getByLabel("Operación", { exact: true }).selectOption("Búsqueda");
+  await page
+    .locator(".experiments")
+    .getByRole("combobox", { name: "Tamaño del dataset" })
+    .selectOption("1000");
+  await expect(page.locator(".compare-bar")).toHaveCount(3);
+  await page.getByLabel("Estructura hash_ram").uncheck();
+  await expect(page.locator(".compare-bar")).toHaveCount(2);
+  await page
+    .getByLabel("Archivo", { exact: true })
+    .selectOption("transacciones_eventos.json");
+  await expect(
+    page.getByText(/Este archivo no contiene mediciones/),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Sintaxis", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Sentencias" })).toBeVisible();
   await page.getByRole("button", { name: "Consultas", exact: true }).click();
@@ -100,9 +129,135 @@ test("CSV, consultas reales, plan, paginación, errores y pantalla móvil", asyn
   expect(errors).toEqual([]);
 });
 
+test("mediciones muestran estados de carga, vacío y error", async ({
+  page,
+}) => {
+  let finishLoad: (() => void) | undefined;
+  await page.route("**/api/experimentos", async (route) => {
+    await new Promise<void>((resolve) => {
+      finishLoad = resolve;
+    });
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ archivos: [] }),
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Mediciones", exact: true }).click();
+  await expect(page.getByText("Cargando mediciones…")).toBeVisible();
+  finishLoad?.();
+  await expect(page.getByText(/No hay archivos CSV o JSON/)).toBeVisible();
+
+  await page.unroute("**/api/experimentos");
+  await page.route("**/api/experimentos", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "No se pudieron leer los resultados" }),
+    }),
+  );
+  await page.getByRole("button", { name: "Actualizar", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "No se pudieron leer los resultados",
+  );
+});
+
+test("la gráfica JSON admite estructuras espaciales nuevas", async ({
+  page,
+}) => {
+  await page.route("**/api/experimentos", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        archivos: [
+          {
+            nombre: "espacial.json",
+            formato: "json",
+            columnas: ["estructura", "n", "operacion", "tiempo_ms"],
+            filas: [
+              {
+                estructura: "Secuencial",
+                n: "1000",
+                operacion: "rango",
+                tiempo_ms: "14",
+              },
+              {
+                estructura: "R-Tree",
+                n: "1000",
+                operacion: "rango",
+                tiempo_ms: "3",
+              },
+              {
+                estructura: "GiST",
+                n: "1000",
+                operacion: "rango",
+                tiempo_ms: "5",
+              },
+              {
+                estructura: "Secuencial",
+                n: "10000",
+                operacion: "rango",
+                tiempo_ms: "140",
+              },
+              {
+                estructura: "R-Tree",
+                n: "10000",
+                operacion: "rango",
+                tiempo_ms: "4",
+              },
+              {
+                estructura: "GiST",
+                n: "10000",
+                operacion: "rango",
+                tiempo_ms: "6",
+              },
+            ],
+          },
+        ],
+      }),
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Mediciones", exact: true }).click();
+  await expect(page.locator(".compare-bar")).toHaveCount(3);
+  await expect(page.getByRole("combobox", { name: "Archivo" })).toHaveValue(
+    "espacial.json",
+  );
+  await expect(page.getByLabel("Estructura R-Tree")).toBeChecked();
+  await page.getByLabel("Estructura Secuencial").uncheck();
+  await expect(page.locator(".compare-bar")).toHaveCount(2);
+  await page
+    .getByRole("combobox", { name: "Tamaño del dataset" })
+    .selectOption("10000");
+  await page.getByLabel("Escala logarítmica", { exact: true }).check();
+  await expect(page.locator(".compare-chart figcaption")).toContainText(
+    "escala log",
+  );
+});
+
 test("carga local, organizaciones y validación de la API", async ({
   request,
 }) => {
+  const experiments = await request.get("/api/experimentos");
+  expect(experiments.ok()).toBe(true);
+  const files = (await experiments.json()).archivos;
+  expect(
+    files.find(
+      (file: { nombre: string }) => file.nombre === "transacciones_eventos.json",
+    )?.formato,
+  ).toBe("json");
+  expect(
+    files.find(
+      (file: { nombre: string; filas?: unknown[] }) =>
+        file.nombre === "transacciones_eventos.json",
+    )?.filas?.length,
+  ).toBeGreaterThan(0);
+  expect(
+    files.find(
+      (file: { nombre: string }) => file.nombre === "indices_bench.csv",
+    )?.formato,
+  ).toBe("csv");
+
   for (const organizacion of ["SEQUENTIAL", "BPLUS"]) {
     const nombre = `prueba_${organizacion.toLowerCase()}`;
     const response = await request.post("/api/importar", {
@@ -168,6 +323,15 @@ test("comparación de las cuatro estructuras", async ({ page }) => {
       page.locator(".compare > section").nth(1).locator("tbody tr").nth(3),
     ).toContainText(access);
   }
+  await expect(page.getByLabel("Estructura Heap")).toBeChecked();
+  await page.getByRole("combobox", { name: "Escala del gráfico" }).selectOption("log");
+  await expect(page.locator(".compare-chart figcaption").first()).toContainText(
+    "escala log",
+  );
+  await page.getByLabel("Estructura Heap").uncheck();
+  await expect(page.locator(".compare-bar")).toHaveCount(6);
+  await page.getByLabel("Estructura Heap").check();
+  await expect(page.locator(".compare-bar")).toHaveCount(8);
   await page
     .getByRole("button", { name: "Medir con N creciente", exact: true })
     .click();
@@ -176,6 +340,12 @@ test("comparación de las cuatro estructuras", async ({ page }) => {
     { timeout: 60000 },
   );
   await expect(page.locator(".findings")).toContainText("deja de convenir");
+  await page
+    .getByRole("combobox", { name: "Escala del gráfico" })
+    .selectOption("linear");
+  await expect(
+    page.locator(".chart-area .axis-label").filter({ hasText: "escala lineal" }),
+  ).toBeVisible();
   await page.locator(".hit-area").scrollIntoViewIfNeeded();
   const box = (await page.locator(".hit-area").boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);

@@ -53,6 +53,7 @@ export interface Table {
 }
 export interface Experiment {
   nombre: string;
+  formato?: "csv" | "json";
   columnas: string[];
   filas: Record<string, string>[];
 }
