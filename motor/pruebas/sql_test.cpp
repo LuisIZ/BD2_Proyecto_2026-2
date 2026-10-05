@@ -116,6 +116,11 @@ void prueba_parser() {
     assert(falla("SELECT * FROM t WHERE distancia(u, POINT(1, 2), 'manhattan') < 3"));
     assert(falla("INSERT INTO t VALUES (POINT(1.1234567, 2))"));
     assert(falla("INSERT INTO t VALUES (POINT(500, 2))"));
+    s = motor::sql::parsear("SELECT * FROM t WHERE dentro(u, POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.02))) AND id > 1");
+    assert(s.condiciones.size() == 2 && s.condiciones[0].funcion == "DENTRO" && s.condiciones[0].columna == "u");
+    assert(s.condiciones[0].poligono.size() == 3 && s.condiciones[0].poligono[1].lon_e6 == -77020000);
+    assert(falla("SELECT * FROM t WHERE dentro(u, POLYGON((1 1, 2 2)))"));
+    assert(falla("SELECT * FROM t WHERE dentro(u, POINT(1, 2))"));
     std::cout << "parser: sentencias, errores de sintaxis y separacion\n";
 }
 
@@ -379,6 +384,8 @@ void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
     const std::string centro = "POINT(-12.0464, -77.0428)";
+    const std::string rectangulo = "POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.02, -12.09 -77.05))";
+    const std::string triangulo = "POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.05))";
     const std::string csv = ".build/sql_test_tiendas.csv";
     {
         std::ofstream f(csv);
@@ -406,6 +413,13 @@ void prueba_espacial() {
         assert(nombres(r) == std::vector<std::string>({"Barranco"}));
         r = e.ejecutar("SELECT nombre FROM " + t + " ORDER BY distancia(ubicacion, " + centro + ", 'euclidiana') LIMIT 3");
         assert(nombres(r).size() == 3 && nombres(r)[0] == "Centro");
+
+        r = e.ejecutar("SELECT nombre FROM " + t + " WHERE dentro(ubicacion, " + rectangulo + ") ORDER BY nombre");
+        assert(nombres(r) == std::vector<std::string>({"Miraflores", "San Isidro"}));
+        r = e.ejecutar("SELECT nombre FROM " + t + " WHERE dentro(ubicacion, " + triangulo + ")");
+        assert(nombres(r) == std::vector<std::string>({"Miraflores"}));
+        assert(e.ejecutar("SELECT nombre FROM " + t + " WHERE dentro(ubicacion, POLYGON((10 10, 10 11, 11 11)))").filas.empty());
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE dentro(nombre, " + rectangulo + ")"));
 
         assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE ubicacion = 3"));
         assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE distancia(nombre, " + centro + ") < 10"));
@@ -436,6 +450,10 @@ void prueba_espacial() {
     assert(!detalle_paso(r, "rango_espacial", "nodos_visitados").empty());
     r = e.ejecutar(knn);
     assert(nombres(r) == sin_indice_knn && tiene_paso(r, "knn_espacial"));
+    r = e.ejecutar("SELECT nombre FROM tiendas_HEAP WHERE dentro(ubicacion, " + rectangulo + ") ORDER BY nombre");
+    assert(nombres(r) == std::vector<std::string>({"Miraflores", "San Isidro"}) && tiene_paso(r, "poligono_espacial"));
+    r = e.ejecutar("SELECT nombre FROM tiendas_HEAP WHERE dentro(ubicacion, " + triangulo + ")");
+    assert(nombres(r) == std::vector<std::string>({"Miraflores"}) && tiene_paso(r, "poligono_espacial"));
     assert(texto_del_plan(e.ejecutar("EXPLAIN " + knn)).find("Index Scan using idx_geo on tiendas_HEAP (ubicacion)") != std::string::npos);
     r = e.ejecutar("SELECT nombre FROM tiendas_HEAP WHERE id > 0 ORDER BY distancia(ubicacion, " + centro + ") LIMIT 3");
     assert(!tiene_paso(r, "knn_espacial") && nombres(r) == sin_indice_knn);
@@ -454,7 +472,7 @@ void prueba_espacial() {
     for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) e.ejecutar("DROP TABLE tiendas_" + org);
     std::filesystem::remove(csv);
     std::cout << "espacial: POINT, radio por distancia, k vecinos y validaciones en las tres organizaciones;\n"
-              << "          con R-Tree el radio y el k-NN dan lo mismo que sin indice\n";
+              << "          poligonos con ray casting; con R-Tree el radio, el k-NN y el poligono dan lo mismo que sin indice\n";
 }
 
 }  // namespace

@@ -141,6 +141,26 @@ public:
         return true;
     }
 
+    // posiciones dentro del rectángulo entre minimo y maximo
+    std::vector<long long> en_caja(Punto minimo, Punto maximo) {
+        nodos_visitados_ = 0;
+        const Mbr caja{minimo.lat_e6, minimo.lon_e6, maximo.lat_e6, maximo.lon_e6};
+        std::vector<long long> salida;
+        std::vector<PageId> pendientes{cab_.raiz};
+        while (!pendientes.empty()) {
+            const PageId p = pendientes.back();
+            pendientes.pop_back();
+            const Nodo n = leer_nodo(p);
+            ++nodos_visitados_;
+            for (const Entrada& e : n.entradas) {
+                if (!detalle_rtree::se_cortan(caja, e.mbr)) continue;
+                if (n.hoja) salida.push_back(e.ref);
+                else pendientes.push_back(static_cast<PageId>(e.ref));
+            }
+        }
+        return salida;
+    }
+
     // posiciones a menos de radio_m metros del centro
     std::vector<long long> rango(Punto centro, double radio_m, Metrica metrica) {
         nodos_visitados_ = 0;

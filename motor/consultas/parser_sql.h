@@ -27,6 +27,7 @@ namespace sql {
 //
 //   cond  := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
 //          | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+//          | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
 //   valor := entero | 'texto' | POINT(lat, lon)
 //   ORDER BY también acepta distancia(col, POINT(lat, lon) [, metrica]) para los k vecinos más cercanos.
 //
@@ -67,9 +68,10 @@ struct Condicion {
     std::string op;  // = != < <= > >= BETWEEN
     Valor valor;
     Valor hasta;     // solo BETWEEN
-    std::string funcion;  // DISTANCIA, vacía si se compara la columna
+    std::string funcion;  // DISTANCIA | DENTRO, vacía si se compara la columna
     Valor punto;          // solo DISTANCIA
     std::string metrica;  // HAVERSINE | EUCLIDIANA
+    std::vector<Valor> poligono;  // solo DENTRO: vértices en orden
 };
 
 struct ItemSelect {

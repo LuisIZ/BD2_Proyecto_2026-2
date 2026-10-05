@@ -379,6 +379,31 @@ private:
     void where(Sentencia& s) {
         while (true) {
             Condicion c;
+            if (es_funcion("DENTRO")) {
+                c.funcion = "DENTRO";
+                avanzar();
+                esperar_simbolo("(");
+                c.columna = identificador();
+                esperar_simbolo(",");
+                if (!es_funcion("POLYGON")) error("se esperaba POLYGON((lat lon, ...))");
+                avanzar();
+                esperar_simbolo("(");
+                esperar_simbolo("(");
+                while (true) {
+                    const int lat = microgrados();
+                    const int lon = microgrados();
+                    c.poligono.push_back(Valor::de_punto(lat, lon));
+                    if (es_simbolo(",")) { avanzar(); continue; }
+                    break;
+                }
+                esperar_simbolo(")");
+                esperar_simbolo(")");
+                esperar_simbolo(")");
+                if (c.poligono.size() < 3) error("un poligono necesita al menos 3 vertices");
+                s.condiciones.push_back(c);
+                if (es("AND")) { avanzar(); continue; }
+                break;
+            }
             if (es_funcion("DISTANCIA")) {
                 c.funcion = "DISTANCIA";
                 distancia(c.columna, c.punto, c.metrica);
