@@ -18,3 +18,5 @@ Si prefieres hacerlo a mano: crea el `.venv` en la raíz, instala
 `api/requirements.txt`, y desde `web/` lanza `npm install && npm run dev`.
 
 Consulta el [instructivo completo](INSTRUCTIVO.md) y la [revisión de requisitos](../docs/revision_entrega_1.md).
+
+Al seleccionar una tabla con una columna `POINT`, el panel **Mapa espacial** muestra sus ubicaciones en Leaflet. Resalta los resultados y centra una ubicación al seleccionar su fila; el fondo de OpenStreetMap requiere conexión a internet.

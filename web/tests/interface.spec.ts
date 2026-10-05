@@ -132,6 +132,90 @@ test("carga local, organizaciones y validación de la API", async ({
   expect(empty.status()).toBe(400);
 });
 
+test("el mapa carga puntos y resalta resultados espaciales y filas", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  await page.route("**/tile.openstreetmap.org/**", (route) =>
+    route.fulfill({ status: 200, contentType: "image/png", body: Buffer.from([]) }),
+  );
+  await page.route("**/api/catalogo", (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ tablas: [] }),
+    }),
+  );
+  await page.goto("/");
+  await expect(page.getByRole("status").first()).toContainText("tabla");
+  await expect(
+    page.getByText(
+      "Selecciona una tabla con una columna POINT para mostrar sus puntos.",
+    ),
+  ).toBeVisible();
+  await page.unroute("**/api/catalogo");
+
+  const tableName = `mapa_test_${Date.now()}`;
+  const editor = page.getByRole("textbox", { name: "Editor SQL" });
+  await editor.fill(
+    `CREATE TABLE ${tableName} (id INT PRIMARY KEY, nombre VARCHAR(20), ubicacion POINT) USING HEAP; ` +
+      `INSERT INTO ${tableName} VALUES (1, 'Centro', POINT(-12.0464, -77.0428)); ` +
+      `INSERT INTO ${tableName} VALUES (2, 'San Isidro', POINT(-12.0977, -77.0365)); ` +
+      `INSERT INTO ${tableName} VALUES (3, 'Miraflores', POINT(-12.1211, -77.0297));`,
+  );
+  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Ejecutar", exact: true }),
+  ).toBeEnabled();
+  const table = page.getByRole("button", {
+    name: new RegExp(`${tableName}.*heap`, "i"),
+  });
+  await expect(table).toBeVisible();
+
+  await editor.fill(
+    `SELECT * FROM ${tableName} WHERE distancia(ubicacion, POINT(-12.0464, -77.0428)) <= 6000;`,
+  );
+  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Ejecutar", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole("heading", { name: "Mapa espacial" }),
+  ).toBeInViewport();
+  await expect(page.getByText("3 puntos", { exact: true })).toBeVisible();
+  await expect(page.locator(".spatial-map canvas")).toBeVisible();
+  await expect(page.getByText("Radio: 6000 m", { exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "San Isidro" })).toBeVisible();
+  await page.getByRole("row").filter({ hasText: "San Isidro" }).click();
+  await expect(page.getByText("Fila seleccionada en el mapa")).toBeVisible();
+
+  await editor.fill(
+    `SELECT * FROM ${tableName} WHERE distancia(ubicacion, POINT(-12.5, -77.5)) < 1;`,
+  );
+  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Ejecutar", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText("Radio: 1 m", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("La consulta no devolvió filas para resaltar."),
+  ).toBeVisible();
+
+  await editor.fill(
+    `SELECT * FROM ${tableName} ORDER BY distancia(ubicacion, POINT(-12.0464, -77.0428)) LIMIT 2;`,
+  );
+  await page.getByRole("button", { name: "Ejecutar", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Ejecutar", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText("La consulta no devolvió filas para resaltar.")).toHaveCount(0);
+  await expect(page.getByText("Fila seleccionada en el mapa")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("comparación de las cuatro estructuras", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
