@@ -57,7 +57,7 @@ OBJ_AYUDA := $(patsubst %.cpp,$(OBJ)/%.o,$(SRC_AYUDA))
 MOTOR_SQL := $(BUILD)/motor_sql$(EXE)
 
 TESTS := pagina_slotted_test heap_file_test sequential_file_test bplus_agrupado_test \
-         extendible_hash_test hash_disco_test distancia_test transacciones_test external_algorithms_test sql_test
+         extendible_hash_test hash_disco_test distancia_test rtree_test transacciones_test external_algorithms_test sql_test
 BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_file_escala_test indices_bench \
           extendible_hash_csv_test ejemplo_heap transacciones_demo
 
@@ -83,6 +83,7 @@ test: $(TEST_BIN)
 	$(call RUN,$(BUILD)/extendible_hash_test$(EXE))
 	$(call RUN,$(BUILD)/hash_disco_test$(EXE))
 	$(call RUN,$(BUILD)/distancia_test$(EXE))
+	$(call RUN,$(BUILD)/rtree_test$(EXE))
 	$(call RUN,$(BUILD)/transacciones_test$(EXE))
 	$(call RUN,$(BUILD)/external_algorithms_test$(EXE))
 	$(call RUN,$(BUILD)/sql_test$(EXE))
