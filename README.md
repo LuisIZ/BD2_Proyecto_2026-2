@@ -50,7 +50,9 @@ páginas leídas; la API solo traduce peticiones HTTP a llamadas a ese binario.
 | Métricas euclidiana y haversine | listo ([sql_espacial](docs/sql_espacial.md)) |
 | SQL: `distancia(col, POINT(...)) < metros` y `ORDER BY distancia(...) LIMIT k` | listo |
 | Índice R-Tree paginado (`CREATE INDEX ... USING RTREE`) usado por el planificador | listo ([rtree](docs/rtree.md)) |
-| Intersección con polígonos, mapa y comparación con GiST | pendiente |
+| Intersección con polígono: `dentro(col, POLYGON((lat lon, ...)))` | listo |
+| Comparación secuencial vs R-Tree vs GiST de PostgreSQL | listo ([comparación espacial](docs/comparacion_espacial/README.md)) |
+| Panel de mapa en la interfaz | en desarrollo |
 
 Ejemplo de consultas:
 
@@ -68,6 +70,7 @@ CREATE TABLE tiendas (id INT PRIMARY KEY, nombre VARCHAR(20), ubicacion POINT);
 INSERT INTO tiendas VALUES (1, 'Centro', POINT(-12.0464, -77.0428));
 CREATE INDEX idx_geo ON tiendas (ubicacion) USING RTREE;
 SELECT * FROM tiendas ORDER BY distancia(ubicacion, POINT(-12.05, -77.04)) LIMIT 3;
+SELECT * FROM tiendas WHERE dentro(ubicacion, POLYGON((-12.06 -77.05, -12.06 -77.03, -12.04 -77.03, -12.04 -77.05)));
 ```
 
 ## Organización del código
@@ -127,6 +130,7 @@ make motor                # solo el binario .build/motor_sql
 make demo-transacciones   # demo de concurrencia con hilos (2.1.4)
 make bench                # heap, secuencial y B+ agrupado con 1k, 10k y 100k filas
 make bench-indices        # comparación de índices y sus gráficas
+make bench-espacial       # búsqueda secuencial vs R-Tree con 1k, 10k y 100k puntos (2.2.4)
 make gui                  # cliente de escritorio en Tkinter
 ```
 
