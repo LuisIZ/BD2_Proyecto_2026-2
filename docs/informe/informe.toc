@@ -1,34 +1,36 @@
 \babel@toc {spanish}{}\relax 
-\contentsline {section}{\numberline {1}Introducción}{2}{section.1}%
-\contentsline {section}{\numberline {2}Arquitectura del sistema}{2}{section.2}%
-\contentsline {subsection}{\numberline {2.1}Organización del código}{3}{subsection.2.1}%
-\contentsline {section}{\numberline {3}Dominio de datos}{3}{section.3}%
-\contentsline {subsection}{\numberline {3.1}Datasets}{3}{subsection.3.1}%
-\contentsline {subsection}{\numberline {3.2}Tipos de datos}{3}{subsection.3.2}%
-\contentsline {subsection}{\numberline {3.3}Formato de registro y de página}{4}{subsection.3.3}%
-\contentsline {section}{\numberline {4}Parte 1: técnicas implementadas}{4}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Heap File con páginas slotted}{4}{subsection.4.1}%
-\contentsline {subsection}{\numberline {4.2}Archivo secuencial paginado}{4}{subsection.4.2}%
-\contentsline {subsection}{\numberline {4.3}B+ agrupado}{4}{subsection.4.3}%
-\contentsline {subsection}{\numberline {4.4}B+ no agrupado}{5}{subsection.4.4}%
-\contentsline {subsection}{\numberline {4.5}Hash extensible en disco}{5}{subsection.4.5}%
-\contentsline {subsection}{\numberline {4.6}Algoritmos externos}{5}{subsection.4.6}%
-\contentsline {paragraph}{External merge sort.}{5}{section*.3}%
-\contentsline {paragraph}{External hashing para GROUP BY.}{5}{section*.4}%
-\contentsline {subsection}{\numberline {4.7}Parser, planificador y EXPLAIN}{5}{subsection.4.7}%
-\contentsline {subsection}{\numberline {4.8}Transacciones y concurrencia}{6}{subsection.4.8}%
-\contentsline {subsection}{\numberline {4.9}Interfaz de usuario}{6}{subsection.4.9}%
-\contentsline {section}{\numberline {5}Parte 2: base de datos espacial}{6}{section.5}%
-\contentsline {subsection}{\numberline {5.1}Métricas de distancia}{6}{subsection.5.1}%
-\contentsline {subsection}{\numberline {5.2}Extensión SQL}{7}{subsection.5.2}%
-\contentsline {subsection}{\numberline {5.3}Índice R-Tree}{7}{subsection.5.3}%
-\contentsline {subsection}{\numberline {5.4}Estado de la Parte 2}{8}{subsection.5.4}%
-\contentsline {section}{\numberline {6}Comparación experimental}{8}{section.6}%
-\contentsline {subsection}{\numberline {6.1}Metodología}{8}{subsection.6.1}%
-\contentsline {subsection}{\numberline {6.2}Heap File frente a archivo secuencial}{8}{subsection.6.2}%
-\contentsline {subsection}{\numberline {6.3}Índices: B+ agrupado, B+ no agrupado y hash extensible}{9}{subsection.6.3}%
-\contentsline {subsection}{\numberline {6.4}B+ agrupado frente a B+ no agrupado a través de SQL}{12}{subsection.6.4}%
-\contentsline {subsection}{\numberline {6.5}Transacciones}{12}{subsection.6.5}%
-\contentsline {subsection}{\numberline {6.6}Parte 2: R-Tree frente a búsqueda secuencial}{13}{subsection.6.6}%
-\contentsline {subsection}{\numberline {6.7}Cuándo usar cada técnica}{13}{subsection.6.7}%
-\contentsline {section}{\numberline {7}Conclusiones y límites conocidos}{13}{section.7}%
+\contentsline {section}{\numberline {1}Introducción}{3}{section.1}%
+\contentsline {section}{\numberline {2}Arquitectura del sistema}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Organización del código}{4}{subsection.2.1}%
+\contentsline {section}{\numberline {3}Dominio de datos}{4}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Datasets}{4}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Tipos de datos}{4}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Formato de registro y de página}{5}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Parte 1: técnicas implementadas}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Heap File con páginas slotted}{5}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Archivo secuencial paginado}{5}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}B+ agrupado}{5}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}B+ no agrupado}{6}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}Hash extensible en disco}{6}{subsection.4.5}%
+\contentsline {subsection}{\numberline {4.6}Algoritmos externos}{6}{subsection.4.6}%
+\contentsline {paragraph}{External merge sort.}{6}{section*.3}%
+\contentsline {paragraph}{External hashing para GROUP BY.}{6}{section*.4}%
+\contentsline {subsection}{\numberline {4.7}Parser, planificador y EXPLAIN}{6}{subsection.4.7}%
+\contentsline {subsection}{\numberline {4.8}Transacciones y concurrencia}{7}{subsection.4.8}%
+\contentsline {subsection}{\numberline {4.9}Interfaz de usuario}{7}{subsection.4.9}%
+\contentsline {section}{\numberline {5}Parte 2: base de datos espacial}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Métricas de distancia}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Extensión SQL}{8}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Índice R-Tree}{8}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Intersección con polígono}{9}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Estado de la Parte 2}{9}{subsection.5.5}%
+\contentsline {section}{\numberline {6}Comparación experimental}{9}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Metodología}{9}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Heap File frente a archivo secuencial}{10}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Índices: B+ agrupado, B+ no agrupado y hash extensible}{10}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}B+ agrupado frente a B+ no agrupado a través de SQL}{14}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}Transacciones}{14}{subsection.6.5}%
+\contentsline {subsection}{\numberline {6.6}Parte 2: R-Tree frente a búsqueda secuencial}{14}{subsection.6.6}%
+\contentsline {subsection}{\numberline {6.7}Parte 2: secuencial, R-Tree y GiST}{15}{subsection.6.7}%
+\contentsline {subsection}{\numberline {6.8}Cuándo usar cada técnica}{17}{subsection.6.8}%
+\contentsline {section}{\numberline {7}Conclusiones y límites conocidos}{17}{section.7}%

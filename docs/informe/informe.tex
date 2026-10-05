@@ -272,9 +272,20 @@ Desde SQL, \texttt{CREATE INDEX idx\_geo ON tiendas (ubicacion) USING RTREE} con
    Index Cond: distancia(ubicacion, POINT(-12.046400, -77.042800)) [haversine] < 6000
 \end{lstlisting}
 
+\subsection{Intersección con polígono}
+
+La tercera consulta del enunciado, puntos dentro de un polígono, se escribe así:
+
+\begin{lstlisting}[language=SQL]
+SELECT nombre FROM tiendas
+WHERE dentro(ubicacion, POLYGON((-12.13 -77.05, -12.13 -77.02, -12.09 -77.02, -12.09 -77.05)));
+\end{lstlisting}
+
+La pertenencia se decide con \emph{ray casting}: desde el punto se traza un rayo y se cuentan los lados del polígono que cruza; si son impares, el punto está dentro. Las cuentas se hacen en microgrados con enteros de 64 bits, de modo que un punto sobre un borde se detecta de forma exacta y se considera dentro. Si la columna tiene R-Tree, el planificador pide al índice los puntos de la caja que envuelve al polígono y después aplica la prueba exacta solo a esos candidatos. En la prueba, un rectángulo alrededor de San Isidro y Miraflores devuelve esas dos tiendas, y un triángulo con la misma base devuelve solo Miraflores, con y sin índice.
+
 \subsection{Estado de la Parte 2}
 
-Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL y el índice R-Tree conectado al planificador. No están listos la intersección con polígonos, el panel de mapa con Leaflet ni la comparación con el índice GiST de PostgreSQL. Estos puntos se detallan en la sección \ref{sec:pendiente}.
+Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST. El panel de mapa con Leaflet se trabaja en la interfaz y no forma parte de este informe del motor. Los límites se detallan en la sección \ref{sec:pendiente}.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
@@ -310,9 +321,11 @@ El heap inserta con una lectura y una escritura de página, y por eso es entre 5
 
 Esta comparación explica la observación del primer avance sobre el tiempo del heap. El crecimiento no se debe a un error: sin índice, buscar por clave primaria en un heap es un recorrido, y su costo crece de forma lineal con el tamaño del archivo. El secuencial ocupa un 24\,\% más de disco porque sus páginas quedan al 80\,\% tras reorganizar. Con carga masiva, ambos tardan lo mismo, porque cada página se escribe una sola vez.
 
+Una segunda medición, tomada como la mediana de 5 corridas (\nolinkurl{datos/resultados/heap_vs_secuencial.md}), confirma el mismo comportamiento: la búsqueda por clave en el heap pasa de 16 a 160 y a 1\,599 páginas al multiplicar los datos por 10, mientras que el secuencial pasa de 6 a 20 y a 35 páginas. Esa medición también muestra que el orden de llegada importa en el secuencial: con claves aleatorias el área auxiliar crece más (25\,629 registros con 100\,000 filas frente a 10\,625 con claves ascendentes) y la búsqueda lee 115 páginas en lugar de 35.
+
 \subsection{Índices: B+ agrupado, B+ no agrupado y hash extensible}
 
-Las seis gráficas siguientes comparan los tres índices sobre la misma clave y con registros de 180 bytes. Las mediciones del hash corresponden a la versión en memoria, que fue la usada en el primer avance; la versión en disco se agregó después.
+Las seis gráficas siguientes comparan los tres índices sobre la misma clave y con registros de 180 bytes. Las mediciones del hash corresponden a la versión en memoria, que fue la usada en el primer avance. La comparación se repitió después con el hash ya en disco (\nolinkurl{datos/resultados/bplus_agrupado_vs_no_agrupado_vs_hash.md}, mediana de 5 corridas): contando la carga del heap, los tres índices se construyen en un tiempo parecido, entre 780 y 850 ms con 100\,000 filas, y la búsqueda por igualdad tarda 8,0 µs con el hash, 9,2 µs con el B+ agrupado y 11,0 µs con el B+ no agrupado. El hash en disco lee siempre 2 páginas de índice (directorio y bucket) y 1 del heap.
 
 \begin{figure}[!htbp]
 \centering
@@ -412,7 +425,47 @@ Nodos visitados, k = 10 & 8 de 872 \\
 \caption{R-Tree con 100\,000 puntos.}
 \end{table}
 
-Las 60 consultas de rango (radios de 1, 5 y 10 km con las dos métricas) y las 30 de k vecinos (k = 10, 50 y 100) devuelven exactamente lo mismo que la búsqueda secuencial. La diferencia está en lo que se lee: la búsqueda secuencial siempre recorre los 100\,000 puntos, mientras que el R-Tree resuelve un radio de 1 km leyendo 14 nodos y los 10 vecinos más cercanos leyendo 8. La comparación de tiempos con el índice GiST de PostgreSQL, que pide la sección 2.2.4, queda pendiente.
+Las 60 consultas de rango (radios de 1, 5 y 10 km con las dos métricas) y las 30 de k vecinos (k = 10, 50 y 100) devuelven exactamente lo mismo que la búsqueda secuencial. La diferencia está en lo que se lee: la búsqueda secuencial siempre recorre los 100\,000 puntos, mientras que el R-Tree resuelve un radio de 1 km leyendo 14 nodos y los 10 vecinos más cercanos leyendo 8.
+
+\subsection{Parte 2: secuencial, R-Tree y GiST}
+
+Para la sección 2.2.4 se midieron tres técnicas sobre los mismos puntos: la búsqueda secuencial y el R-Tree a través del motor SQL (\texttt{make bench-espacial}), y el índice GiST de PostgreSQL 18 sobre el tipo \texttt{point} nativo (\texttt{datos/resultados/gist\_bench.sql}). Los puntos se generan con el mismo generador congruencial en C++ y en SQL, y las sumas de coordenadas coinciden en los dos lados. Cada tiempo es el promedio de 100 consultas con la métrica euclidiana, que es la que calcula GiST sin PostGIS. En los 18 casos, las tres técnicas devuelven el mismo número de filas.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Consulta (100\,000 puntos) & Filas & Secuencial & R-Tree & GiST \\
+\midrule
+Rango de 1 km & 126 & 52,8 ms & 5,7 ms & 0,54 ms \\
+Rango de 5 km & 2\,895 & 53,5 ms & 25,4 ms & 2,82 ms \\
+Rango de 10 km & 10\,370 & 54,2 ms & 73,7 ms & 7,16 ms \\
+k-NN, k = 10 & 10 & 342,6 ms & 5,0 ms & 0,19 ms \\
+k-NN, k = 50 & 50 & 326,4 ms & 5,1 ms & 0,62 ms \\
+k-NN, k = 100 & 100 & 409,5 ms & 5,7 ms & 0,56 ms \\
+Construcción del índice & & & 5\,116 ms & 424 ms \\
+Tamaño del índice & & & 3\,448 KB & 6\,528 KB \\
+\bottomrule
+\end{tabular}
+\caption{Búsqueda secuencial, R-Tree del motor y GiST de PostgreSQL con 100\,000 puntos.}
+\end{table}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/espacial_rango.png}
+\caption{Rango por radio con 100\,000 puntos (escala logarítmica).}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/espacial_knn.png}
+\caption{k vecinos más cercanos con 100\,000 puntos (escala logarítmica).}
+\end{figure}
+
+La búsqueda secuencial cuesta lo mismo con cualquier radio, porque siempre lee las 491 páginas del heap. El R-Tree es unas 9 veces más rápido con un radio de 1 km, pero su costo crece con el número de filas encontradas, ya que por cada una lee una página del heap. Con 10 km la consulta devuelve el 10\,\% de la tabla y el R-Tree termina siendo más lento que el recorrido, el mismo efecto que se observó con el B+ no agrupado en rangos anchos. En k vecinos la diferencia es mucho mayor: la búsqueda secuencial calcula la distancia de todos los puntos y ordena la tabla completa, mientras que el R-Tree solo baja por los nodos más cercanos y es entre 64 y 71 veces más rápido, casi sin depender de k.
+
+GiST resultó unas 10 veces más rápido que el R-Tree del motor en todas las consultas, aunque su índice ocupa casi el doble. Parte de esa diferencia no viene de la estructura: cada consulta del motor abre los archivos y lee el catálogo, mientras que PostgreSQL trabaja con la tabla ya en memoria compartida. Por eso la comparación más justa es la forma en que crece cada técnica, y en eso el R-Tree y GiST se comportan igual. La construcción del R-Tree es más lenta porque inserta punto por punto leyendo cada fila del heap. El detalle completo está en \texttt{docs/comparacion\_espacial/README.md}.
 
 \subsection{Cuándo usar cada técnica}
 
@@ -428,7 +481,7 @@ Secuencial & se busca por clave o por rango y se inserta poco & inserciones lent
 B+ agrupado & se consulta por rango o se lista ordenado por la clave primaria & solo uno por tabla; ocupa más páginas \\
 B+ no agrupado & se necesita un índice secundario con repetidos, por igualdad o rango & una lectura del heap por cada fila devuelta \\
 Hash extensible & solo hay búsquedas por igualdad & no sirve para rangos ni para ordenar \\
-R-Tree & se busca por distancia a un punto: radio o vecinos & solo sirve para columnas \texttt{POINT} \\
+R-Tree & se busca por distancia a un punto o dentro de un polígono, con pocas filas en el resultado & radios que devuelven gran parte de la tabla \\
 \bottomrule
 \end{tabular}
 \caption{Resumen de ventajas y desventajas.}
@@ -442,7 +495,7 @@ El proyecto permitió comprobar en la práctica varias ideas que en clase se ven
 
 La Parte 1 está completa, con dos límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro.
 
-De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL y el índice R-Tree, que el planificador usa para las consultas por radio y por k vecinos. Con 100\,000 puntos, el R-Tree responde las mismas consultas que la búsqueda secuencial leyendo una fracción pequeña de sus nodos. Quedan pendientes la intersección con polígonos, el panel de mapa con Leaflet y la comparación de tiempos con el índice GiST de PostgreSQL.
+De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono) y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. Como trabajo futuro queda el panel de mapa con Leaflet en la interfaz y el uso de PostGIS para comparar también con la distancia haversine.
 
 \section*{Referencias}
 \begin{enumerate}
