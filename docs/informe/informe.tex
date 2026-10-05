@@ -170,7 +170,7 @@ El B+ no agrupado es un índice secundario: sus hojas guardan pares (clave, RID)
 
 \subsection{Hash extensible en disco}
 
-El hash extensible mantiene un directorio de $2^d$ punteros a buckets, donde $d$ es la profundidad global. Cada bucket es una página de 4 KB con 255 entradas (clave, RID). Cuando un bucket se llena y sus entradas pueden separarse por un bit más del hash, se divide, y si su profundidad local ya era igual a la global, el directorio se duplica. Si todas las entradas tienen la misma clave, dividir no sirve, y en ese caso se encadena una página de desborde. La profundidad global está limitada a 16 bits (65\,536 entradas de directorio), un valor que el profesor sugirió revisar en el primer avance.
+El hash extensible mantiene un directorio de $2^d$ punteros a buckets, donde $d$ es la profundidad global. Cada bucket es una página de 4 KB con 255 entradas (clave, RID). Cuando un bucket se llena y sus entradas pueden separarse por un bit más del hash, se divide, y si su profundidad local ya era igual a la global, el directorio se duplica. Si todas las entradas tienen la misma clave, dividir no sirve, y en ese caso se encadena una página de desborde. La profundidad máxima es un parámetro del constructor y por defecto vale 16 bits (65\,536 entradas de directorio), un valor que el profesor sugirió revisar en el primer avance. Al llegar a ese límite el directorio deja de duplicarse y los buckets llenos pasan a usar páginas de desborde.
 
 El hash responde una igualdad con una lectura del directorio y una del bucket, pero no tiene noción de orden, así que el planificador nunca lo usa para rangos.
 
@@ -285,7 +285,7 @@ La pertenencia se decide con \emph{ray casting}: desde el punto se traza un rayo
 
 \subsection{Estado de la Parte 2}
 
-Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST. El panel de mapa con Leaflet se trabaja en la interfaz y no forma parte de este informe del motor. Los límites se detallan en la sección \ref{sec:pendiente}.
+Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST. La interfaz incluye además un panel de mapa con Leaflet que dibuja los puntos de la tabla sobre OpenStreetMap, resalta las filas que devolvió la consulta y traza el círculo de búsqueda o el polígono usado en el \texttt{WHERE}. Los límites se detallan en la sección \ref{sec:pendiente}.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
@@ -495,7 +495,7 @@ El proyecto permitió comprobar en la práctica varias ideas que en clase se ven
 
 La Parte 1 está completa, con dos límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro.
 
-De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono) y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. Como trabajo futuro queda el panel de mapa con Leaflet en la interfaz y el uso de PostGIS para comparar también con la distancia haversine.
+De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. El repositorio ya incluye \texttt{postgis\_bench.sql}, que repite la comparación con PostGIS sobre \texttt{geography} y distancia geodésica; como trabajo futuro queda ejecutarlo y comparar esos tiempos con la métrica haversine del motor.
 
 \section*{Referencias}
 \begin{enumerate}

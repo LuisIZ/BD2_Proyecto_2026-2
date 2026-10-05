@@ -52,7 +52,8 @@ páginas leídas; la API solo traduce peticiones HTTP a llamadas a ese binario.
 | Índice R-Tree paginado (`CREATE INDEX ... USING RTREE`) usado por el planificador | listo ([rtree](docs/rtree.md)) |
 | Intersección con polígono: `dentro(col, POLYGON((lat lon, ...)))` | listo |
 | Comparación secuencial vs R-Tree vs GiST de PostgreSQL | listo ([comparación espacial](docs/comparacion_espacial/README.md)) |
-| Panel de mapa en la interfaz | en desarrollo |
+| Panel de mapa en la interfaz (Leaflet) | listo |
+| Comparación con PostGIS (`datos/resultados/postgis_bench.sql`) | script listo, falta medir |
 
 Ejemplo de consultas:
 
