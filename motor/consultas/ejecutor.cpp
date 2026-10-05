@@ -3,6 +3,7 @@
 #include "external_algorithms.h"
 #include "../archivos/heap_file.h"
 #include "../archivos/sequential_file.h"
+#include "../espacial/distancia.h"
 #include "../indices/bplus_agrupado.h"
 #include "../indices/bplus_no_agrupado.h"
 #include "../indices/hash_extensible_disco.h"
@@ -57,18 +58,8 @@ struct FilaFisica {
     RecordId rid;  // solo heap
 };
 
-const double RADIO_TIERRA_M = 6371000.0;
-
 double distancia_m(const Valor& a, const Valor& b, const std::string& metrica) {
-    const double rad = std::acos(-1.0) / 180.0;
-    const double lat1 = a.lat_e6 / 1e6 * rad;
-    const double lat2 = b.lat_e6 / 1e6 * rad;
-    const double dlat = lat2 - lat1;
-    const double dlon = (b.lon_e6 - a.lon_e6) / 1e6 * rad;
-    if (metrica == "EUCLIDIANA") return std::sqrt(dlat * dlat + dlon * dlon) * RADIO_TIERRA_M;
-    const double h = std::sin(dlat / 2) * std::sin(dlat / 2) +
-                     std::cos(lat1) * std::cos(lat2) * std::sin(dlon / 2) * std::sin(dlon / 2);
-    return 2 * RADIO_TIERRA_M * std::asin(std::sqrt(std::min(1.0, h)));
+    return espacial::distancia_m({a.lat_e6, a.lon_e6}, {b.lat_e6, b.lon_e6}, espacial::metrica_desde(metrica));
 }
 
 bool microgrados_de(const std::string& s, int& salida) {
