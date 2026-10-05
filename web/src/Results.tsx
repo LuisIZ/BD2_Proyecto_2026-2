@@ -1,8 +1,16 @@
 import { useState } from "react";
-import type { Result } from "./types";
+import type { Cell, Result } from "./types";
 import PlanGraph, { stepPages } from "./PlanGraph";
 
-export function Results({ result, busy }: { result?: Result; busy: boolean }) {
+export function Results({
+  result,
+  busy,
+  onRowSelect,
+}: {
+  result?: Result;
+  busy: boolean;
+  onRowSelect?: (row: Cell[], columns: string[]) => void;
+}) {
   const [page, setPage] = useState(0);
   const rows = result?.filas ?? [];
   const columns = result?.columnas ?? [];
@@ -77,7 +85,26 @@ export function Results({ result, busy }: { result?: Result; busy: boolean }) {
                   {rows
                     .slice(current * 50, (current + 1) * 50)
                     .map((row, i) => (
-                      <tr key={i}>
+                      <tr
+                        key={i}
+                        className={onRowSelect ? "selectable-row" : undefined}
+                        tabIndex={onRowSelect ? 0 : undefined}
+                        aria-label={
+                          onRowSelect
+                            ? `Seleccionar fila ${current * 50 + i + 1} en el mapa`
+                            : undefined
+                        }
+                        onClick={() => onRowSelect?.(row, columns)}
+                        onKeyDown={(event) => {
+                          if (
+                            onRowSelect &&
+                            (event.key === "Enter" || event.key === " ")
+                          ) {
+                            event.preventDefault();
+                            onRowSelect(row, columns);
+                          }
+                        }}
+                      >
                         <td className="row-number">{current * 50 + i + 1}</td>
                         {row.map((cell, j) => (
                           <td

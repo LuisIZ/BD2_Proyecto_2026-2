@@ -7,7 +7,9 @@ import Comparison from "./Comparison";
 import Demo from "./Demo";
 import Syntax from "./Syntax";
 import { Plan, Results } from "./Results";
+import SpatialMap from "./SpatialMap";
 import { statementAt } from "./sql";
+import type { Cell } from "./types";
 
 const views = [
   ["consultas", "Consultas"],
@@ -29,6 +31,11 @@ export default function App() {
   const [selected, setSelected] = useState("");
   const [sql, setSql] = useState("SHOW TABLES;");
   const [results, setResults] = useState<Result[]>([]);
+  const [resultSql, setResultSql] = useState("");
+  const [mapSelection, setMapSelection] = useState<{
+    columns: string[];
+    values: Cell[];
+  }>();
   const [resultIndex, setResultIndex] = useState(0);
   const [execution, setExecution] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -48,6 +55,14 @@ export default function App() {
     table?.columnas.find((column) => column.tipo !== "INT")?.nombre ??
     "Country";
   const activeResult = results[resultIndex];
+  const resultTableName =
+    /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(
+      resultSql.replace(/'(?:''|[^'])*'/g, "''"),
+    )?.[1] ?? selected;
+  const resultTable =
+    tables.find(
+      (item) => item.nombre.toLowerCase() === resultTableName.toLowerCase(),
+    ) ?? table;
   const lines = sql.split("\n").length;
 
   async function refresh() {
@@ -72,10 +87,12 @@ export default function App() {
     }
   }, [connected]);
 
-  function showResults(items: Result[]) {
+  function showResults(items: Result[], query = "") {
     setResults(items);
     setResultIndex(Math.max(0, items.length - 1));
     setExecution((value) => value + 1);
+    setResultSql(query);
+    setMapSelection(undefined);
   }
   function openSql(text: string) {
     setSql(text);
@@ -100,7 +117,7 @@ export default function App() {
       const data = await request<{ resultados: Result[] }>("consultas", {
         sql: query,
       });
-      showResults(data.resultados);
+      showResults(data.resultados, query);
       setHistory((previous) =>
         [query, ...previous.filter((item) => item !== query)].slice(0, 10),
       );
@@ -137,7 +154,7 @@ export default function App() {
       const data = await request<{ resultados: Result[] }>("consultas", {
         sql: query,
       });
-      showResults(data.resultados);
+      showResults(data.resultados, query);
       setHistory((previous) =>
         [query, ...previous.filter((item) => item !== query)].slice(0, 10),
       );
@@ -266,7 +283,9 @@ export default function App() {
                         <small>
                           {column.tipo === "INT"
                             ? "INT"
-                            : `VARCHAR(${column.tam})`}
+                            : column.tipo.toUpperCase() === "POINT"
+                              ? "POINT"
+                              : `VARCHAR(${column.tam})`}
                         </small>
                       </li>
                     ))}
@@ -431,6 +450,13 @@ export default function App() {
                 </button>
               </div>
             </section>
+            <SpatialMap
+              table={resultTable}
+              result={activeResult}
+              resultSql={resultSql}
+              selectedRow={mapSelection}
+              busy={busy}
+            />
             {results.length > 1 && (
               <div
                 className="statement-tabs"
@@ -452,6 +478,9 @@ export default function App() {
               key={`${execution}-${resultIndex}`}
               result={activeResult}
               busy={busy}
+              onRowSelect={(values, columns) =>
+                setMapSelection({ values, columns })
+              }
             />
             <Plan result={activeResult} />
           </div>
@@ -483,7 +512,7 @@ export default function App() {
         <ImportCsv
           close={() => setImporting(false)}
           imported={(items, name) => {
-            showResults(items);
+            showResults(items, `SELECT * FROM ${name} LIMIT 50;`);
             setSelected(name);
             setSql(`SELECT * FROM ${name} LIMIT 50;`);
             void refresh();

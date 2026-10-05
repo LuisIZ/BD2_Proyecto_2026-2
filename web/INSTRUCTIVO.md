@@ -120,7 +120,11 @@ El índice no agrupado deja de convenir entre 250 y 500 filas (2,5 % a 5 % de la
 
 Lee los CSV de `datos/resultados/` generados por `make bench` (o `mingw32-make bench`). Elige archivo y métrica. Los campos `_us` están en microsegundos y el espacio en bytes.
 
-## 8. Problemas frecuentes
+## 8. Mapa espacial
+
+En **Consultas**, selecciona una tabla que tenga una columna `POINT`. El panel **Mapa espacial** carga sus ubicaciones; los resultados se resaltan y al seleccionar una fila el mapa centra esa ubicación. Las consultas `distancia(columna, POINT(lat, lon)) < radio` dibujan el círculo de búsqueda en metros. Leaflet usa mosaicos de OpenStreetMap, por lo que el fondo del mapa requiere conexión a internet.
+
+## 9. Problemas frecuentes
 
 | Problema | Solución |
 |---|---|
@@ -135,7 +139,7 @@ Lee los CSV de `datos/resultados/` generados por `make bench` (o `mingw32-make b
 
 Un lote de sentencias no es una transacción: si una falla, las anteriores no se deshacen.
 
-## 9. Pruebas y archivos
+## 10. Pruebas y archivos
 
 Con la interfaz detenida, desde `web`:
 
