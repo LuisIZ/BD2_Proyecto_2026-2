@@ -301,3 +301,13 @@ datos/db/
 # compilacion de LaTeX
 *.aux
 *.toc
+
+# configuracion local del editor (peacock, rutas de compilador, depuracion)
+.vscode/
+
+# compilacion de LaTeX (beamer y latexmk)
+*.nav
+*.snm
+*.synctex.gz
+*.fls
+*.fdb_latexmk
