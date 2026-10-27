@@ -26,9 +26,9 @@ struct Resultado {
 };
 
 // los k documentos con mayor score, de mayor a menor
-// TF_IDF: esquema lnc.ltc con coseno; BM25: con BM25_K1 y BM25_B
+// TF_IDF: esquema lnc.ltc con coseno; BM25: k1 y b solo se usan con BM25
 inline std::vector<Resultado> buscar(IndiceInvertido& /*indice*/, const std::string& /*consulta*/, int /*k*/,
-                                     Ranking /*ranking*/) {
+                                     Ranking /*ranking*/, double /*k1*/ = BM25_K1, double /*b*/ = BM25_B) {
     throw std::runtime_error("no implementado");
 }
 
