@@ -3,6 +3,7 @@
 #include "../consultas/parser_sql.h"
 
 #include <cassert>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -89,12 +90,16 @@ void prueba_parser() {
     assert(motor::sql::parsear("show tables").tipo == TipoSentencia::SHOW_TABLES);
     assert(motor::sql::parsear("describe t").tabla == "t");
 
+    s = motor::sql::parsear("CREATE TABLE p (id INT PRIMARY KEY, precio FLOAT, peso REAL)");
+    assert(s.columnas[1].tipo == "FLOAT" && s.columnas[2].tipo == "FLOAT");
+    s = motor::sql::parsear("SELECT * FROM p WHERE precio <= -2.5");
+    assert(s.condiciones[0].valor.es_decimal && s.condiciones[0].valor.decimal == -2.5f);
+
     assert(falla("SELECT FROM t"));
     assert(falla("SELECT * t"));
     assert(falla("SELECT * FROM t WHERE"));
-    assert(falla("SELECT * FROM t WHERE a = 1.5"));
     assert(falla("INSERT INTO t VALUES (1, 'abierto)"));
-    assert(falla("CREATE TABLE t (a FLOAT)"));
+    assert(falla("CREATE TABLE t (a DOUBLE)"));
     assert(falla("SELECT * FROM t WHERE a = 1 extra"));
     assert(falla("UPDATE t SET a = 1"));
 
@@ -384,6 +389,57 @@ std::vector<std::string> nombres(const Resultado& r) {
     return salida;
 }
 
+void prueba_float() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = std::string("precios_") + org;
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, nombre VARCHAR(10), precio FLOAT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES (1, 'pan', 0.5)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (2, 'leche', 4.25)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (3, 'cafe', 12)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (4, 'agua', 0.1)");
+
+        Resultado r = e.ejecutar("SELECT id, precio FROM " + t + " WHERE precio > 0.3 ORDER BY precio DESC");
+        assert(r.filas.size() == 3 && r.filas[0][0].entero == 3 && r.filas[2][0].entero == 1);
+        assert(r.filas[0][1].es_decimal && r.filas[0][1].a_texto() == "12" && "el entero se guarda como FLOAT");
+        assert(e.ejecutar("SELECT nombre FROM " + t + " WHERE precio = 0.1").filas[0][0].texto == "agua" &&
+               "el literal se redondea a float32 igual que la columna");
+        assert(e.ejecutar("SELECT COUNT(*) FROM " + t + " WHERE precio BETWEEN 0.5 AND 4.25").filas[0][0].entero == 2);
+
+        r = e.ejecutar("SELECT SUM(precio), MIN(precio), MAX(precio), AVG(precio) FROM " + t);
+        assert(r.filas[0][0].es_decimal && std::fabs(r.filas[0][0].decimal - 16.85f) < 1e-4);
+        assert(r.filas[0][1].a_texto() == "0.1" && r.filas[0][2].a_texto() == "12");
+
+        assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (5, 'sal', 'caro')"));
+        assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (2.5, 'sal', 1)") && "la clave sigue siendo INT");
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE nombre = 1.5"));
+        assert(falla_ejecucion(e, "CREATE INDEX ip ON " + t + " (precio)") && "solo se indexan columnas INT");
+        e.ejecutar("DROP TABLE " + t);
+    }
+
+    // COPY lee los decimales del CSV como float32
+    const std::string csv = ".build/sql_test_float.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,precio\n1,19.99\n2,-3\n3,1e-3\n";
+    }
+    e.ejecutar("CREATE TABLE copia_float (id INT PRIMARY KEY, precio FLOAT)");
+    assert(e.ejecutar("COPY copia_float FROM FILE '" + csv + "'").afectadas == 3);
+    Resultado r = e.ejecutar("SELECT precio FROM copia_float ORDER BY precio");
+    assert(r.filas[0][0].a_texto() == "-3" && r.filas[1][0].a_texto() == "0.001" && r.filas[2][0].a_texto() == "19.99");
+    assert(e.ejecutar("DESCRIBE copia_float").filas[1][1].texto == "FLOAT");
+    e.ejecutar("DROP TABLE copia_float");
+    {
+        std::ofstream f(csv);
+        f << "id,precio\n1,abc\n";
+    }
+    e.ejecutar("CREATE TABLE copia_float (id INT PRIMARY KEY, precio FLOAT)");
+    assert(falla_ejecucion(e, "COPY copia_float FROM FILE '" + csv + "'"));
+    e.ejecutar("DROP TABLE copia_float");
+    std::cout << "FLOAT: float32 en heap, secuencial y B+, WHERE, ORDER BY, agregados y COPY\n";
+}
+
 void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -504,6 +560,7 @@ int main() {
     prueba_persistencia();
     prueba_tabla_manual();
     prueba_pk_no_primera();
+    prueba_float();
     prueba_espacial();
     std::cout << "Prueba completada correctamente.\n";
     return 0;

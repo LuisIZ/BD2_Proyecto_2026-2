@@ -1,6 +1,8 @@
 #include "parser_sql.h"
 
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace motor {
@@ -213,7 +215,12 @@ private:
         const Token t = actual();
         if (t.tipo == TipoToken::NUMERO) { avanzar(); return Valor::de_entero(std::stoll(t.texto)); }
         if (t.tipo == TipoToken::TEXTO) { avanzar(); return Valor::de_texto(t.texto); }
-        if (t.tipo == TipoToken::DECIMAL) error("solo se admiten numeros enteros fuera de POINT");
+        if (t.tipo == TipoToken::DECIMAL) {
+            const float v = std::strtof(t.texto.c_str(), nullptr);
+            if (!std::isfinite(v)) error("numero fuera del rango de FLOAT");
+            avanzar();
+            return Valor::de_decimal(v);
+        }
         if (es_funcion("POINT")) return punto();
         error("se esperaba un valor");
     }
@@ -298,6 +305,8 @@ private:
                 const std::string tipo = mayusculas(identificador());
                 if (tipo == "INT" || tipo == "INTEGER") {
                     col.tipo = "INT";
+                } else if (tipo == "FLOAT" || tipo == "REAL") {
+                    col.tipo = "FLOAT";
                 } else if (tipo == "VARCHAR" || tipo == "CHAR") {
                     col.tipo = "VARCHAR";
                     esperar_simbolo("(");
@@ -307,7 +316,7 @@ private:
                 } else if (tipo == "POINT") {
                     col.tipo = "POINT";
                 } else {
-                    error("tipo desconocido '" + tipo + "' (INT, VARCHAR(n) o POINT)");
+                    error("tipo desconocido '" + tipo + "' (INT, FLOAT, VARCHAR(n) o POINT)");
                 }
                 if (es("PRIMARY")) {
                     avanzar();
