@@ -11,7 +11,7 @@ namespace sql {
 
 // Gramática soportada (palabras clave sin distinguir mayúsculas):
 //
-//   CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), col POINT, ...) [USING HEAP|SEQUENTIAL|BPLUS]
+//   CREATE TABLE t (col INT [PRIMARY KEY], col FLOAT, col VARCHAR(n), col POINT, ...) [USING HEAP|SEQUENTIAL|BPLUS]
 //   CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 //   COPY t FROM FILE 'ruta.csv'
 //   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE]
@@ -28,7 +28,7 @@ namespace sql {
 //   cond  := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
 //          | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
 //          | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
-//   valor := entero | 'texto' | POINT(lat, lon)
+//   valor := entero | decimal | 'texto' | POINT(lat, lon)
 //   ORDER BY también acepta distancia(col, POINT(lat, lon) [, metrica]) para los k vecinos más cercanos.
 //
 // EXPLAIN devuelve el plan sin tocar los datos; con ANALYZE lo ejecuta y añade
@@ -58,7 +58,7 @@ enum class TipoSentencia {
 
 struct ColumnaDef {
     std::string nombre;
-    std::string tipo;  // INT | VARCHAR | POINT
+    std::string tipo;  // INT | FLOAT | VARCHAR | POINT
     int tam = 0;       // largo máximo de VARCHAR
     bool pk = false;
 };

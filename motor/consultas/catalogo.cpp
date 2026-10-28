@@ -33,6 +33,11 @@ void poner_int32(std::string& salida, long long v) {
     salida.append(reinterpret_cast<const char*>(&x), sizeof(x));
 }
 
+void poner_float32(std::string& salida, double v) {
+    const float x = static_cast<float>(v);
+    salida.append(reinterpret_cast<const char*>(&x), sizeof(x));
+}
+
 }  // namespace
 
 // --- Tabla ---
@@ -56,7 +61,7 @@ const Indice* Tabla::indice_sobre(const std::string& columna) const {
 std::uint16_t Tabla::tam_registro_fijo() const {
     std::size_t tam = 0;
     for (const Columna& col : columnas) {
-        tam += col.tipo == TipoColumna::INT ? 4 : col.tipo == TipoColumna::POINT ? 8 : col.tam;
+        tam += col.tipo == TipoColumna::INT || col.tipo == TipoColumna::FLOAT ? 4 : col.tipo == TipoColumna::POINT ? 8 : col.tam;
     }
     return static_cast<std::uint16_t>(tam);
 }
@@ -78,12 +83,14 @@ Organizacion organizacion_desde(const std::string& nombre) {
 
 std::string nombre_tipo(TipoColumna t) {
     if (t == TipoColumna::INT) return "INT";
+    if (t == TipoColumna::FLOAT) return "FLOAT";
     if (t == TipoColumna::POINT) return "POINT";
     return "VARCHAR";
 }
 
 TipoColumna tipo_desde(const std::string& nombre) {
     if (nombre == "INT") return TipoColumna::INT;
+    if (nombre == "FLOAT") return TipoColumna::FLOAT;
     if (nombre == "POINT") return TipoColumna::POINT;
     return TipoColumna::VARCHAR;
 }
@@ -106,6 +113,8 @@ void validar_fila(const Tabla& tabla, const Fila& fila) {
             if (fila[i].entero < -2147483648LL || fila[i].entero > 2147483647LL) {
                 throw std::runtime_error("la columna " + col.nombre + " no admite " + std::to_string(fila[i].entero));
             }
+        } else if (col.tipo == TipoColumna::FLOAT) {
+            if (!fila[i].es_numero()) throw std::runtime_error("la columna " + col.nombre + " es FLOAT");
         } else if (col.tipo == TipoColumna::POINT) {
             if (!fila[i].es_punto) throw std::runtime_error("la columna " + col.nombre + " es POINT");
             if (fila[i].lat_e6 < -90000000 || fila[i].lat_e6 > 90000000 ||
@@ -114,7 +123,7 @@ void validar_fila(const Tabla& tabla, const Fila& fila) {
                                          " (lat entre -90 y 90, lon entre -180 y 180)");
             }
         } else {
-            if (fila[i].es_entero || fila[i].es_punto) throw std::runtime_error("la columna " + col.nombre + " es VARCHAR");
+            if (fila[i].es_numero() || fila[i].es_punto) throw std::runtime_error("la columna " + col.nombre + " es VARCHAR");
             if (fila[i].texto.size() > col.tam) {
                 throw std::runtime_error("la columna " + col.nombre + " admite " + std::to_string(col.tam) +
                                          " caracteres y se dieron " + std::to_string(fila[i].texto.size()));
@@ -129,6 +138,8 @@ std::string empaquetar_variable(const Tabla& tabla, const Fila& fila) {
         if (i == tabla.pk) continue;
         if (tabla.columnas[i].tipo == TipoColumna::INT) {
             poner_int32(salida, fila[i].entero);
+        } else if (tabla.columnas[i].tipo == TipoColumna::FLOAT) {
+            poner_float32(salida, fila[i].numero());
         } else if (tabla.columnas[i].tipo == TipoColumna::POINT) {
             poner_int32(salida, fila[i].lat_e6);
             poner_int32(salida, fila[i].lon_e6);
@@ -155,6 +166,12 @@ Fila desempaquetar_variable(const Tabla& tabla, int clave, const std::string& va
             std::memcpy(&x, valor.data() + pos, 4);
             pos += 4;
             fila[i] = Valor::de_entero(x);
+        } else if (tabla.columnas[i].tipo == TipoColumna::FLOAT) {
+            exigir(4);
+            float x;
+            std::memcpy(&x, valor.data() + pos, 4);
+            pos += 4;
+            fila[i] = Valor::de_decimal(x);
         } else if (tabla.columnas[i].tipo == TipoColumna::POINT) {
             exigir(8);
             std::int32_t lat, lon;
@@ -182,6 +199,10 @@ std::vector<char> empaquetar_fijo(const Tabla& tabla, const Fila& fila) {
         const Columna& col = tabla.columnas[i];
         if (col.tipo == TipoColumna::INT) {
             const std::int32_t x = static_cast<std::int32_t>(fila[i].entero);
+            std::memcpy(salida.data() + pos, &x, 4);
+            pos += 4;
+        } else if (col.tipo == TipoColumna::FLOAT) {
+            const float x = static_cast<float>(fila[i].numero());
             std::memcpy(salida.data() + pos, &x, 4);
             pos += 4;
         } else if (col.tipo == TipoColumna::POINT) {
@@ -212,6 +233,11 @@ Fila desempaquetar_fijo(const Tabla& tabla, const char* datos) {
             std::memcpy(&x, datos + pos, 4);
             pos += 4;
             fila[i] = Valor::de_entero(x);
+        } else if (col.tipo == TipoColumna::FLOAT) {
+            float x;
+            std::memcpy(&x, datos + pos, 4);
+            pos += 4;
+            fila[i] = Valor::de_decimal(x);
         } else if (col.tipo == TipoColumna::POINT) {
             std::int32_t lat, lon;
             std::memcpy(&lat, datos + pos, 4);

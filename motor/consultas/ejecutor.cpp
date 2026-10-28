@@ -15,6 +15,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -158,7 +159,7 @@ std::string describir_orden(const Sentencia& s) {
 std::string describir_cond(const Condicion& c) {
     if (c.funcion == "DENTRO") return "dentro(" + c.columna + ", POLYGON(" + std::to_string(c.poligono.size()) + " vertices))";
     if (c.funcion == "DISTANCIA") return describir_distancia(c.columna, c.punto, c.metrica) + " " + c.op + " " + c.valor.a_texto();
-    std::string s = c.columna + " " + c.op + " " + (c.valor.es_entero ? c.valor.a_texto() : "'" + c.valor.texto + "'");
+    std::string s = c.columna + " " + c.op + " " + (c.valor.es_numero() ? c.valor.a_texto() : "'" + c.valor.texto + "'");
     if (c.op == "BETWEEN") s += " AND " + c.hasta.a_texto();
     return s;
 }
@@ -633,7 +634,8 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         }
         if (es_point) throw std::runtime_error("la columna " + c.columna + " es POINT; comparala con distancia(...)");
         if (tabla.columnas[col].tipo == TipoColumna::INT && !c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es INT");
-        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && (c.valor.es_entero || c.valor.es_punto)) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
+        if (tabla.columnas[col].tipo == TipoColumna::FLOAT && !c.valor.es_numero()) throw std::runtime_error("la columna " + c.columna + " es FLOAT");
+        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && (c.valor.es_numero() || c.valor.es_punto)) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
         if (plan.condicion_usada >= 0) continue;
 
         long long desde, hasta;
@@ -938,6 +940,13 @@ bool es_entero(const std::string& s, long long& v) {
     for (; i < s.size(); ++i) if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
     v = std::stoll(s);
     return v >= INT_MIN && v <= INT_MAX;
+}
+
+bool es_decimal(const std::string& s, float& v) {
+    if (s.empty()) return false;
+    char* fin = nullptr;
+    v = std::strtof(s.c_str(), &fin);
+    return fin == s.c_str() + s.size() && std::isfinite(v);
 }
 
 }  // namespace
@@ -1320,6 +1329,14 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
                 }
                 continue;
             }
+            if (tabla.columnas[c].tipo == TipoColumna::FLOAT) {
+                float v;
+                if (!es_decimal(csv[f][c], v)) {
+                    throw std::runtime_error("la fila " + texto(f + 1) + " trae '" + csv[f][c] + "' en la columna FLOAT " + tabla.columnas[c].nombre);
+                }
+                fila[c] = Valor::de_decimal(v);
+                continue;
+            }
             if (tabla.columnas[c].tipo != TipoColumna::INT) { fila[c] = Valor::de_texto(csv[f][c]); continue; }
             long long v;
             if (!es_entero(csv[f][c], v)) {
@@ -1580,8 +1597,11 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
             if (item.agregado.empty() && (gcol < 0 || minusculas(item.columna) != minusculas(s.group_by))) {
                 throw std::runtime_error("la columna " + item.columna + " debe estar en GROUP BY o dentro de un agregado");
             }
-            if (!item.agregado.empty() && !item.columna.empty() && tabla.columnas[tabla.posicion_columna(item.columna)].tipo != TipoColumna::INT) {
-                throw std::runtime_error(item.agregado + " solo se aplica a columnas INT");
+            if (!item.agregado.empty() && !item.columna.empty()) {
+                const TipoColumna tipo = tabla.columnas[tabla.posicion_columna(item.columna)].tipo;
+                if (tipo != TipoColumna::INT && tipo != TipoColumna::FLOAT) {
+                    throw std::runtime_error(item.agregado + " solo se aplica a columnas INT o FLOAT");
+                }
             }
         }
         auto clave_grupo = [&](const Fila& f) { return gcol < 0 ? std::string() : f[gcol].a_texto(); };
@@ -1594,7 +1614,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
             const int col = item.columna.empty() ? -1 : tabla.posicion_columna(item.columna);
             ExternalHashAggregate<Fila, std::string> agregador(10, 100, &traza);
             resultados.push_back(agregador.agrupar(filas, clave_grupo,
-                                                   [&](const Fila& f) { return col < 0 ? 0.0 : static_cast<double>(f[col].entero); },
+                                                   [&](const Fila& f) { return col < 0 ? 0.0 : f[col].numero(); },
                                                    {AggregateOp::COUNT}));
         }
         for (const ItemSelect& item : items) r.columnas.push_back(item.etiqueta());
@@ -1604,10 +1624,15 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
                 const ItemSelect& item = items[i];
                 if (item.agregado.empty()) { fila.push_back(valor); continue; }
                 const AggregateResult& a = resultados[i].at(clave);
+                const bool es_float = !item.columna.empty() &&
+                                      tabla.columnas[tabla.posicion_columna(item.columna)].tipo == TipoColumna::FLOAT;
+                auto numero = [&](double x) {
+                    return es_float ? Valor::de_decimal(static_cast<float>(x)) : Valor::de_entero(static_cast<long long>(x));
+                };
                 if (item.agregado == "COUNT") fila.push_back(Valor::de_entero(static_cast<long long>(a.count)));
-                else if (item.agregado == "SUM") fila.push_back(Valor::de_entero(static_cast<long long>(a.sum)));
-                else if (item.agregado == "MIN") fila.push_back(Valor::de_entero(static_cast<long long>(a.minimum)));
-                else if (item.agregado == "MAX") fila.push_back(Valor::de_entero(static_cast<long long>(a.maximum)));
+                else if (item.agregado == "SUM") fila.push_back(numero(a.sum));
+                else if (item.agregado == "MIN") fila.push_back(numero(a.minimum));
+                else if (item.agregado == "MAX") fila.push_back(numero(a.maximum));
                 else {
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%.2f", a.average);
