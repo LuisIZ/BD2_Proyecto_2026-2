@@ -3,7 +3,9 @@ import {
   Circle,
   CircleMarker,
   MapContainer,
+  Marker,
   Polygon,
+  Polyline,
   Popup,
   TileLayer,
   useMap,
@@ -30,11 +32,23 @@ interface SearchShape {
   center?: [number, number];
   radius?: number;
   polygon?: [number, number][];
+  /** ORDER BY distancia(col, POINT(lat, lon)) LIMIT k */
+  knn?: { center: [number, number]; k: number };
 }
 
 const pointPattern =
   /^\s*POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)\s*$/i;
 const defaultCenter: [number, number] = [-12.0464, -77.0428];
+const queryColor = "#c2255c";
+
+function knnLabel(rank: number) {
+  return L.divIcon({
+    className: "knn-label",
+    html: String(rank),
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
+}
 
 function pointCoordinates(value: Cell): [number, number] | undefined {
   if (typeof value !== "string") return;
@@ -81,6 +95,15 @@ function getSearchShape(sql: string): SearchShape {
       );
     if (vertices.length >= 3) shape.polygon = vertices;
   }
+
+  const knn = /ORDER\s+BY\s+distancia\s*\(\s*[\w.]+\s*,\s*POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)(?:\s*,\s*'[^']*')?\s*\)(?:\s+ASC)?\s+LIMIT\s+(\d+)/i.exec(
+    sql,
+  );
+  if (knn)
+    shape.knn = {
+      center: [Number(knn[1]), Number(knn[2])],
+      k: Number(knn[3]),
+    };
   return shape;
 }
 
@@ -171,6 +194,19 @@ function MapContents({
       ? []
       : resultRows.map((row) => String(row[resultKeyIndex])),
   );
+  // en un k-NN el orden de las filas es el ranking: 1 es el vecino más cercano
+  const neighbors = shape.knn
+    ? resultRows.flatMap((row) => {
+        const coordinates =
+          resultPointIndex >= 0 ? pointCoordinates(row[resultPointIndex]) : undefined;
+        if (coordinates) return [coordinates];
+        const point =
+          resultKeyIndex >= 0
+            ? points.find((item) => item.id === String(row[resultKeyIndex]))
+            : undefined;
+        return point ? [[point.latitude, point.longitude] as [number, number]] : [];
+      })
+    : [];
   const selectedPoint =
     selectedRow &&
     pointCoordinates(
@@ -217,6 +253,12 @@ function MapContents({
       map.fitBounds(L.latLng(shape.center).toBounds(shape.radius * 2));
       return;
     }
+    if (shape.knn) {
+      map.fitBounds(L.latLngBounds([shape.knn.center, ...neighbors]).pad(0.2), {
+        maxZoom: 15,
+      });
+      return;
+    }
     const highlights = points.filter((point) => {
       const key = `${point.latitude},${point.longitude}`;
       return (
@@ -258,6 +300,9 @@ function MapContents({
     shape.center?.[0],
     shape.center?.[1],
     shape.radius,
+    shape.knn?.center[0],
+    shape.knn?.center[1],
+    neighbors.length,
     target,
   ]);
 
@@ -318,6 +363,42 @@ function MapContents({
             weight: 2,
           }}
         />
+      )}
+      {shape.knn && (
+        <>
+          {neighbors.map((neighbor, index) => (
+            <Polyline
+              key={`linea-${index}`}
+              positions={[shape.knn!.center, neighbor]}
+              pathOptions={{ color: queryColor, weight: 1.5, dashArray: "4 4" }}
+            />
+          ))}
+          <CircleMarker
+            center={shape.knn.center}
+            radius={8}
+            pathOptions={{
+              color: "#ffffff",
+              fillColor: queryColor,
+              fillOpacity: 1,
+              weight: 2,
+            }}
+          >
+            <Popup>
+              Punto de consulta
+              <div>
+                {shape.knn.center[0]}, {shape.knn.center[1]}
+              </div>
+            </Popup>
+          </CircleMarker>
+          {neighbors.map((neighbor, index) => (
+            <Marker
+              key={`vecino-${index}`}
+              position={neighbor}
+              icon={knnLabel(index + 1)}
+              title={`Vecino ${index + 1}`}
+            />
+          ))}
+        </>
       )}
       {shape.polygon && (
         <Polygon
@@ -488,6 +569,12 @@ export default function SpatialMap({
             <span><i className="map-dot selected" /> Fila seleccionada</span>
             {shape.radius !== undefined && <span>Radio: {shape.radius} m</span>}
             {shape.polygon && <span>Polígono de búsqueda</span>}
+            {shape.knn && (
+              <span>
+                <i className="map-dot query" /> Punto de consulta · k-NN, k ={" "}
+                {shape.knn.k}
+              </span>
+            )}
             {selectedRow && <span role="status">Fila seleccionada en el mapa</span>}
             <span>{points.length.toLocaleString("es-PE")} puntos</span>
           </div>

@@ -507,6 +507,20 @@ td.num {
   background: #b6ff3b;
   border: 1px solid #405520;
 }
+.map-dot.query {
+  background: #c2255c;
+}
+/* vecinos del k-NN numerados en el orden del resultado */
+.knn-label {
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #c2255c;
+  color: #ffffff;
+  font: 700 11px/1 system-ui, sans-serif;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
 .empty-small {
   padding: 16px;
   color: var(--muted);

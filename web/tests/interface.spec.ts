@@ -224,6 +224,10 @@ test("el mapa carga puntos y resalta resultados espaciales y filas", async ({
   ).toBeEnabled();
   await expect(page.getByText("La consulta no devolvió filas para resaltar.")).toHaveCount(0);
   await expect(page.getByText("Fila seleccionada en el mapa")).toHaveCount(0);
+  // k-NN: punto de consulta y vecinos numerados en el orden del resultado
+  await expect(page.getByText(/k-NN, k = 2/)).toBeVisible();
+  await expect(page.locator(".knn-label")).toHaveText(["1", "2"]);
+  await expect(page.getByTitle("Vecino 1")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
