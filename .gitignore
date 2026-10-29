@@ -311,3 +311,6 @@ datos/db/
 *.synctex.gz
 *.fls
 *.fdb_latexmk
+
+# dataset ABO: el de 100k pesa ~67 MB, se regenera con tools/dataset/preparar.py
+datos/productos_100k.csv
