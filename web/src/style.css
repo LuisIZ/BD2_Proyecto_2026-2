@@ -448,6 +448,36 @@ th.num,
 td.num {
   text-align: right;
 }
+/* búsqueda de texto: score con barra y términos resaltados */
+.text-search {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+td mark {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: #fde68a;
+  color: inherit;
+}
+th.score-col,
+td.score-cell {
+  text-align: right;
+  min-width: 110px;
+}
+td.score-cell {
+  position: relative;
+}
+.score-bar {
+  position: absolute;
+  inset: 6px auto 6px 0;
+  border-radius: 0 3px 3px 0;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.score-value {
+  position: relative;
+}
 .row-number {
   width: 40px;
   color:#8d968f;

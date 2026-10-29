@@ -8,7 +8,7 @@ import Demo from "./Demo";
 import Syntax from "./Syntax";
 import { Plan, Results } from "./Results";
 import SpatialMap from "./SpatialMap";
-import { statementAt } from "./sql";
+import { splitStatements, statementAt } from "./sql";
 import type { Cell } from "./types";
 
 const views = [
@@ -477,6 +477,7 @@ export default function App() {
             <Results
               key={`${execution}-${resultIndex}`}
               result={activeResult}
+              sql={splitStatements(resultSql)[resultIndex]?.text ?? resultSql}
               busy={busy}
               onRowSelect={(values, columns) =>
                 setMapSelection({ values, columns })

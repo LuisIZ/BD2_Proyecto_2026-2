@@ -1,13 +1,27 @@
 import { useState } from "react";
 import type { Cell, Result } from "./types";
 import PlanGraph, { stepPages } from "./PlanGraph";
+import { highlight, parseTextSearch } from "./textSearch";
+
+function Highlighted({ text, stems }: { text: string; stems: string[] }) {
+  return (
+    <>
+      {highlight(text, stems).map((fragment, i) =>
+        fragment.hit ? <mark key={i}>{fragment.text}</mark> : fragment.text,
+      )}
+    </>
+  );
+}
 
 export function Results({
   result,
+  sql = "",
   busy,
   onRowSelect,
 }: {
   result?: Result;
+  /** sentencia que produjo el resultado; con MATCH se resaltan los términos */
+  sql?: string;
   busy: boolean;
   onRowSelect?: (row: Cell[], columns: string[]) => void;
 }) {
@@ -16,6 +30,16 @@ export function Results({
   const columns = result?.columnas ?? [];
   const pages = Math.max(1, Math.ceil(rows.length / 50));
   const current = Math.min(page, pages - 1);
+  const text = result?.ok ? parseTextSearch(sql) : undefined;
+  const scoreIndex = text
+    ? columns.findIndex((col) =>
+        [text.scoreColumn, "score", "relevancia"].includes(col.toLowerCase()),
+      )
+    : -1;
+  const maxScore = Math.max(
+    0,
+    ...rows.map((row) => Number(row[scoreIndex]) || 0),
+  );
 
   function download() {
     const escape = (value: unknown) =>
@@ -63,6 +87,19 @@ export function Results({
               ms
             </span>
           </div>
+          {text && (
+            <p className="text-search" role="note">
+              Búsqueda de texto en <code>{text.column}</code>
+              {text.ranking ? ` con ${text.ranking === "TF_IDF" ? "TF-IDF" : "BM25"}` : ""}:{" "}
+              «{text.query}»
+              {text.terms.length > 0 && (
+                <span className="muted">
+                  {" "}
+                  · términos resaltados: {text.terms.join(", ")}
+                </span>
+              )}
+            </p>
+          )}
           {columns.length > 0 ? (
             <div className="table-scroll">
               <table>
@@ -75,7 +112,11 @@ export function Results({
                       #
                     </th>
                     {columns.map((col, i) => (
-                      <th scope="col" key={i}>
+                      <th
+                        scope="col"
+                        key={i}
+                        className={i === scoreIndex ? "score-col" : undefined}
+                      >
                         {col}
                       </th>
                     ))}
@@ -106,17 +147,38 @@ export function Results({
                         }}
                       >
                         <td className="row-number">{current * 50 + i + 1}</td>
-                        {row.map((cell, j) => (
-                          <td
-                            key={j}
-                            className={
-                              typeof cell === "number" ? "numeric" : ""
-                            }
-                            title={String(cell ?? "")}
-                          >
-                            {cell ?? "NULL"}
-                          </td>
-                        ))}
+                        {row.map((cell, j) =>
+                          j === scoreIndex ? (
+                            <td key={j} className="numeric score-cell" title={String(cell ?? "")}>
+                              <span
+                                className="score-bar"
+                                style={{
+                                  width: `${maxScore > 0 ? (Number(cell) / maxScore) * 100 : 0}%`,
+                                }}
+                              />
+                              <span className="score-value">
+                                {Number(cell).toLocaleString("es-PE", {
+                                  minimumFractionDigits: 4,
+                                  maximumFractionDigits: 4,
+                                })}
+                              </span>
+                            </td>
+                          ) : (
+                            <td
+                              key={j}
+                              className={
+                                typeof cell === "number" ? "numeric" : ""
+                              }
+                              title={String(cell ?? "")}
+                            >
+                              {text && typeof cell === "string" ? (
+                                <Highlighted text={cell} stems={text.stems} />
+                              ) : (
+                                (cell ?? "NULL")
+                              )}
+                            </td>
+                          ),
+                        )}
                       </tr>
                     ))}
                 </tbody>
