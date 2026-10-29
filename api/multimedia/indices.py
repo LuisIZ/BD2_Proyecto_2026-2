@@ -10,6 +10,11 @@ menor = mas parecido. Euclidiana sin elevar al cuadrado, producto punto como
 -a.b y coseno como 1 - cos, con los vectores normalizados (faiss.normalize_L2).
 """
 
+import os
+
+import faiss
+import numpy as np
+
 TIPOS = ("IVF", "HNSW")
 
 METRICAS = {
@@ -38,19 +43,75 @@ class IndiceVectorial:
             raise ValueError(f"parametros desconocidos para {self.tipo}: {sorted(desconocidos)}")
         self.parametros = {**PARAMETROS[self.tipo], **parametros}
         self.indice = None
+        self.ruta = None
+
+    def _preparar(self, vectores):
+        """float32 contiguo de forma (n, K); el coseno trabaja sobre vectores normalizados."""
+        x = np.array(vectores, dtype=np.float32, order="C", ndmin=2)
+        if self.metrica == "COSENO":
+            faiss.normalize_L2(x)
+        return x
+
+    def _metrica_faiss(self):
+        # el coseno es producto interno entre vectores normalizados
+        return faiss.METRIC_L2 if self.metrica == "EUCLIDIANA" else faiss.METRIC_INNER_PRODUCT
+
+    def _crear_ivf(self, x):
+        nlist = self.parametros["nlist"]
+        if nlist > len(x):
+            raise ValueError(f"nlist = {nlist} necesita al menos {nlist} vectores y hay {len(x)}")
+        dimension = x.shape[1]
+        # el cuantizador grueso guarda los nlist centroides y decide a que lista va cada vector
+        cuantizador = faiss.IndexFlatL2(dimension) if self.metrica == "EUCLIDIANA" else faiss.IndexFlatIP(dimension)
+        indice = faiss.IndexIVFFlat(cuantizador, dimension, nlist, self._metrica_faiss())
+        indice.cp.seed = 2026  # semilla fija del k-means (Lloyd)
+        indice.train(x)
+        return indice
 
     def construir(self, vectores, ids):
         """ids son las claves primarias de la tabla, en el mismo orden que vectores."""
-        raise NotImplementedError("no implementado")
+        x = self._preparar(vectores)
+        ids = np.asarray(ids, dtype=np.int64)
+        if len(ids) != len(x):
+            raise ValueError(f"hay {len(x)} vectores y {len(ids)} ids")
+        if self.tipo == "IVF":
+            self.indice = self._crear_ivf(x)
+        else:
+            raise NotImplementedError("HNSW: se implementa en #61")
+        self.indice.add_with_ids(x, ids)
+        self.ruta = None
+        return self
 
     def knn(self, consulta, k):
-        raise NotImplementedError("no implementado")
+        if self.indice is None:
+            raise RuntimeError("el indice no esta construido ni cargado")
+        if self.tipo == "IVF":
+            self.indice.nprobe = self.parametros["nprobe"]
+        distancias, ids = self.indice.search(self._preparar(consulta), k)
+        if self.metrica == "EUCLIDIANA":
+            distancias = np.sqrt(np.maximum(distancias, 0))  # FAISS devuelve la L2 al cuadrado
+        elif self.metrica == "PRODUCTO_PUNTO":
+            distancias = -distancias  # FAISS devuelve a.b (mayor es mejor)
+        else:
+            distancias = 1 - distancias  # a.b entre normalizados = cos
+        # FAISS rellena con -1 si las listas revisadas tienen menos de k vectores
+        return [(int(i), float(d)) for i, d in zip(ids[0], distancias[0]) if i != -1]
 
     def guardar(self, ruta):
-        raise NotImplementedError("no implementado")
+        if self.indice is None:
+            raise RuntimeError("el indice no esta construido")
+        faiss.write_index(self.indice, ruta)
+        self.ruta = ruta
 
     def cargar(self, ruta):
-        raise NotImplementedError("no implementado")
+        self.indice = faiss.read_index(ruta)
+        self.ruta = ruta
+        return self
 
     def tamano_en_disco(self):
-        raise NotImplementedError("no implementado")
+        """Bytes del archivo del indice (o los que ocuparia si aun no se guardo)."""
+        if self.ruta and os.path.exists(self.ruta):
+            return os.path.getsize(self.ruta)
+        if self.indice is None:
+            return 0
+        return int(faiss.serialize_index(self.indice).nbytes)

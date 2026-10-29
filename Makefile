@@ -65,7 +65,7 @@ BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_fil
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-espacial bench-espacial-haversine demo-transacciones clean
+.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-ivf bench-espacial bench-espacial-haversine demo-transacciones clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -141,6 +141,10 @@ setup:
 # (ver docs/bplus_agrupado_vs_no_agrupado.md)
 bench-agrupado: $(MOTOR_SQL)
 	$(PYTHON) api/bench_agrupado.py
+
+# IVF de FAISS vs fuerza bruta, 1k/10k/100k (ver docs/ivf.md)
+bench-ivf:
+	$(PYTHON) api/multimedia/bench_ivf.py
 
 # --- reglas ---
 

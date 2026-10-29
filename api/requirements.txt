@@ -1,2 +1,4 @@
 fastapi==0.139.0
 uvicorn==0.51.0
+faiss-cpu==1.15.1
+numpy==2.5.4
