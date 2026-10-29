@@ -10,6 +10,7 @@ from tempfile import NamedTemporaryFile
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from api.motor_cli import ErrorMotor, MotorSQL, RAIZ
@@ -223,3 +224,38 @@ def experimentos():
             lector = csv.DictReader(archivo)
             archivos.append({"nombre": ruta.name, "columnas": lector.fieldnames or [], "filas": list(lector)})
     return {"archivos": archivos}
+
+
+# --- miniaturas de productos (Partes 3 y 4) ---
+
+# imagenes que copia tools/dataset/extraer_imagenes.py, de la carpeta mas completa a la menor
+DATOS = Path(os.environ.get("BD2_DATOS", r"C:\datos_bd2"))
+CARPETAS_IMAGENES = [DATOS / "imagenes", DATOS / "imagenes_10k", DATOS / "imagenes_1k"]
+_rutas_imagenes = None
+
+
+def rutas_imagenes():
+    """id del producto -> ruta de su imagen, leida del CSV de productos mas grande que haya.
+    Los CSV son anidados (1k dentro de 10k dentro de 100k): un id es el mismo producto en los tres."""
+    global _rutas_imagenes
+    if _rutas_imagenes is None:
+        candidatos = [RAIZ / "datos" / f"productos_{n}.csv" for n in ("100k", "10k", "1k")]
+        ruta = next((c for c in candidatos if c.is_file()), None)
+        _rutas_imagenes = {}
+        if ruta:
+            with ruta.open(encoding="utf-8", newline="") as archivo:
+                _rutas_imagenes = {int(fila["id"]): fila["imagen"] for fila in csv.DictReader(archivo)}
+    return _rutas_imagenes
+
+
+@app.get("/api/imagenes/{id}")
+def imagen(id: int):
+    relativa = rutas_imagenes().get(id)
+    if relativa is None:
+        raise HTTPException(404, f"No hay un producto con id {id}.")
+    for carpeta in CARPETAS_IMAGENES:
+        ruta = (carpeta / relativa).resolve()
+        # la ruta sale del CSV, pero igual no se sirve nada fuera de la carpeta de imagenes
+        if ruta.is_relative_to(carpeta.resolve()) and ruta.is_file():
+            return FileResponse(ruta, headers={"Cache-Control": "public, max-age=86400"})
+    raise HTTPException(404, f"Falta la imagen {relativa} en {DATOS}. Ver docs/dataset.md.")
