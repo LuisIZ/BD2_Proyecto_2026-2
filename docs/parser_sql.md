@@ -71,7 +71,7 @@ cualquier columna, no solo la primera (`codigo INT PRIMARY KEY` en su definició
 `VARCHAR` del largo máximo; los nombres de columna se
 normalizan a identificadores (`Organization Id` → `Organization_Id`). `INDEX (a, b)`
 construye un B+ no agrupado por columna cuando la carga termina, y equivale a lanzar un
-`CREATE INDEX` por cada una; solo vale sobre tablas `HEAP`.
+`CREATE INDEX` por cada una, sobre columnas `INT` o `VARCHAR` de cualquier organización.
 
 `COPY t FROM FILE 'ruta.csv'` carga datos en una tabla que **ya existe**, y así separa la
 definición del esquema de la carga. Los encabezados del CSV deben coincidir en nombre y
@@ -84,9 +84,11 @@ esquema, y sigue disponible.
 
 | `USING` | Estructura | Formato de fila | Índices secundarios |
 |---|---|---|---|
-| `HEAP` (defecto) | `HeapFile`, páginas slotted | variable: clave aparte, resto empaquetado (`INT` 4 B, `VARCHAR` 2 B largo + bytes) | sí, B+ no agrupado o hash extensible sobre columnas `INT` |
-| `SEQUENTIAL` | `SequentialFile` | igual que heap (mismos bytes por fila) | no: la reorganización reubica registros |
-| `BPLUS` | `BPlusAgrupado` | fijo: `[pk][INT 4 B \| VARCHAR n B]...` | no: la fila vive en la hoja |
+| `HEAP` (defecto) | `HeapFile`, páginas slotted | variable: clave aparte, resto empaquetado (`INT` 4 B, `VARCHAR` 2 B largo + bytes) | sí, B+ no agrupado o hash extensible sobre columnas `INT` o `VARCHAR`; R-Tree sobre `POINT` |
+| `SEQUENTIAL` | `SequentialFile` | igual que heap (mismos bytes por fila) | sí, igual que heap; el índice guarda la clave primaria |
+| `BPLUS` | `BPlusAgrupado` | fijo: `[pk][INT 4 B \| VARCHAR n B]...` | sí, igual que heap; el índice guarda la clave primaria |
+
+La compatibilidad completa está en [indices_generales.md](indices_generales.md).
 
 La carga con `FROM FILE` y `COPY` usa `cargar_masivo` en las tres organizaciones: el B+
 agrupado construye las hojas al 90 %, el secuencial escribe el área principal de una vez
@@ -103,10 +105,10 @@ resolverse con una estructura y el resto se filtra en memoria:
 
 | Condición | Heap | Secuencial | B+ agrupado |
 |---|---|---|---|
-| columna con índice B+, `=` | `busqueda_por_indice` | — | — |
-| columna con índice B+, `BETWEEN` `<` `<=` `>` `>=` | `rango_por_indice` | — | — |
-| columna con índice hash, `=` | `busqueda_por_indice` | — | — |
-| columna con índice hash, rango | `scan_completo` + `filtro` (el hash no guarda orden) | — | — |
+| columna con índice B+, `=` | `busqueda_por_indice` | `busqueda_por_indice` | `busqueda_por_indice` |
+| columna con índice B+, `BETWEEN` `<` `<=` `>` `>=` | `rango_por_indice` | `rango_por_indice` | `rango_por_indice` |
+| columna con índice hash, `=` | `busqueda_por_indice` | `busqueda_por_indice` | `busqueda_por_indice` |
+| columna con índice hash, rango | `scan_completo` + `filtro` (el hash no guarda orden) | igual | igual |
 | clave primaria, `=` | `scan_completo` (no hay índice) | `busqueda_por_clave` | `busqueda_por_clave` |
 | clave primaria, rango | `scan_completo` | `rango_por_clave` | `rango_por_clave` |
 | cualquier otra | `scan_completo` + `filtro` | `scan_completo` + `filtro` | `scan_completo` + `filtro` |
@@ -209,8 +211,8 @@ columnas e índices para el panel de archivos.
   buckets en páginas de 4 KB, 255 entradas por bucket y cadenas de desborde cuando muchas
   claves caen en el mismo bucket. Solo resuelve igualdad. Su profundidad global, igual que
   la del hash en memoria, está limitada a 16 bits (65 536 entradas de directorio).
-- `CREATE INDEX ... USING RTREE` crea un R-Tree sobre una columna `POINT` de una tabla
-  `HEAP`; el planificador lo usa para el radio y el k-NN (ver [sql_espacial.md](sql_espacial.md)).
+- `CREATE INDEX ... USING RTREE` crea un R-Tree sobre una columna `POINT` de cualquier
+  tabla; el planificador lo usa para el radio y el k-NN (ver [sql_espacial.md](sql_espacial.md)).
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.
