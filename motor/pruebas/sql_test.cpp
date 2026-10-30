@@ -191,7 +191,7 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
 
 void prueba_indice_secundario(Ejecutor& e) {
     assert(falla_ejecucion(e, "CREATE INDEX i ON org_SEQUENTIAL (Founded)") && "solo sobre heap");
-    assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country)") && "solo INT");
+    assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country) USING RTREE") && "RTREE solo sobre POINT");
 
     Resultado r = e.ejecutar("CREATE INDEX idx_f ON org_HEAP (Founded)");
     assert(r.afectadas == 201);
