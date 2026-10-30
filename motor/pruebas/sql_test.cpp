@@ -2,8 +2,10 @@
 #include "../consultas/ejecutor.h"
 #include "../consultas/parser_sql.h"
 
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -552,6 +554,83 @@ void prueba_espacial() {
               << "          poligonos con ray casting; con R-Tree el radio, el k-NN y el poligono dan lo mismo que sin indice\n";
 }
 
+std::vector<std::string> filas_texto(const Resultado& r) {
+    std::vector<std::string> salida;
+    for (const auto& fila : r.filas) {
+        std::string s;
+        for (const auto& v : fila) s += v.a_texto() + "|";
+        salida.push_back(s);
+    }
+    return salida;
+}
+
+std::string con_tabla(std::string sql, const std::string& t) {
+    return sql.replace(sql.find("{t}"), 3, t);
+}
+
+void prueba_matriz_indices() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    const std::vector<std::string> columnas = {"num", "texto", "punto"};
+    const std::vector<std::vector<std::string>> consultas = {
+        {"SELECT id FROM {t} WHERE num = 3 ORDER BY id",
+         "SELECT id FROM {t} WHERE num BETWEEN 2 AND 4 ORDER BY id",
+         "SELECT num FROM {t} ORDER BY num"},
+        {"SELECT id FROM {t} WHERE texto = 'abcd1' ORDER BY id",
+         "SELECT id FROM {t} WHERE texto BETWEEN 'abcd2' AND 'abcd4' ORDER BY id",
+         "SELECT id FROM {t} WHERE texto >= 'zeta3' ORDER BY id",
+         "SELECT texto FROM {t} ORDER BY texto"},
+        {"SELECT id FROM {t} WHERE distancia(punto, POINT(-12.1, -77.1)) < 8000 ORDER BY id",
+         "SELECT id FROM {t} ORDER BY distancia(punto, POINT(-12.1, -77.1004)) LIMIT 3"}};
+    // plan esperado: {bplus o rtree, hash}
+    const std::vector<std::vector<std::array<std::string, 2>>> planes = {
+        {{"busqueda_por_indice", "busqueda_por_indice"}, {"rango_por_indice", "scan_completo"}, {"orden_por_indice", "ordenamiento"}},
+        {{"busqueda_por_indice", "busqueda_por_indice"}, {"", ""}, {"rango_por_indice", "scan_completo"}, {"orden_por_indice", "ordenamiento"}},
+        {{"rango_espacial", ""}, {"knn_espacial", ""}}};
+
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        for (const std::string idx : {"BPLUS", "HASH", "RTREE"}) {
+            const std::string t = "m_" + org + "_" + idx;
+            e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, num INT, texto VARCHAR(12), punto POINT) USING " + org);
+            for (int i = 1; i <= 40; ++i) {
+                char punto[48];
+                std::snprintf(punto, sizeof(punto), "POINT(%.2f, %.2f)", -12.0 - 0.01 * i, -77.0 - 0.01 * i);
+                e.ejecutar("INSERT INTO " + t + " VALUES (" + std::to_string(i) + ", " + std::to_string(i % 8) + ", '" +
+                           (i % 2 ? "abcd" : "zeta") + std::to_string(i % 7) + "', " + punto + ")");
+            }
+            for (std::size_t k = 0; k < columnas.size(); ++k) {
+                const std::string crear = "CREATE INDEX i_" + columnas[k] + " ON " + t + " (" + columnas[k] + ") USING " + idx;
+                if (idx == "RTREE" ? columnas[k] != "punto" : columnas[k] == "punto") {
+                    assert(falla_ejecucion(e, crear));
+                    continue;
+                }
+                std::vector<std::vector<std::string>> esperado;
+                for (const std::string& q : consultas[k]) esperado.push_back(filas_texto(e.ejecutar(con_tabla(q, t))));
+                assert(!esperado[0].empty());
+                assert(e.ejecutar(crear).afectadas == 40);
+
+                const std::size_t j = idx == "HASH" ? 1 : 0;
+                for (std::size_t q = 0; q < consultas[k].size(); ++q) {
+                    const Resultado r = e.ejecutar(con_tabla(consultas[k][q], t));
+                    assert(filas_texto(r) == esperado[q]);
+                    assert(planes[k][q][j].empty() || tiene_paso(r, planes[k][q][j]));
+                }
+
+                // insert y delete con el indice
+                const int borrar = std::stoi(esperado[0][0]);
+                const std::string nuevo = std::to_string(41 + k);
+                e.ejecutar("INSERT INTO " + t + " VALUES (" + nuevo + ", 3, 'abcd1', POINT(-12.1, -77.1))");
+                e.ejecutar("DELETE FROM " + t + " WHERE id = " + std::to_string(borrar));
+                esperado[0].erase(esperado[0].begin());
+                esperado[0].push_back(nuevo + "|");
+                assert(filas_texto(e.ejecutar(con_tabla(consultas[k][0], t))) == esperado[0]);
+            }
+        }
+    }
+    std::cout << "matriz de indices: HEAP, SEQUENTIAL y BPLUS x INT, VARCHAR y POINT x BPLUS, HASH y RTREE;\n"
+              << "          lo valido da lo mismo que sin indice y se mantiene con INSERT y DELETE; lo demas falla\n";
+}
+
 }  // namespace
 
 int main() {
@@ -574,6 +653,7 @@ int main() {
     prueba_pk_no_primera();
     prueba_float();
     prueba_espacial();
+    prueba_matriz_indices();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }

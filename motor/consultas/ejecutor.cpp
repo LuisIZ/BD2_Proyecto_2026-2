@@ -234,6 +234,27 @@ std::string nombre_tipo_indice(const Indice& indice) {
     return indice.tipo == "HASH" ? "hash extensible" : "B+ no agrupado";
 }
 
+struct IndiceAdmitido {
+    const char* indice;
+    TipoColumna columna;
+};
+
+const IndiceAdmitido ADMITIDOS[] = {
+    {"BPLUS", TipoColumna::INT},  {"BPLUS", TipoColumna::VARCHAR},
+    {"HASH", TipoColumna::INT},   {"HASH", TipoColumna::VARCHAR},
+    {"RTREE", TipoColumna::POINT},
+};
+
+void validar_indice(const std::string& indice, TipoColumna columna) {
+    std::string admitidos;
+    for (const IndiceAdmitido& a : ADMITIDOS) {
+        if (indice != a.indice) continue;
+        if (columna == a.columna) return;
+        admitidos += (admitidos.empty() ? "" : " o ") + nombre_tipo(a.columna);
+    }
+    throw std::runtime_error("un indice " + indice + " solo se crea sobre columnas " + admitidos + ", no " + nombre_tipo(columna));
+}
+
 // --- acceso a los archivos de una tabla ---
 
 class Almacen {
@@ -1527,9 +1548,7 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     const int col = tabla.posicion_columna(s.indice_columna);
     if (col < 0) throw std::runtime_error("la columna " + s.indice_columna + " no existe");
     const bool es_rtree = s.indice_tipo == "RTREE";
-    if (es_rtree && tabla.columnas[col].tipo != TipoColumna::POINT) throw std::runtime_error("el indice RTREE solo se crea sobre columnas POINT");
-    const TipoColumna tipo_col = tabla.columnas[col].tipo;
-    if (!es_rtree && tipo_col != TipoColumna::INT && tipo_col != TipoColumna::VARCHAR) throw std::runtime_error("BPLUS y HASH solo se crean sobre columnas INT o VARCHAR");
+    validar_indice(s.indice_tipo, tabla.columnas[col].tipo);
     if (tabla.indice_sobre(s.indice_columna)) throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
     for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
 
