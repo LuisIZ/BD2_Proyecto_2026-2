@@ -366,6 +366,10 @@ public:
     std::vector<FilaFisica> leer_posiciones(const std::vector<long long>& posiciones) {
         std::vector<FilaFisica> salida;
         for (long long pos : posiciones) {
+            if (!heap_) {
+                for (FilaFisica& f : buscar_pk(pos)) salida.push_back(std::move(f));
+                continue;
+            }
             const RecordId rid = rid_de(pos);
             auto bytes = heap_->obtener(rid);
             Registro r;
@@ -378,6 +382,13 @@ public:
 
     // --- escritura ---
 
+    void indexar(const Fila& fila, long long pos) {
+        for (IndiceAbierto& abierto : indices_) abierto.insertar(fila[tabla_.posicion_columna(abierto.meta->columna)], pos);
+    }
+    void desindexar(const Fila& fila, long long pos) {
+        for (IndiceAbierto& abierto : indices_) abierto.eliminar_entrada(fila[tabla_.posicion_columna(abierto.meta->columna)], pos);
+    }
+
     void insertar(const Fila& fila) {
         validar_fila(tabla_, fila);
         const int clave = clave_de(tabla_, fila);
@@ -387,15 +398,15 @@ public:
             if (repetida) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
             const std::vector<std::byte> bytes = codificar_registro({clave, empaquetar_variable(tabla_, fila)});
             const RecordId rid = heap_->insertar_bytes(bytes.data(), static_cast<std::uint16_t>(bytes.size()));
-            for (IndiceAbierto& abierto : indices_) {
-                abierto.insertar(fila[tabla_.posicion_columna(abierto.meta->columna)], pos_de(rid));
-            }
+            indexar(fila, pos_de(rid));
         } else if (seq_) {
             if (seq_->buscar(clave)) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
             if (!seq_->insertar({clave, empaquetar_variable(tabla_, fila)})) throw std::runtime_error("el registro no cabe en una pagina");
+            indexar(fila, clave);
         } else {
             const std::vector<char> buf = empaquetar_fijo(tabla_, fila);
             if (!arbol_->insertar_bytes(buf.data())) throw std::runtime_error("clave primaria repetida: " + std::to_string(clave));
+            indexar(fila, clave);
         }
     }
 
@@ -403,13 +414,13 @@ public:
         const int clave = clave_de(tabla_, f.fila);
         if (heap_) {
             heap_->eliminar_rid(f.rid);
-            for (IndiceAbierto& abierto : indices_) {
-                abierto.eliminar_entrada(f.fila[tabla_.posicion_columna(abierto.meta->columna)], pos_de(f.rid));
-            }
+            desindexar(f.fila, pos_de(f.rid));
         } else if (seq_) {
             seq_->eliminar(clave);
+            desindexar(f.fila, clave);
         } else {
             arbol_->eliminar(clave);
+            desindexar(f.fila, clave);
         }
     }
 
@@ -454,14 +465,18 @@ public:
     // construye un índice secundario recorriendo el heap
     void construir_indice(const Indice& indice, IndiceAbierto& abierto) {
         const int col = tabla_.posicion_columna(indice.columna);
-        heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
-            Registro r;
-            if (decodificar_registro(datos, largo, r)) {
-                const Fila fila = desempaquetar_variable(tabla_, r.clave, r.valor);
-                abierto.insertar(fila[col], pos_de(rid));
-            }
-            return true;
-        });
+        if (heap_) {
+            heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
+                Registro r;
+                if (decodificar_registro(datos, largo, r)) {
+                    const Fila fila = desempaquetar_variable(tabla_, r.clave, r.valor);
+                    abierto.insertar(fila[col], pos_de(rid));
+                }
+                return true;
+            });
+        } else {
+            for (const FilaFisica& f : escanear()) abierto.insertar(f.fila[col], f.fila[tabla_.pk].entero);
+        }
         abierto.sincronizar();
     }
 
@@ -665,8 +680,9 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
 
         const bool es_pk = minusculas(c.columna) == minusculas(pk);
         const Indice* indice = indices_disponibles ? tabla.indice_sobre(c.columna) : nullptr;
-        if (indice && indice->tipo == "HASH" && desde != hasta) indice = nullptr;
         const bool sabe_rango = tabla.organizacion != Organizacion::HEAP;
+        if (indice && indice->tipo == "HASH" && desde != hasta) indice = nullptr;
+        if (es_pk && sabe_rango) indice = nullptr;
 
         if (indice) {
             plan.via = desde == hasta ? Via::INDICE_IGUAL : Via::INDICE_RANGO;
@@ -1189,7 +1205,9 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
             paso.indice = plan.indice->nombre;
             paso.detalles.insert(paso.detalles.begin(), {"indice", plan.indice->nombre});
             paso.detalles.push_back({"columna", plan.columna});
-            paso.detalles.push_back({"nota", "el indice no agrupado lee una pagina de datos por fila encontrada"});
+            paso.detalles.push_back({"nota", tabla.organizacion == Organizacion::HEAP
+                                                 ? "el indice no agrupado lee una pagina de datos por fila encontrada"
+                                                 : "el indice guarda la clave primaria: cada fila encontrada se busca por clave"});
         } else if (!plan.columna.empty()) {
             paso.detalles.push_back({"columna", plan.columna});
         } else if (!interna.condiciones.empty()) {
@@ -1506,7 +1524,6 @@ Resultado Ejecutor::crear_tabla_desde_csv(const Sentencia& s) {
 
 Resultado Ejecutor::crear_indice(const Sentencia& s) {
     Tabla& tabla = catalogo_.tabla(s.tabla);
-    if (tabla.organizacion != Organizacion::HEAP) throw std::runtime_error("los indices secundarios solo se admiten sobre tablas HEAP (las otras reubican registros)");
     const int col = tabla.posicion_columna(s.indice_columna);
     if (col < 0) throw std::runtime_error("la columna " + s.indice_columna + " no existe");
     const bool es_rtree = s.indice_tipo == "RTREE";

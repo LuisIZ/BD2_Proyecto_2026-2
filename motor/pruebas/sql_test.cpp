@@ -190,8 +190,18 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
 }
 
 void prueba_indice_secundario(Ejecutor& e) {
-    assert(falla_ejecucion(e, "CREATE INDEX i ON org_SEQUENTIAL (Founded)") && "solo sobre heap");
     assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country) USING RTREE") && "RTREE solo sobre POINT");
+
+    for (const std::string org : {"SEQUENTIAL", "BPLUS"}) {
+        const std::string t = "org_" + org;
+        assert(e.ejecutar("CREATE INDEX idx_" + org + " ON " + t + " (Founded)").afectadas == 201);
+        Resultado ri = e.ejecutar("SELECT Index FROM " + t + " WHERE Founded = 2005 ORDER BY Index");
+        assert(tiene_paso(ri, "busqueda_por_indice") && ri.filas.size() == 10 && ri.filas[0][0].entero == 105);
+        e.ejecutar("INSERT INTO " + t + " VALUES (400, 'Idx', 'Peru', 2005, 1)");
+        assert(e.ejecutar("SELECT Index FROM " + t + " WHERE Founded = 2005").filas.size() == 11);
+        e.ejecutar("DELETE FROM " + t + " WHERE Index = 400");
+        assert(e.ejecutar("SELECT Index FROM " + t + " WHERE Founded = 2005").filas.size() == 10);
+    }
 
     Resultado r = e.ejecutar("CREATE INDEX idx_f ON org_HEAP (Founded)");
     assert(r.afectadas == 201);
@@ -210,7 +220,7 @@ void prueba_indice_secundario(Ejecutor& e) {
 }
 
 void prueba_indice_hash(Ejecutor& e) {
-    assert(falla_ejecucion(e, "CREATE INDEX h ON org_SEQUENTIAL (Employees) USING HASH"));
+    assert(falla_ejecucion(e, "CREATE INDEX h ON org_SEQUENTIAL (Name) USING RTREE"));
     e.ejecutar("CREATE TABLE org_hash FROM FILE '" + CSV + "'");
     Resultado r = e.ejecutar("CREATE INDEX idx_emp ON org_hash (Employees) USING HASH");
     assert(r.afectadas == 300 && detalle_paso(r, "construir_indice", "estructura") == "hash_extensible");
@@ -505,8 +515,10 @@ void prueba_espacial() {
     const std::string knn = "SELECT nombre FROM tiendas_HEAP ORDER BY distancia(ubicacion, " + centro + ") LIMIT 3";
     const std::vector<std::string> sin_indice_radio = nombres(e.ejecutar(radio));
     const std::vector<std::string> sin_indice_knn = nombres(e.ejecutar(knn));
-    assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_SEQUENTIAL (ubicacion) USING RTREE"));
     assert(e.ejecutar("CREATE INDEX idx_geo ON tiendas_HEAP (ubicacion) USING RTREE").afectadas == 5);
+    assert(e.ejecutar("CREATE INDEX idx_geo ON tiendas_SEQUENTIAL (ubicacion) USING RTREE").afectadas == 5);
+    r = e.ejecutar("SELECT nombre FROM tiendas_SEQUENTIAL WHERE distancia(ubicacion, " + centro + ") < 6000 ORDER BY nombre");
+    assert(nombres(r) == sin_indice_radio && tiene_paso(r, "rango_espacial"));
 
     r = e.ejecutar(radio);
     assert(nombres(r) == sin_indice_radio && tiene_paso(r, "rango_espacial"));

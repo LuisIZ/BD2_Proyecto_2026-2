@@ -67,7 +67,8 @@ export default function Syntax() {
           seleccionas texto en el editor se ejecuta solo esa parte; con{" "}
           <kbd>Shift + Enter</kbd> o <strong>Ejecutar sentencia</strong> se
           ejecuta solo la sentencia donde está el cursor. Los índices B+ no
-          agrupados se crean sobre columnas INT de tablas HEAP.
+          agrupados y hash se crean sobre columnas INT o VARCHAR de cualquier
+          tabla.
         </p>
       </section>
       <section className="panel">

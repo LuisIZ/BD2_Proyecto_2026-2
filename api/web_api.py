@@ -41,7 +41,7 @@ class Importacion(BaseModel):
     contenido: str | None = Field(default=None, max_length=32 * 1024 * 1024)
     # columna que será clave primaria; vacío deja que el motor tome la primera INT
     clave: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-    # columnas con índice B+ no agrupado; solo se admiten sobre tablas HEAP
+    # columnas con índice B+ no agrupado
     indices: list[str] = Field(default_factory=list, max_length=8)
 
 
@@ -179,8 +179,6 @@ def columnas(datos: Vistazo):
 def importar(datos: Importacion):
     if (datos.dataset is None) == (datos.contenido is None):
         raise HTTPException(400, "Selecciona un archivo del proyecto o un CSV local.")
-    if datos.indices and datos.organizacion != "HEAP":
-        raise HTTPException(400, "Los índices secundarios solo se admiten sobre tablas HEAP.")
     temporal = None
     try:
         if datos.dataset is not None:
