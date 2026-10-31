@@ -92,6 +92,7 @@ void prueba_ejemplo_clase() {
 void prueba_tokenizar() {
     const std::vector<std::string> esperado{"car", "run", "fast"};
     assert(tokenizar("The CARS are running, fast!") == esperado);
+    assert(tokenizar("CAFÉ, niño!") == std::vector<std::string>({"cafe", "nino"}));
     assert(tokenizar("").empty());
     assert(tokenizar("the and of").empty());
     std::cout << "tokenizar: minusculas, sin signos ni stopwords y con stemming\n";

@@ -19,7 +19,9 @@ namespace sql {
 //   INSERT INTO t VALUES (v1, v2, ...)
 //   DELETE FROM t [WHERE cond]
 //   SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
-//     FROM t [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
+//     FROM t [WHERE cond [AND cond]... | MATCH(columna, 'consulta')]
+//     [USING TF_IDF|BM25] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
+//   SCORE() se proyecta como columna; admite AS alias.
 //   SHOW TABLES
 //   DESCRIBE t
 //   EXPLAIN [ANALYZE] <sentencia>
@@ -77,7 +79,11 @@ struct Condicion {
 struct ItemSelect {
     std::string columna;   // vacía para COUNT(*)
     std::string agregado;  // vacía, COUNT, SUM, AVG, MIN, MAX
+    std::string alias;
+    bool score = false;
     std::string etiqueta() const {
+        if (!alias.empty()) return alias;
+        if (score) return "score";
         if (agregado.empty()) return columna;
         return agregado + "(" + (columna.empty() ? "*" : columna) + ")";
     }
@@ -103,6 +109,10 @@ struct Sentencia {
 
     std::vector<Valor> valores;         // INSERT
     std::vector<Condicion> condiciones; // WHERE, unidas por AND
+    bool busqueda_texto = false;
+    std::string columna_texto;
+    std::string texto_consulta;
+    std::string ranking_texto;  // TF_IDF | BM25
 
     bool todas_las_columnas = false;
     std::vector<ItemSelect> items;

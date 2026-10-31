@@ -8,8 +8,10 @@
 #include "../indices/bplus_no_agrupado.h"
 #include "../indices/hash_extensible_disco.h"
 #include "../indices/rtree.h"
+#include "../texto/ranking.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <climits>
@@ -1622,7 +1624,7 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
     Resultado r;
     r.tipo = "delete";
 
-    Acceso acceso = acceder(almacen, tabla, s.condiciones, &s);
+    Acceso acceso = acceder(almacen, tabla, s.condiciones, s.busqueda_texto ? nullptr : &s);
     r.plan.push_back(acceso.paso);
     filtrar(acceso, tabla, r.plan);
 
@@ -1658,14 +1660,73 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     filas.reserve(acceso.filas.size());
     for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
 
-    std::vector<ItemSelect> items = s.items;
-    if (s.todas_las_columnas) {
-        for (const Columna& c : tabla.columnas) items.push_back({c.nombre, ""});
+    std::unordered_map<long long, double> score_por_pk;
+    if (s.busqueda_texto) {
+        if (!s.group_by.empty()) throw std::runtime_error("MATCH no se combina con GROUP BY");
+        const int columna_texto = tabla.posicion_columna(s.columna_texto);
+        if (columna_texto < 0) throw std::runtime_error("la columna " + s.columna_texto + " no existe en " + tabla.nombre);
+        if (tabla.columnas[static_cast<std::size_t>(columna_texto)].tipo != TipoColumna::VARCHAR)
+            throw std::runtime_error("MATCH requiere una columna VARCHAR");
+
+        static std::atomic<unsigned long long> siguiente_indice{0};
+        const std::filesystem::path directorio_indice =
+            std::filesystem::temp_directory_path() /
+            ("bd2_text_search_" + std::to_string(siguiente_indice.fetch_add(1)));
+        try {
+            motor::texto::IndiceInvertido indice(directorio_indice.string());
+            for (std::size_t i = 0; i < filas.size(); ++i)
+                indice.agregar(static_cast<long long>(i), filas[i][static_cast<std::size_t>(columna_texto)].texto);
+            indice.construir();
+            const int k = static_cast<int>(std::min<std::size_t>(filas.size(), static_cast<std::size_t>(INT_MAX)));
+            const auto ranking = motor::texto::buscar(
+                indice, s.texto_consulta, k, motor::texto::ranking_desde(s.ranking_texto));
+            std::vector<Fila> coincidentes;
+            coincidentes.reserve(ranking.size());
+            for (const motor::texto::Resultado& resultado : ranking) {
+                if (resultado.doc_id < 0 || static_cast<std::size_t>(resultado.doc_id) >= filas.size())
+                    throw std::runtime_error("el indice de texto devolvio un documento fuera de rango");
+                Fila& fila = filas[static_cast<std::size_t>(resultado.doc_id)];
+                score_por_pk[clave_de(tabla, fila)] = resultado.score;
+                coincidentes.push_back(std::move(fila));
+            }
+            filas = std::move(coincidentes);
+            PasoPlan paso{"busqueda_texto", {{"algoritmo", "SPIMI"},
+                                               {"ranking", s.ranking_texto},
+                                               {"columna", s.columna_texto},
+                                               {"documentos", texto(indice.num_docs())},
+                                               {"bytes_indice", texto(static_cast<std::size_t>(indice.tamano_en_disco()))},
+                                               {"paginas_indice", texto(static_cast<std::size_t>(indice.paginas_leidas()))}}};
+            paso.nodo = "Text Search";
+            paso.relacion = tabla.nombre;
+            paso.columna = s.columna_texto;
+            paso.condicion = "MATCH(" + s.columna_texto + ", '" + s.texto_consulta + "') USING " + s.ranking_texto;
+            paso.filas_reales = static_cast<long long>(filas.size());
+            r.plan.push_back(std::move(paso));
+        } catch (...) {
+            std::error_code error;
+            std::filesystem::remove_all(directorio_indice, error);
+            throw;
+        }
+        std::error_code error;
+        std::filesystem::remove_all(directorio_indice, error);
+        if (error) throw std::runtime_error("no se pudo borrar el indice temporal de texto: " + error.message());
     }
+
+    std::vector<ItemSelect> items;
+    if (s.todas_las_columnas) {
+        for (const Columna& c : tabla.columnas) {
+            ItemSelect item;
+            item.columna = c.nombre;
+            items.push_back(std::move(item));
+        }
+    }
+    items.insert(items.end(), s.items.begin(), s.items.end());
     bool hay_agregados = false;
     for (const ItemSelect& item : items) {
         if (!item.agregado.empty()) hay_agregados = true;
-        if (!item.columna.empty() && tabla.posicion_columna(item.columna) < 0) throw std::runtime_error("la columna " + item.columna + " no existe en " + tabla.nombre);
+        if (item.score && !s.busqueda_texto) throw std::runtime_error("SCORE() solo se usa con MATCH");
+        if (!item.score && !item.columna.empty() && tabla.posicion_columna(item.columna) < 0)
+            throw std::runtime_error("la columna " + item.columna + " no existe en " + tabla.nombre);
     }
 
     PlanTrace traza;
@@ -1741,11 +1802,20 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_agrupacion).count();
         r.plan.push_back(paso);
     } else {
-        for (const ItemSelect& item : items) r.columnas.push_back(item.columna);
+        for (const ItemSelect& item : items) r.columnas.push_back(item.etiqueta());
     }
 
     // varchar: se reordenan solo las filas con el mismo prefijo
-    if (!s.order_by.empty() && acceso.orden_por_indice) {
+    const bool ordena_score = s.busqueda_texto && std::any_of(items.begin(), items.end(), [&](const ItemSelect& item) {
+        return item.score && minusculas(item.etiqueta()) == minusculas(s.order_by);
+    });
+    if (ordena_score) {
+        std::stable_sort(filas.begin(), filas.end(), [&](const Fila& a, const Fila& b) {
+            const double score_a = score_por_pk.at(clave_de(tabla, a));
+            const double score_b = score_por_pk.at(clave_de(tabla, b));
+            return s.descendente ? score_a > score_b : score_a < score_b;
+        });
+    } else if (!s.order_by.empty() && acceso.orden_por_indice) {
         const int col = tabla.posicion_columna(s.order_by);
         if (tabla.columnas[col].tipo == TipoColumna::VARCHAR) {
             auto antes = [&](const Fila& a, const Fila& b) { return s.descendente ? a[col] > b[col] : a[col] < b[col]; };
@@ -1794,15 +1864,24 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     // proyección
     if (!(hay_agregados || !s.group_by.empty())) {
         std::vector<int> posiciones;
-        for (const ItemSelect& item : items) posiciones.push_back(tabla.posicion_columna(item.columna));
+        for (const ItemSelect& item : items) posiciones.push_back(item.score ? -1 : tabla.posicion_columna(item.columna));
         for (Fila& f : filas) {
             Fila salida;
-            for (int p : posiciones) salida.push_back(f[p]);
+            for (std::size_t i = 0; i < posiciones.size(); ++i) {
+                const int p = posiciones[i];
+                if (p < 0) {
+                    const auto encontrado = score_por_pk.find(clave_de(tabla, f));
+                    if (encontrado == score_por_pk.end()) throw std::runtime_error("no se encontro el score de la fila");
+                    salida.push_back(Valor::de_decimal(static_cast<float>(encontrado->second)));
+                } else {
+                    salida.push_back(f[static_cast<std::size_t>(p)]);
+                }
+            }
             r.filas.push_back(std::move(salida));
         }
         if (!s.todas_las_columnas) {
             std::string nombres;
-            for (const ItemSelect& item : items) nombres += (nombres.empty() ? "" : ", ") + item.columna;
+            for (const ItemSelect& item : items) nombres += (nombres.empty() ? "" : ", ") + item.etiqueta();
             PasoPlan paso{"proyeccion", {{"columnas", texto(posiciones.size())}, {"lista", nombres}}};
             paso.nodo = "Projection";
             paso.relacion = tabla.nombre;

@@ -390,7 +390,20 @@ private:
     void where(Sentencia& s) {
         while (true) {
             Condicion c;
-            if (es_funcion("DENTRO")) {
+            if (es_funcion("MATCH")) {
+                if (s.busqueda_texto) error("solo se admite una funcion MATCH por consulta");
+                avanzar();
+                esperar_simbolo("(");
+                s.columna_texto = identificador();
+                esperar_simbolo(",");
+                if (actual().tipo != TipoToken::TEXTO) error("MATCH requiere una consulta entre comillas");
+                s.texto_consulta = actual().texto;
+                avanzar();
+                esperar_simbolo(")");
+                s.busqueda_texto = true;
+                if (es("AND")) { avanzar(); continue; }
+                break;
+            } else if (es_funcion("DENTRO")) {
                 c.funcion = "DENTRO";
                 avanzar();
                 esperar_simbolo("(");
@@ -456,35 +469,58 @@ private:
 
     void select(Sentencia& s) {
         s.tipo = TipoSentencia::SELECT;
-        if (es_simbolo("*")) {
-            avanzar();
-            s.todas_las_columnas = true;
-        } else {
-            while (true) {
+        while (true) {
+            if (es_simbolo("*")) {
+                if (!s.items.empty() || s.todas_las_columnas) error("'*' solo puede aparecer al inicio de la proyeccion");
+                avanzar();
+                s.todas_las_columnas = true;
+            } else {
                 ItemSelect item;
-                const std::string nombre = identificador();
-                const std::string may = mayusculas(nombre);
-                if ((may == "COUNT" || may == "SUM" || may == "AVG" || may == "MIN" || may == "MAX") && es_simbolo("(")) {
+                if (es_funcion("SCORE")) {
                     avanzar();
-                    item.agregado = may;
-                    if (es_simbolo("*")) {
-                        if (may != "COUNT") error("solo COUNT admite *");
-                        avanzar();
-                    } else {
-                        item.columna = identificador();
-                    }
+                    esperar_simbolo("(");
                     esperar_simbolo(")");
+                    item.score = true;
                 } else {
-                    item.columna = nombre;
+                    const std::string nombre = identificador();
+                    const std::string may = mayusculas(nombre);
+                    if ((may == "COUNT" || may == "SUM" || may == "AVG" || may == "MIN" || may == "MAX") && es_simbolo("(")) {
+                        avanzar();
+                        item.agregado = may;
+                        if (es_simbolo("*")) {
+                            if (may != "COUNT") error("solo COUNT admite *");
+                            avanzar();
+                        } else {
+                            item.columna = identificador();
+                        }
+                        esperar_simbolo(")");
+                    } else {
+                        item.columna = nombre;
+                    }
+                }
+                if (es("AS")) {
+                    if (!item.score) error("AS solo se admite para SCORE()");
+                    avanzar();
+                    item.alias = identificador();
                 }
                 s.items.push_back(item);
-                if (es_simbolo(",")) { avanzar(); continue; }
-                break;
             }
+            if (es_simbolo(",")) { avanzar(); continue; }
+            break;
         }
         esperar_palabra("FROM");
         s.tabla = identificador();
         if (es("WHERE")) { avanzar(); where(s); }
+        if (es("USING")) {
+            avanzar();
+            s.ranking_texto = mayusculas(identificador());
+            if (s.ranking_texto != "TF_IDF" && s.ranking_texto != "BM25")
+                error("ranking de texto desconocido (TF_IDF o BM25)");
+        }
+        if (s.busqueda_texto && s.ranking_texto.empty()) error("MATCH requiere USING TF_IDF o USING BM25");
+        if (!s.busqueda_texto && !s.ranking_texto.empty()) error("USING requiere una condicion MATCH");
+        for (const ItemSelect& item : s.items)
+            if (item.score && !s.busqueda_texto) error("SCORE() solo se usa con MATCH");
         if (es("GROUP")) { avanzar(); esperar_palabra("BY"); s.group_by = identificador(); }
         if (es("ORDER")) {
             avanzar();
