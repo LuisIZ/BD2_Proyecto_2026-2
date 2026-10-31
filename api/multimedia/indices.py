@@ -42,6 +42,12 @@ class IndiceVectorial:
         if desconocidos:
             raise ValueError(f"parametros desconocidos para {self.tipo}: {sorted(desconocidos)}")
         self.parametros = {**PARAMETROS[self.tipo], **parametros}
+        if self.tipo == "IVF" and (self.parametros["nlist"] <= 0 or self.parametros["nprobe"] <= 0):
+            raise ValueError("nlist y nprobe deben ser mayores que cero")
+        if self.tipo == "HNSW" and any(
+            self.parametros[nombre] <= 0 for nombre in ("M", "ef_construccion", "ef_busqueda")
+        ):
+            raise ValueError("M, ef_construccion y ef_busqueda deben ser mayores que cero")
         self.indice = None
         self.ruta = None
 
@@ -77,7 +83,11 @@ class IndiceVectorial:
         if self.tipo == "IVF":
             self.indice = self._crear_ivf(x)
         else:
-            raise NotImplementedError("HNSW: se implementa en #61")
+            dimension = x.shape[1]
+            base = faiss.IndexHNSWFlat(dimension, self.parametros["M"], self._metrica_faiss())
+            base.hnsw.efConstruction = self.parametros["ef_construccion"]
+            base.hnsw.efSearch = self.parametros["ef_busqueda"]
+            self.indice = faiss.IndexIDMap2(base)
         self.indice.add_with_ids(x, ids)
         self.ruta = None
         return self
@@ -87,6 +97,8 @@ class IndiceVectorial:
             raise RuntimeError("el indice no esta construido ni cargado")
         if self.tipo == "IVF":
             self.indice.nprobe = self.parametros["nprobe"]
+        else:
+            faiss.downcast_index(self.indice.index).hnsw.efSearch = self.parametros["ef_busqueda"]
         distancias, ids = self.indice.search(self._preparar(consulta), k)
         if self.metrica == "EUCLIDIANA":
             distancias = np.sqrt(np.maximum(distancias, 0))  # FAISS devuelve la L2 al cuadrado
