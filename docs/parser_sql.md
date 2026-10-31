@@ -51,6 +51,9 @@ DELETE FROM t [WHERE cond]
 SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
   FROM t [WHERE cond [AND cond]...] [GROUP BY col]
   [ORDER BY col | distancia(col, POINT(lat, lon) [, metrica]) [ASC|DESC]] [LIMIT n]
+SELECT * | col, SCORE() [AS alias] FROM t
+  WHERE MATCH(columna_texto, 'consulta') [AND cond]
+  USING TF_IDF|BM25 [ORDER BY alias [ASC|DESC]] [LIMIT n]
 SHOW TABLES
 DESCRIBE t
 EXPLAIN [ANALYZE] <sentencia>
@@ -62,6 +65,13 @@ cond  := col (= | != | <> | < | <= | > | >=) valor
        | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
 valor := entero | 'texto' | POINT(lat, lon)
 ```
+
+`MATCH` necesita `USING TF_IDF` o `USING BM25`. Usa la columna completa de tipo
+`VARCHAR`; los términos se normalizan como se describe en
+[busqueda_texto.md](busqueda_texto.md). `SCORE()` se puede proyectar con un alias y ordenar
+por él. Esta ruta reconstruye el índice SPIMI temporalmente para cada consulta, por lo que
+es funcional pero incluye el tiempo de indexación en el costo de consulta; todavía no hay
+un catálogo de índices de texto persistentes.
 
 Tipos: `INT` (int32), `VARCHAR(n)` y `POINT` (latitud y longitud; ver
 [sql_espacial.md](sql_espacial.md)). La clave primaria debe ser `INT` y puede ser
