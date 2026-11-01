@@ -1,7 +1,9 @@
 #include "../consultas/catalogo.h"
 #include "../consultas/ejecutor.h"
 #include "../consultas/parser_sql.h"
+#include "../vectorial/vector.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -96,6 +98,27 @@ void prueba_parser() {
     assert(s.columnas[1].tipo == "FLOAT" && s.columnas[2].tipo == "FLOAT");
     s = motor::sql::parsear("SELECT * FROM p WHERE precio <= -2.5");
     assert(s.condiciones[0].valor.es_decimal && s.condiciones[0].valor.decimal == -2.5f);
+
+    s = motor::sql::parsear("CREATE TABLE img (id INT PRIMARY KEY, v VECTOR(256))");
+    assert(s.columnas[1].tipo == "VECTOR" && s.columnas[1].tam == 256);
+    s = motor::sql::parsear("INSERT INTO img VALUES (1, VECTOR(0.5, -2, 1e-05, 3.5E+2))");
+    assert(s.valores[1].es_vector && s.valores[1].componentes.size() == 4);
+    assert(s.valores[1].componentes[1] == -2.0f && s.valores[1].componentes[2] == 1e-05f && s.valores[1].componentes[3] == 350.0f);
+    assert(s.valores[1].a_texto() == "VECTOR(0.5, -2, 1e-05, 350)");
+    assert(falla("CREATE TABLE t (v VECTOR)"));
+    assert(falla("CREATE TABLE t (v VECTOR(0))"));
+    assert(falla("INSERT INTO t VALUES (1, VECTOR())"));
+    assert(falla("INSERT INTO t VALUES (1, VECTOR(1, 'a'))"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1e1, 2)) < 5") && "las coordenadas no usan exponentes");
+    s = motor::sql::parsear("SELECT id FROM img ORDER BY distancia(v, VECTOR(1, 0.5), 'cosine') LIMIT 3");
+    assert(s.order_by_distancia && s.order_by_punto.es_vector && s.order_by_metrica == "COSENO" && s.limite == 3);
+    s = motor::sql::parsear("SELECT id FROM img ORDER BY distancia(v, VECTOR(1, 0.5)) LIMIT 3");
+    assert(s.order_by_metrica == "EUCLIDIANA" && "la metrica por omision de un vector es la euclidiana");
+    s = motor::sql::parsear("SELECT * FROM img WHERE distancia(v, VECTOR(1, 2), 'producto_punto') <= -0.5");
+    assert(s.condiciones[0].metrica == "PRODUCTO_PUNTO" && s.condiciones[0].valor.decimal == -0.5f);
+    assert(falla("SELECT * FROM img WHERE distancia(v, VECTOR(1, 2), 'haversine') < 1"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1, 2), 'coseno') < 1"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1, 2)) < 1.5") && "con POINT se sigue comparando con metros enteros");
 
     s = motor::sql::parsear(
         "SELECT *, SCORE() AS relevancia FROM articulos "
@@ -556,6 +579,159 @@ void prueba_float() {
     std::cout << "FLOAT: float32 en heap, secuencial y B+, WHERE, ORDER BY, agregados y COPY\n";
 }
 
+void prueba_vector() {
+    {
+        Catalogo catalogo(DB);
+        Ejecutor e(catalogo);
+        for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+            const std::string t = std::string("vectores_") + org;
+            e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, v VECTOR(4), nombre VARCHAR(8)) USING " + org);
+            e.ejecutar("INSERT INTO " + t + " VALUES (2, VECTOR(0.1, -2, 3.25, 1e-05), 'b')");
+            e.ejecutar("INSERT INTO " + t + " VALUES (1, VECTOR(1, 2, 3, 4), 'a')");
+            const Resultado r = e.ejecutar("SELECT v, nombre FROM " + t + " WHERE id = 2");
+            assert(r.filas.size() == 1 && r.filas[0][0].es_vector && r.filas[0][1].texto == "b");
+            assert(r.filas[0][0].a_texto() == "VECTOR(0.1, -2, 3.25, 1e-05)" && "se guarda en float32 sin perder nada");
+            assert(e.ejecutar("DESCRIBE " + t).filas[1][1].texto == "VECTOR(4)");
+
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, VECTOR(1, 2, 3), 'c')") && "dimension distinta");
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, 'texto', 'c')"));
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, VECTOR(1, 2, 3, 4), VECTOR(1, 2))"));
+            assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE v = 1") && "un vector se compara con distancia");
+            assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY v"));
+            assert(falla_ejecucion(e, "CREATE INDEX iv ON " + t + " (v)") && "VECTOR no tiene indice en el motor");
+            e.ejecutar("DELETE FROM " + t + " WHERE id = 1");
+            assert(e.ejecutar("SELECT * FROM " + t).filas.size() == 1);
+        }
+        assert(falla_ejecucion(e, "CREATE TABLE t (id INT, v VECTOR(513))"));
+        assert(falla_ejecucion(e, "CREATE TABLE t (v VECTOR(4) PRIMARY KEY)"));
+        assert(falla_ejecucion(e, "CREATE TABLE t (id INT, v VECTOR(512)) USING BPLUS") && "el registro fijo pasa de 2040 bytes");
+        e.ejecutar("CREATE TABLE grande (id INT PRIMARY KEY, v VECTOR(512))");
+        e.ejecutar("DROP TABLE grande");
+
+        // COPY lee el formato que escribe extraer.py: "VECTOR(x1,x2,...)" entre comillas
+        const std::string csv = ".build/sql_test_vector.csv";
+        {
+            std::ofstream f(csv);
+            f << "id,v\n1,\"VECTOR(0.5,1.25e-06,-3,4)\"\n2,\"[1, 2, 3, 4]\"\n3,0 0 0 1\n";
+        }
+        e.ejecutar("CREATE TABLE copia_vector (id INT PRIMARY KEY, v VECTOR(4))");
+        assert(e.ejecutar("COPY copia_vector FROM FILE '" + csv + "'").afectadas == 3);
+        const Resultado r = e.ejecutar("SELECT v FROM copia_vector");
+        assert(r.filas[0][0].a_texto() == "VECTOR(0.5, 1.25e-06, -3, 4)" && r.filas[2][0].a_texto() == "VECTOR(0, 0, 0, 1)");
+        for (const char* malo : {"id,v\n1,\"VECTOR(1,2,3)\"\n", "id,v\n1,\"VECTOR(1,x,3,4)\"\n"}) {
+            {
+                std::ofstream f(csv);
+                f << malo;
+            }
+            e.ejecutar("CREATE TABLE copia_mala (id INT PRIMARY KEY, v VECTOR(4))");
+            assert(falla_ejecucion(e, "COPY copia_mala FROM FILE '" + csv + "'"));
+            e.ejecutar("DROP TABLE copia_mala");
+        }
+    }
+    // los vectores y la dimension sobreviven a reabrir el catalogo
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    assert(e.ejecutar("DESCRIBE copia_vector").filas[1][1].texto == "VECTOR(4)");
+    assert(e.ejecutar("SELECT v FROM copia_vector WHERE id = 1").filas[0][0].a_texto() == "VECTOR(0.5, 1.25e-06, -3, 4)");
+    e.ejecutar("DROP TABLE copia_vector");
+    std::cout << "VECTOR: float32 en heap, secuencial y B+, literal, COPY, DESCRIBE y reapertura\n";
+}
+
+std::string literal_vector(const motor::vectorial::Vector& v) {
+    return motor::sql::Valor::de_vector(v).a_texto();
+}
+
+// ids de los k vecinos calculados a mano; `acepta` deja fuera filas (para probar con WHERE)
+template <typename Acepta>
+std::vector<long long> knn_fuerza_bruta(const std::vector<motor::vectorial::Vector>& datos, const motor::vectorial::Vector& q, std::size_t k,
+                                        motor::vectorial::MetricaVec m, bool lejanos, Acepta acepta) {
+    std::vector<std::pair<double, long long>> todos;
+    for (std::size_t i = 0; i < datos.size(); ++i) {
+        if (acepta(static_cast<long long>(i + 1))) todos.push_back({motor::vectorial::distancia(datos[i], q, m), static_cast<long long>(i + 1)});
+    }
+    std::sort(todos.begin(), todos.end());
+    if (lejanos) std::reverse(todos.begin(), todos.end());
+    std::vector<long long> ids;
+    for (std::size_t i = 0; i < k && i < todos.size(); ++i) ids.push_back(todos[i].second);
+    return ids;
+}
+
+std::vector<long long> ids(const Resultado& r) {
+    std::vector<long long> salida;
+    for (const auto& f : r.filas) salida.push_back(f[0].entero);
+    return salida;
+}
+
+void prueba_knn_vectorial() {
+    using motor::vectorial::MetricaVec;
+    const std::size_t n = 300, dim = 16;
+    std::vector<motor::vectorial::Vector> datos(n, motor::vectorial::Vector(dim));
+    unsigned semilla = 7;
+    auto azar = [&]() {
+        semilla = semilla * 1103515245u + 12345u;
+        return static_cast<float>((semilla >> 8) % 20001) / 10000.0f - 1.0f;
+    };
+    for (auto& v : datos) for (float& x : v) x = azar();
+    const std::string csv = ".build/sql_test_knn.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,v\n";
+        for (std::size_t i = 0; i < n; ++i) f << i + 1 << ",\"" << literal_vector(datos[i]) << "\"\n";
+    }
+    std::vector<motor::vectorial::Vector> consultas(3, motor::vectorial::Vector(dim));
+    for (auto& q : consultas) for (float& x : q) x = azar();
+    consultas[2] = datos[41];  // una fila de la tabla: su vecino más cercano es ella misma
+    const std::pair<const char*, MetricaVec> metricas[] = {
+        {"euclidiana", MetricaVec::EUCLIDIANA}, {"producto_punto", MetricaVec::PRODUCTO_PUNTO}, {"coseno", MetricaVec::COSENO}};
+    const auto todas = [](long long) { return true; };
+
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = std::string("knn_") + org;
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, v VECTOR(16)) USING " + org);
+        e.ejecutar("COPY " + t + " FROM FILE '" + csv + "'");
+        for (const auto& q : consultas) {
+            for (const auto& [nombre, m] : metricas) {
+                const std::string dist = "distancia(v, " + literal_vector(q) + ", '" + nombre + "')";
+                Resultado r = e.ejecutar("SELECT id FROM " + t + " ORDER BY " + dist + " LIMIT 10");
+                assert(ids(r) == knn_fuerza_bruta(datos, q, 10, m, false, todas));
+                assert(tiene_paso(r, "knn_vectorial") && !tiene_paso(r, "ordenamiento") && "el heap ya entrega el orden");
+                assert(detalle_paso(r, "knn_vectorial", "distancias_calculadas") == std::to_string(n));
+
+                // con WHERE, DESC o sin LIMIT no sirve el heap: Seq Scan, filtro y Sort, con el mismo resultado
+                r = e.ejecutar("SELECT id FROM " + t + " WHERE id > 150 ORDER BY " + dist + " LIMIT 5");
+                assert(ids(r) == knn_fuerza_bruta(datos, q, 5, m, false, [](long long id) { return id > 150; }));
+                assert(!tiene_paso(r, "knn_vectorial") && tiene_paso(r, "ordenamiento"));
+                assert(ids(e.ejecutar("SELECT id FROM " + t + " ORDER BY " + dist + " DESC LIMIT 5")) ==
+                       knn_fuerza_bruta(datos, q, 5, m, true, todas));
+
+                // rango: todas las filas a menos de la distancia del 20.o vecino
+                const auto veinte = knn_fuerza_bruta(datos, q, 20, m, false, todas);
+                const double radio = motor::vectorial::distancia(datos[static_cast<std::size_t>(veinte.back() - 1)], q, m);
+                char limite[32];
+                std::snprintf(limite, sizeof(limite), "%.9g", radio + 1e-6);
+                r = e.ejecutar("SELECT COUNT(*) FROM " + t + " WHERE " + dist + " < " + limite);
+                assert(r.filas[0][0].entero == 20);
+            }
+        }
+        Resultado r = e.ejecutar("SELECT id FROM " + t + " ORDER BY distancia(v, " + literal_vector(consultas[2]) + ") LIMIT 1");
+        assert(r.filas[0][0].entero == 42);
+        r = e.ejecutar("EXPLAIN SELECT * FROM " + t + " ORDER BY distancia(v, " + literal_vector(consultas[0]) + ", 'coseno') LIMIT 3");
+        assert(texto_del_plan(r).find("Seq Vector Scan") != std::string::npos);
+        assert(texto_del_plan(r).find("VECTOR(16 dimensiones)") != std::string::npos);
+
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY distancia(v, VECTOR(1, 2)) LIMIT 3") && "dimension distinta");
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY distancia(v, POINT(1, 2)) LIMIT 3"));
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE distancia(id, " + literal_vector(consultas[0]) + ") < 1"));
+        e.ejecutar("DELETE FROM " + t + " WHERE distancia(v, " + literal_vector(consultas[2]) + ") < 0.0001");
+        assert(e.ejecutar("SELECT COUNT(*) FROM " + t).filas[0][0].entero == static_cast<long long>(n - 1));
+        e.ejecutar("DROP TABLE " + t);
+    }
+    std::cout << "k-NN de vectores: euclidiana, producto punto y coseno igual a la fuerza bruta en las tres organizaciones;\n"
+                 "          con heap (Seq Vector Scan) sin WHERE, con Sort si hay WHERE o DESC; rango y DELETE por distancia\n";
+}
+
 void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -756,6 +932,8 @@ int main() {
     prueba_tabla_manual();
     prueba_pk_no_primera();
     prueba_float();
+    prueba_vector();
+    prueba_knn_vectorial();
     prueba_espacial();
     prueba_matriz_indices();
     prueba_busqueda_texto();

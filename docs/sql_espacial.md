@@ -14,8 +14,8 @@ puntos geográficos y consultarlos por radio o por cercanía, en las tres organi
 | Precisión | hasta 6 decimales, unos 11 cm en el ecuador |
 | Rango | lat entre -90 y 90, lon entre -180 y 180 |
 
-Se guarda en enteros y no en `double` porque el motor solo maneja `INT` y `VARCHAR`, y
-así el literal `POINT(-12.0464, -77.0428)` se convierte sin redondeos: el parser lee las
+Se guarda en enteros y no en `double` porque, cuando se hizo la Parte 2, el motor solo
+manejaba `INT` y `VARCHAR` (`FLOAT` llegó en la Parte 4), y así el literal `POINT(-12.0464, -77.0428)` se convierte sin redondeos: el parser lee las
 cifras como texto y arma `-12046400` y `-77042800`.
 
 Una columna `POINT` no puede ser clave primaria ni llevar índice B+ o hash, y no se
@@ -46,8 +46,10 @@ SELECT * FROM tiendas WHERE distancia(ubicacion, POINT(-12.0464, -77.0428), 'euc
   No se combina con `GROUP BY` ni con agregados.
 - En un CSV para `COPY`, la columna `POINT` se escribe `lat lon`, `lat, lon` (entre
   comillas) o `POINT(lat lon)`.
-- Los decimales solo se aceptan dentro de `POINT(...)`; en el resto del SQL siguen
-  siendo un error.
+- Dentro de `POINT(...)` se aceptan hasta 6 decimales y no la notación científica. Fuera
+  de `POINT`, los decimales son valores `FLOAT` o componentes de un `VECTOR`.
+- La misma función `distancia` mide vectores cuando la columna es `VECTOR`; ver
+  [vectores.md](vectores.md).
 
 ## 3. Métricas
 

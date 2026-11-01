@@ -51,14 +51,25 @@ private:
             std::size_t inicio = i_;
             ++i_;
             while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
+            bool decimal = false;
             if (i_ < s_.size() && s_[i_] == '.') {
                 ++i_;
                 const std::size_t decimales = i_;
                 while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
                 if (i_ == decimales) throw std::runtime_error("numero mal formado: '" + s_.substr(inicio, i_ - inicio) + "'");
-                return {TipoToken::DECIMAL, s_.substr(inicio, i_ - inicio)};
+                decimal = true;
             }
-            return {TipoToken::NUMERO, s_.substr(inicio, i_ - inicio)};
+            // notación científica (1e-05), la que usa Python al escribir vectores
+            if (i_ < s_.size() && (s_[i_] == 'e' || s_[i_] == 'E')) {
+                std::size_t j = i_ + 1;
+                if (j < s_.size() && (s_[j] == '-' || s_[j] == '+')) ++j;
+                if (j < s_.size() && std::isdigit(static_cast<unsigned char>(s_[j]))) {
+                    i_ = j;
+                    while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
+                    decimal = true;
+                }
+            }
+            return {decimal ? TipoToken::DECIMAL : TipoToken::NUMERO, s_.substr(inicio, i_ - inicio)};
         }
         if (c == '\'' || c == '"') {
             const char comilla = c;
@@ -222,12 +233,32 @@ private:
             return Valor::de_decimal(v);
         }
         if (es_funcion("POINT")) return punto();
+        if (es_funcion("VECTOR")) return vector();
         error("se esperaba un valor");
+    }
+
+    Valor vector() {
+        avanzar();
+        esperar_simbolo("(");
+        std::vector<float> componentes;
+        while (true) {
+            const Token t = actual();
+            if (t.tipo != TipoToken::NUMERO && t.tipo != TipoToken::DECIMAL) error("se esperaba un numero dentro de VECTOR");
+            const float v = std::strtof(t.texto.c_str(), nullptr);
+            if (!std::isfinite(v)) error("numero fuera del rango de FLOAT");
+            componentes.push_back(v);
+            avanzar();
+            if (es_simbolo(",")) { avanzar(); continue; }
+            break;
+        }
+        esperar_simbolo(")");
+        return Valor::de_vector(std::move(componentes));
     }
 
     int microgrados() {
         const Token t = actual();
         if (t.tipo != TipoToken::NUMERO && t.tipo != TipoToken::DECIMAL) error("se esperaba una coordenada");
+        if (t.texto.find_first_of("eE") != std::string::npos) error("una coordenada no admite notacion cientifica");
         const bool negativo = t.texto[0] == '-';
         const std::string sin_signo = t.texto.substr(negativo ? 1 : 0);
         const std::size_t punto = sin_signo.find('.');
@@ -258,16 +289,24 @@ private:
         esperar_simbolo("(");
         columna = identificador();
         esperar_simbolo(",");
-        if (!es_funcion("POINT")) error("se esperaba POINT(lat, lon)");
-        centro = punto();
-        metrica = "HAVERSINE";
+        const bool es_vector = es_funcion("VECTOR");
+        if (!es_vector && !es_funcion("POINT")) error("se esperaba POINT(lat, lon) o VECTOR(x1, ..., xk)");
+        centro = es_vector ? vector() : punto();
+        metrica = es_vector ? "EUCLIDIANA" : "HAVERSINE";
         if (es_simbolo(",")) {
             avanzar();
             if (actual().tipo != TipoToken::TEXTO) error("se esperaba la metrica entre comillas");
             const std::string m = mayusculas(actual().texto);
-            if (m == "HAVERSINE" || m == "GEODESICA") metrica = "HAVERSINE";
-            else if (m == "EUCLIDIANA") metrica = "EUCLIDIANA";
-            else error("metrica desconocida '" + actual().texto + "' (haversine o euclidiana)");
+            if (es_vector) {
+                if (m == "EUCLIDIANA" || m == "EUCLIDEAN" || m == "L2") metrica = "EUCLIDIANA";
+                else if (m == "PRODUCTO_PUNTO" || m == "INNER_PRODUCT" || m == "IP") metrica = "PRODUCTO_PUNTO";
+                else if (m == "COSENO" || m == "COSINE") metrica = "COSENO";
+                else error("metrica desconocida '" + actual().texto + "' (euclidiana, producto_punto o coseno)");
+            } else {
+                if (m == "HAVERSINE" || m == "GEODESICA") metrica = "HAVERSINE";
+                else if (m == "EUCLIDIANA") metrica = "EUCLIDIANA";
+                else error("metrica desconocida '" + actual().texto + "' (haversine o euclidiana)");
+            }
             avanzar();
         }
         esperar_simbolo(")");
@@ -315,8 +354,14 @@ private:
                     if (col.tam <= 0) error("VARCHAR necesita un largo positivo");
                 } else if (tipo == "POINT") {
                     col.tipo = "POINT";
+                } else if (tipo == "VECTOR") {
+                    col.tipo = "VECTOR";
+                    esperar_simbolo("(");
+                    col.tam = static_cast<int>(numero());
+                    esperar_simbolo(")");
+                    if (col.tam <= 0) error("VECTOR necesita una dimension positiva");
                 } else {
-                    error("tipo desconocido '" + tipo + "' (INT, FLOAT, VARCHAR(n) o POINT)");
+                    error("tipo desconocido '" + tipo + "' (INT, FLOAT, VARCHAR(n), POINT o VECTOR(k))");
                 }
                 if (es("PRIMARY")) {
                     avanzar();
@@ -439,7 +484,11 @@ private:
                 if (op != "<" && op != "<=" && op != ">" && op != ">=") error("distancia solo se compara con < <= > >=");
                 avanzar();
                 c.op = op;
-                if (actual().tipo != TipoToken::NUMERO) error("la distancia se compara con un entero en metros");
+                if (c.punto.es_vector) {
+                    if (actual().tipo != TipoToken::NUMERO && actual().tipo != TipoToken::DECIMAL) error("la distancia entre vectores se compara con un numero");
+                } else if (actual().tipo != TipoToken::NUMERO) {
+                    error("la distancia se compara con un entero en metros");
+                }
                 c.valor = valor();
                 s.condiciones.push_back(c);
                 if (es("AND")) { avanzar(); continue; }

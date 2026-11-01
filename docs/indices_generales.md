@@ -10,6 +10,10 @@ organizaciones (`HEAP`, `SEQUENTIAL` y `BPLUS`). Lo que cambia es el tipo de la 
 | `RTREE` | no | no | sí |
 | `SPIMI` | no | sí | no |
 
+`FLOAT` y `VECTOR` no admiten ninguno de estos índices. Para `VECTOR`, los índices IVF y HNSW
+son los de FAISS y viven en la API (#60, #61); en el motor el k-NN es secuencial (ver
+[vectores.md](vectores.md)).
+
 Si la combinación no es válida, el motor da un error, por ejemplo
 `un indice RTREE solo se crea sobre columnas POINT, no VARCHAR`. La tabla está en `ADMITIDOS`
 ([ejecutor.cpp](../motor/consultas/ejecutor.cpp)).
