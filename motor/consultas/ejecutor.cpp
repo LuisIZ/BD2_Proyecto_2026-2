@@ -786,6 +786,7 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
             continue;
         }
         if (es_point) throw std::runtime_error("la columna " + c.columna + " es POINT; comparala con distancia(...)");
+        if (tabla.columnas[col].tipo == TipoColumna::VECTOR) throw std::runtime_error("la columna " + c.columna + " es VECTOR; comparala con distancia(...)");
         if (tabla.columnas[col].tipo == TipoColumna::INT && !c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es INT");
         if (tabla.columnas[col].tipo == TipoColumna::FLOAT && !c.valor.es_numero()) throw std::runtime_error("la columna " + c.columna + " es FLOAT");
         if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && (c.valor.es_numero() || c.valor.es_punto)) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
@@ -1140,6 +1141,23 @@ bool es_decimal(const std::string& s, float& v) {
     return fin == s.c_str() + s.size() && std::isfinite(v);
 }
 
+// acepta "VECTOR(x1, x2, ...)", "[x1, x2, ...]" o los números separados por comas o espacios
+bool vector_de_texto(std::string s, Valor& salida) {
+    if (s.size() >= 6 && minusculas(s.substr(0, 6)) == "vector") s = s.substr(6);
+    for (char& c : s) if (c == '(' || c == ')' || c == '[' || c == ']' || c == ',') c = ' ';
+    std::istringstream entrada(s);
+    std::vector<float> componentes;
+    std::string numero;
+    while (entrada >> numero) {
+        float v;
+        if (!es_decimal(numero, v)) return false;
+        componentes.push_back(v);
+    }
+    if (componentes.empty()) return false;
+    salida = Valor::de_vector(std::move(componentes));
+    return true;
+}
+
 }  // namespace
 
 // --- Ejecutor ---
@@ -1452,6 +1470,10 @@ Resultado Ejecutor::crear_tabla(const Sentencia& s) {
         Columna col;
         col.nombre = def.nombre;
         col.tipo = tipo_desde(def.tipo);
+        if (col.tipo == TipoColumna::VECTOR && def.tam > MAX_DIMENSIONES) {
+            throw std::runtime_error("VECTOR admite hasta " + std::to_string(MAX_DIMENSIONES) + " dimensiones y se pidieron " +
+                                     std::to_string(def.tam));
+        }
         col.tam = static_cast<std::uint16_t>(def.tam);
         if (def.pk) {
             if (pk >= 0) throw std::runtime_error("solo una columna puede ser PRIMARY KEY");
@@ -1530,6 +1552,17 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
                     throw std::runtime_error("la fila " + texto(f + 1) + " trae '" + csv[f][c] + "' en la columna FLOAT " + tabla.columnas[c].nombre);
                 }
                 fila[c] = Valor::de_decimal(v);
+                continue;
+            }
+            if (tabla.columnas[c].tipo == TipoColumna::VECTOR) {
+                // el campo puede tener cientos de números: el error no lo repite entero
+                if (!vector_de_texto(csv[f][c], fila[c])) {
+                    throw std::runtime_error("la fila " + texto(f + 1) + " no trae un vector valido en la columna VECTOR " + tabla.columnas[c].nombre);
+                }
+                if (fila[c].componentes.size() != tabla.columnas[c].tam) {
+                    throw std::runtime_error("la fila " + texto(f + 1) + " trae " + texto(fila[c].componentes.size()) + " componentes y la columna " +
+                                             tabla.columnas[c].nombre + " es VECTOR(" + texto(tabla.columnas[c].tam) + ")");
+                }
                 continue;
             }
             if (tabla.columnas[c].tipo != TipoColumna::INT) { fila[c] = Valor::de_texto(csv[f][c]); continue; }
@@ -1905,6 +1938,9 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
             const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
             if (por_distancia && !es_point) throw std::runtime_error("distancia necesita una columna POINT y " + s.order_by + " no lo es");
             if (!por_distancia && es_point) throw std::runtime_error("no se puede ordenar por la columna POINT " + s.order_by + "; usa distancia(...)");
+            if (!por_distancia && tabla.columnas[col].tipo == TipoColumna::VECTOR) {
+                throw std::runtime_error("no se puede ordenar por la columna VECTOR " + s.order_by + "; usa distancia(...)");
+            }
         }
         const auto inicio_orden = Reloj::now();
         ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &traza);
@@ -1998,7 +2034,8 @@ Resultado Ejecutor::describir(const Sentencia& s) {
         const Columna& c = tabla.columnas[i];
         const Indice* indice = tabla.indice_sobre(c.nombre);
         r.filas.push_back({Valor::de_texto(c.nombre),
-                           Valor::de_texto(c.tipo == TipoColumna::VARCHAR ? "VARCHAR(" + texto(c.tam) + ")" : nombre_tipo(c.tipo)),
+                           Valor::de_texto(c.tipo == TipoColumna::VARCHAR || c.tipo == TipoColumna::VECTOR
+                                               ? nombre_tipo(c.tipo) + "(" + texto(c.tam) + ")" : nombre_tipo(c.tipo)),
                            Valor::de_texto(i == tabla.pk ? "PK" : ""),
                            Valor::de_texto(indice ? indice->nombre + " (" + nombre_tipo_indice(*indice) + ")"
                                            : i == tabla.pk && tabla.organizacion == Organizacion::BPLUS ? "PRIMARY (B+ agrupado)"

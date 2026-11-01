@@ -97,6 +97,18 @@ void prueba_parser() {
     s = motor::sql::parsear("SELECT * FROM p WHERE precio <= -2.5");
     assert(s.condiciones[0].valor.es_decimal && s.condiciones[0].valor.decimal == -2.5f);
 
+    s = motor::sql::parsear("CREATE TABLE img (id INT PRIMARY KEY, v VECTOR(256))");
+    assert(s.columnas[1].tipo == "VECTOR" && s.columnas[1].tam == 256);
+    s = motor::sql::parsear("INSERT INTO img VALUES (1, VECTOR(0.5, -2, 1e-05, 3.5E+2))");
+    assert(s.valores[1].es_vector && s.valores[1].componentes.size() == 4);
+    assert(s.valores[1].componentes[1] == -2.0f && s.valores[1].componentes[2] == 1e-05f && s.valores[1].componentes[3] == 350.0f);
+    assert(s.valores[1].a_texto() == "VECTOR(0.5, -2, 1e-05, 350)");
+    assert(falla("CREATE TABLE t (v VECTOR)"));
+    assert(falla("CREATE TABLE t (v VECTOR(0))"));
+    assert(falla("INSERT INTO t VALUES (1, VECTOR())"));
+    assert(falla("INSERT INTO t VALUES (1, VECTOR(1, 'a'))"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1e1, 2)) < 5") && "las coordenadas no usan exponentes");
+
     s = motor::sql::parsear(
         "SELECT *, SCORE() AS relevancia FROM articulos "
         "WHERE MATCH(texto, 'machine learning') USING BM25 ORDER BY relevancia DESC LIMIT 10");
@@ -556,6 +568,64 @@ void prueba_float() {
     std::cout << "FLOAT: float32 en heap, secuencial y B+, WHERE, ORDER BY, agregados y COPY\n";
 }
 
+void prueba_vector() {
+    {
+        Catalogo catalogo(DB);
+        Ejecutor e(catalogo);
+        for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+            const std::string t = std::string("vectores_") + org;
+            e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, v VECTOR(4), nombre VARCHAR(8)) USING " + org);
+            e.ejecutar("INSERT INTO " + t + " VALUES (2, VECTOR(0.1, -2, 3.25, 1e-05), 'b')");
+            e.ejecutar("INSERT INTO " + t + " VALUES (1, VECTOR(1, 2, 3, 4), 'a')");
+            const Resultado r = e.ejecutar("SELECT v, nombre FROM " + t + " WHERE id = 2");
+            assert(r.filas.size() == 1 && r.filas[0][0].es_vector && r.filas[0][1].texto == "b");
+            assert(r.filas[0][0].a_texto() == "VECTOR(0.1, -2, 3.25, 1e-05)" && "se guarda en float32 sin perder nada");
+            assert(e.ejecutar("DESCRIBE " + t).filas[1][1].texto == "VECTOR(4)");
+
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, VECTOR(1, 2, 3), 'c')") && "dimension distinta");
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, 'texto', 'c')"));
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, VECTOR(1, 2, 3, 4), VECTOR(1, 2))"));
+            assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE v = 1") && "un vector se compara con distancia");
+            assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY v"));
+            assert(falla_ejecucion(e, "CREATE INDEX iv ON " + t + " (v)") && "VECTOR no tiene indice en el motor");
+            e.ejecutar("DELETE FROM " + t + " WHERE id = 1");
+            assert(e.ejecutar("SELECT * FROM " + t).filas.size() == 1);
+        }
+        assert(falla_ejecucion(e, "CREATE TABLE t (id INT, v VECTOR(513))"));
+        assert(falla_ejecucion(e, "CREATE TABLE t (v VECTOR(4) PRIMARY KEY)"));
+        assert(falla_ejecucion(e, "CREATE TABLE t (id INT, v VECTOR(512)) USING BPLUS") && "el registro fijo pasa de 2040 bytes");
+        e.ejecutar("CREATE TABLE grande (id INT PRIMARY KEY, v VECTOR(512))");
+        e.ejecutar("DROP TABLE grande");
+
+        // COPY lee el formato que escribe extraer.py: "VECTOR(x1,x2,...)" entre comillas
+        const std::string csv = ".build/sql_test_vector.csv";
+        {
+            std::ofstream f(csv);
+            f << "id,v\n1,\"VECTOR(0.5,1.25e-06,-3,4)\"\n2,\"[1, 2, 3, 4]\"\n3,0 0 0 1\n";
+        }
+        e.ejecutar("CREATE TABLE copia_vector (id INT PRIMARY KEY, v VECTOR(4))");
+        assert(e.ejecutar("COPY copia_vector FROM FILE '" + csv + "'").afectadas == 3);
+        const Resultado r = e.ejecutar("SELECT v FROM copia_vector");
+        assert(r.filas[0][0].a_texto() == "VECTOR(0.5, 1.25e-06, -3, 4)" && r.filas[2][0].a_texto() == "VECTOR(0, 0, 0, 1)");
+        for (const char* malo : {"id,v\n1,\"VECTOR(1,2,3)\"\n", "id,v\n1,\"VECTOR(1,x,3,4)\"\n"}) {
+            {
+                std::ofstream f(csv);
+                f << malo;
+            }
+            e.ejecutar("CREATE TABLE copia_mala (id INT PRIMARY KEY, v VECTOR(4))");
+            assert(falla_ejecucion(e, "COPY copia_mala FROM FILE '" + csv + "'"));
+            e.ejecutar("DROP TABLE copia_mala");
+        }
+    }
+    // los vectores y la dimension sobreviven a reabrir el catalogo
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    assert(e.ejecutar("DESCRIBE copia_vector").filas[1][1].texto == "VECTOR(4)");
+    assert(e.ejecutar("SELECT v FROM copia_vector WHERE id = 1").filas[0][0].a_texto() == "VECTOR(0.5, 1.25e-06, -3, 4)");
+    e.ejecutar("DROP TABLE copia_vector");
+    std::cout << "VECTOR: float32 en heap, secuencial y B+, literal, COPY, DESCRIBE y reapertura\n";
+}
+
 void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -756,6 +826,7 @@ int main() {
     prueba_tabla_manual();
     prueba_pk_no_primera();
     prueba_float();
+    prueba_vector();
     prueba_espacial();
     prueba_matriz_indices();
     prueba_busqueda_texto();

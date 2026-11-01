@@ -1,6 +1,7 @@
 #pragma once
 
 #include <charconv>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -15,7 +16,13 @@ inline std::string texto_microgrados(long long v) {
     return (negativo ? "-" : "") + std::to_string(v / 1000000) + "." + decimales;
 }
 
-// un valor de celda: entero, decimal (float32), texto o punto
+// la representación más corta que vuelve al mismo float
+inline std::string texto_float(float v) {
+    char buf[32];
+    return std::string(buf, std::to_chars(buf, buf + sizeof(buf), v).ptr);
+}
+
+// un valor de celda: entero, decimal (float32), texto, punto o vector
 struct Valor {
     bool es_entero = false;
     long long entero = 0;
@@ -25,6 +32,8 @@ struct Valor {
     bool es_punto = false;
     int lat_e6 = 0;
     int lon_e6 = 0;
+    bool es_vector = false;
+    std::vector<float> componentes;
 
     static Valor de_entero(long long v) {
         Valor valor;
@@ -50,12 +59,20 @@ struct Valor {
         valor.lon_e6 = lon_e6;
         return valor;
     }
+    static Valor de_vector(std::vector<float> v) {
+        Valor valor;
+        valor.es_vector = true;
+        valor.componentes = std::move(v);
+        return valor;
+    }
     bool es_numero() const { return es_entero || es_decimal; }
     double numero() const { return es_decimal ? static_cast<double>(decimal) : static_cast<double>(entero); }
     std::string a_texto() const {
-        if (es_decimal) {
-            char buf[32];  // la representación más corta que vuelve al mismo float
-            return std::string(buf, std::to_chars(buf, buf + sizeof(buf), decimal).ptr);
+        if (es_decimal) return texto_float(decimal);
+        if (es_vector) {
+            std::string salida = "VECTOR(";
+            for (std::size_t i = 0; i < componentes.size(); ++i) salida += (i ? ", " : "") + texto_float(componentes[i]);
+            return salida + ")";
         }
         if (es_punto) return "POINT(" + texto_microgrados(lat_e6) + ", " + texto_microgrados(lon_e6) + ")";
         return es_entero ? std::to_string(entero) : texto;
