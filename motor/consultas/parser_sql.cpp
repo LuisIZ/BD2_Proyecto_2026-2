@@ -362,7 +362,8 @@ private:
             if (t == "BPLUS" || t == "BTREE") s.indice_tipo = "BPLUS";
             else if (t == "HASH") s.indice_tipo = "HASH";
             else if (t == "RTREE") s.indice_tipo = "RTREE";
-            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH o RTREE)");
+            else if (t == "SPIMI") s.indice_tipo = "SPIMI";
+            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH, RTREE o SPIMI)");
         }
     }
 

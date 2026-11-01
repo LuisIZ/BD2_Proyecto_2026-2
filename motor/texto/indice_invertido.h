@@ -32,6 +32,40 @@ public:
         if (memoria_bloque_ == 0) throw std::invalid_argument("memoria_bloque debe ser mayor que cero");
         std::filesystem::create_directories(directorio_);
         ruta_final_ = (std::filesystem::path(directorio_) / "indice_spimi.bin").string();
+        ruta_meta_ = (std::filesystem::path(directorio_) / "indice_meta.bin").string();
+    }
+
+    bool construido() const { return construido_; }
+
+    // reabre un indice ya construido; false si el directorio no tiene uno
+    bool abrir() {
+        std::ifstream meta(ruta_meta_, std::ios::binary);
+        if (!meta || !std::filesystem::exists(ruta_final_)) return false;
+        num_docs_ = static_cast<long>(leer_u64(meta));
+        const std::uint64_t terminos = leer_u64(meta);
+        for (std::uint64_t i = 0; i < terminos; ++i) {
+            std::string termino(leer_u32(meta), '\0');
+            meta.read(&termino[0], static_cast<std::streamsize>(termino.size()));
+            const std::streamoff offset = static_cast<std::streamoff>(leer_u64(meta));
+            directorio_terminos_[termino] = {offset, static_cast<std::size_t>(leer_u64(meta))};
+        }
+        const std::uint64_t docs = leer_u64(meta);
+        for (std::uint64_t i = 0; i < docs; ++i) {
+            const long long doc_id = static_cast<long long>(leer_u64(meta));
+            largos_[doc_id] = static_cast<int>(leer_u32(meta));
+            meta.read(reinterpret_cast<char*>(&suma_normas_[doc_id]), sizeof(double));
+        }
+        if (!meta) throw std::runtime_error("metadatos del indice truncados: " + ruta_meta_);
+        tamano_disco_ = static_cast<long>(std::filesystem::file_size(ruta_final_));
+        construido_ = true;
+        return true;
+    }
+
+    // borra los archivos del indice: se reconstruye la proxima vez que se necesite
+    void invalidar() {
+        std::error_code error;
+        std::filesystem::remove(ruta_final_, error);
+        std::filesystem::remove(ruta_meta_, error);
     }
 
     // Los doc_id deben llegar en orden creciente para que los postings se agreguen ya ordenados.
@@ -74,6 +108,7 @@ public:
     void construir() {
         if (construido_) return;
         if (!bloque_.empty()) vaciar_bloque();
+        std::filesystem::remove(ruta_meta_);
         std::ofstream salida(ruta_final_, std::ios::binary | std::ios::trunc);
         if (!salida) throw std::runtime_error("no se pudo crear el indice final: " + ruta_final_);
 
@@ -137,6 +172,7 @@ public:
         bloques_.clear();
         const std::uintmax_t bytes = std::filesystem::file_size(ruta_final_);
         tamano_disco_ = static_cast<long>(bytes);
+        guardar_metadatos();
         construido_ = true;
     }
 
@@ -157,6 +193,7 @@ public:
         if (!archivo) throw std::runtime_error("indice truncado al leer postings");
         const std::size_t bytes = sizeof(largo) + sizeof(cantidad) + largo + cantidad * (sizeof(std::int64_t) + sizeof(std::int32_t));
         paginas_leidas_ += static_cast<long>((bytes + 4095) / 4096);
+        postings_leidos_ += static_cast<long>(cantidad);
         return salida;
     }
 
@@ -191,6 +228,7 @@ public:
     }
 
     long paginas_leidas() const { return paginas_leidas_; }
+    long postings_leidos() const { return postings_leidos_; }
     long tamano_en_disco() const { return tamano_disco_; }
 
 private:
@@ -290,12 +328,37 @@ private:
         memoria_usada_ = 0;
     }
 
+    // diccionario, largos y normas: lo que hace falta para reabrir el indice
+    void guardar_metadatos() {
+        std::ofstream meta(ruta_meta_, std::ios::binary | std::ios::trunc);
+        if (!meta) throw std::runtime_error("no se pudo crear los metadatos del indice: " + ruta_meta_);
+        escribir_u64(meta, static_cast<std::uint64_t>(num_docs_));
+        escribir_u64(meta, directorio_terminos_.size());
+        for (const auto& [termino, entrada] : directorio_terminos_) {
+            escribir_u32(meta, static_cast<std::uint32_t>(termino.size()));
+            meta.write(termino.data(), static_cast<std::streamsize>(termino.size()));
+            escribir_u64(meta, static_cast<std::uint64_t>(entrada.offset));
+            escribir_u64(meta, entrada.df);
+        }
+        escribir_u64(meta, largos_.size());
+        for (const auto& [doc_id, largo] : largos_) {
+            escribir_u64(meta, static_cast<std::uint64_t>(doc_id));
+            escribir_u32(meta, static_cast<std::uint32_t>(largo));
+            const auto suma = suma_normas_.find(doc_id);
+            const double valor = suma == suma_normas_.end() ? 0.0 : suma->second;
+            meta.write(reinterpret_cast<const char*>(&valor), sizeof(valor));
+        }
+        meta.close();
+        if (!meta) throw std::runtime_error("error cerrando los metadatos del indice: " + ruta_meta_);
+    }
+
     void exigir_construido() const {
         if (!construido_) throw std::runtime_error("el indice invertido aun no se ha construido");
     }
 
     std::string directorio_;
     std::string ruta_final_;
+    std::string ruta_meta_;
     std::size_t memoria_bloque_;
     std::size_t memoria_usada_ = 0;
     std::unordered_map<std::string, std::vector<Posting>> bloque_;
@@ -305,6 +368,7 @@ private:
     std::unordered_map<long long, double> suma_normas_;
     long num_docs_ = 0;
     long paginas_leidas_ = 0;
+    long postings_leidos_ = 0;
     long tamano_disco_ = 0;
     long long ultimo_doc_ = 0;
     bool hay_doc_ = false;

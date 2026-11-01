@@ -202,23 +202,97 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     std::cout << "organizacion " << org << ": carga, busqueda, rango, agregados, insert, delete\n";
 }
 
+// MATCH con el indice SPIMI en las tres organizaciones
 void prueba_busqueda_texto() {
     const std::string db_texto = ".build/db_sql_text_test";
     std::filesystem::remove_all(db_texto);
     Catalogo catalogo(db_texto);
     Ejecutor e(catalogo);
-    e.ejecutar("CREATE TABLE texto_docs (id INT PRIMARY KEY, contenido VARCHAR(200))");
-    e.ejecutar("INSERT INTO texto_docs VALUES (1, 'Running shoes with waterproof fabric')");
-    e.ejecutar("INSERT INTO texto_docs VALUES (2, 'Trail shoes for running and hiking')");
-    e.ejecutar("INSERT INTO texto_docs VALUES (3, 'Stainless steel water bottle')");
-    Resultado r = e.ejecutar(
-        "SELECT id, SCORE() AS relevancia FROM texto_docs "
-        "WHERE MATCH(contenido, 'running shoes') USING BM25 ORDER BY relevancia DESC LIMIT 10");
-    assert(r.filas.size() == 2 && r.columnas.size() == 2);
-    assert(r.columnas[1] == "relevancia" && r.filas[0][1].es_decimal && r.filas[0][1].decimal > 0);
-    assert(tiene_paso(r, "busqueda_texto"));
-    r = e.ejecutar("SELECT * FROM texto_docs WHERE MATCH(contenido, 'water bottle') USING TF_IDF LIMIT 10");
-    assert(r.filas.size() == 1 && r.filas[0][0].entero == 3);
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = "texto_" + org;
+        const std::string match = " WHERE MATCH(contenido, 'running shoes') USING BM25";
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, contenido VARCHAR(200), precio INT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES (1, 'Running shoes with waterproof fabric', 150)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (2, 'Trail shoes for running and hiking', 80)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (3, 'Stainless steel water bottle', 20)");
+
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + match) && "MATCH sin indice SPIMI");
+        e.ejecutar("CREATE INDEX idx ON " + t + " (contenido) USING SPIMI");
+
+        Resultado r = e.ejecutar("SELECT id, SCORE() AS relevancia FROM " + t + match + " ORDER BY relevancia DESC LIMIT 10");
+        assert(r.filas.size() == 2 && r.columnas.size() == 2);
+        assert(r.columnas[1] == "relevancia" && r.filas[0][1].es_decimal && r.filas[0][1].decimal > 0);
+        assert(r.filas[0][1].decimal >= r.filas[1][1].decimal);
+        assert(tiene_paso(r, "busqueda_texto"));
+        r = e.ejecutar("SELECT * FROM " + t + " WHERE MATCH(contenido, 'water bottle') USING TF_IDF LIMIT 10");
+        assert(r.filas.size() == 1 && r.filas[0][0].entero == 3);
+
+        // MATCH con otra condicion: el resto del WHERE filtra
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE MATCH(contenido, 'running shoes') AND precio < 100 USING BM25");
+        assert(r.filas.size() == 1 && r.filas[0][0].entero == 2);
+
+        // LIMIT sin filtros: el ranking solo pide los mejores k
+        r = e.ejecutar("SELECT id FROM " + t + match + " LIMIT 1");
+        assert(r.filas.size() == 1);
+
+        r = e.ejecutar("EXPLAIN ANALYZE SELECT id FROM " + t + match);
+        const std::string plan = texto_del_plan(r);
+        assert(plan.find("Text Scan using idx on " + t + " (contenido)") != std::string::npos);
+        assert(plan.find("Postings leidos:") != std::string::npos && plan.find("USING BM25") != std::string::npos);
+        assert(texto_del_plan(e.ejecutar("EXPLAIN SELECT id FROM " + t + match)).find("Text Scan using idx") != std::string::npos);
+
+        // INSERT y DELETE: el indice se reconstruye en la siguiente busqueda
+        e.ejecutar("INSERT INTO " + t + " VALUES (4, 'Running shoes for kids', 40)");
+        r = e.ejecutar("SELECT id FROM " + t + match);
+        assert(r.filas.size() == 3);
+        assert(texto_del_plan(e.ejecutar("EXPLAIN ANALYZE SELECT id FROM " + t + match)).find("Postings leidos:") != std::string::npos);
+        e.ejecutar("DELETE FROM " + t + " WHERE id = 1");
+        r = e.ejecutar("SELECT id FROM " + t + match);
+        assert(r.filas.size() == 2);
+        assert(falla_ejecucion(e, "DELETE FROM " + t + " WHERE MATCH(contenido, 'shoes') USING BM25") && "DELETE no admite MATCH");
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + " WHERE MATCH(precio, 'x') USING BM25") && "MATCH solo sobre VARCHAR");
+    }
+
+    // el indice sobrevive al cierre: otro catalogo lo reabre sin reconstruirlo
+    Catalogo reabierto(db_texto);
+    Ejecutor otro(reabierto);
+    Resultado r = otro.ejecutar("SELECT id FROM texto_HEAP WHERE MATCH(contenido, 'running shoes') USING TF_IDF");
+    assert(r.filas.size() == 2);
+    std::cout << "MATCH: indice SPIMI en las tres organizaciones, filtros, EXPLAIN, INSERT/DELETE y reapertura\n";
+}
+
+// CREATE INDEX ... USING SPIMI sobre VARCHAR en las tres organizaciones
+void prueba_indice_spimi() {
+    const std::string db = ".build/db_sql_spimi_test";
+    std::filesystem::remove_all(db);
+    Catalogo catalogo(db);
+    Ejecutor e(catalogo);
+    for (const std::string org : {"heap", "sequential", "bplus"}) {
+        const std::string t = "spimi_" + org;
+        const std::string archivo = db + "/" + t + "__s.spimi/indice_spimi.bin";
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, descripcion VARCHAR(100), precio INT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES (1, 'Running shoes with waterproof fabric', 50)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (2, 'Trail shoes for running and hiking', 80)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (3, 'Stainless steel water bottle', 20)");
+
+        Resultado r = e.ejecutar("CREATE INDEX s ON " + t + " (descripcion) USING SPIMI");
+        assert(r.afectadas == 3 && tiene_paso(r, "construir_indice"));
+        assert(std::filesystem::exists(archivo));
+        assert(falla_ejecucion(e, "CREATE INDEX s2 ON " + t + " (descripcion) USING SPIMI") && "una columna, un indice SPIMI");
+        assert(falla_ejecucion(e, "CREATE INDEX s3 ON " + t + " (precio) USING SPIMI") && "SPIMI solo sobre VARCHAR");
+
+        // el SPIMI no estorba a los demas indices de la columna
+        e.ejecutar("CREATE INDEX b ON " + t + " (descripcion) USING BPLUS");
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE descripcion = 'Stainless steel water bottle'");
+        assert(r.filas.size() == 1 && r.filas[0][0].entero == 3);
+
+        // INSERT y DELETE invalidan el indice: se reconstruye en la proxima busqueda
+        e.ejecutar("INSERT INTO " + t + " VALUES (4, 'Glass water bottle', 15)");
+        assert(!std::filesystem::exists(archivo));
+        e.ejecutar("DROP TABLE " + t);
+        assert(!std::filesystem::exists(db + "/" + t + "__s.spimi"));
+    }
+    std::cout << "indice SPIMI: CREATE INDEX sobre VARCHAR en las tres organizaciones, se invalida al insertar y DROP lo borra\n";
 }
 
 void prueba_indice_secundario(Ejecutor& e) {
@@ -685,6 +759,7 @@ int main() {
     prueba_espacial();
     prueba_matriz_indices();
     prueba_busqueda_texto();
+    prueba_indice_spimi();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }

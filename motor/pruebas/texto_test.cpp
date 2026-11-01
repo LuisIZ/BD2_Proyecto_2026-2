@@ -213,6 +213,40 @@ void prueba_corpus_manual() {
     std::cout << "corpus manual: scores de TF-IDF y BM25 iguales al calculo a mano (1e-6) y top-k con heap\n";
 }
 
+// un indice construido se puede reabrir con los mismos postings, largos y normas
+void prueba_reabrir() {
+    std::filesystem::remove_all(DIRECTORIO);
+    std::filesystem::create_directories(DIRECTORIO);
+    const Corpus c = corpus_en_memoria();
+    IndiceInvertido original(DIRECTORIO, 256);
+    construir(original);
+
+    IndiceInvertido reabierto(DIRECTORIO);
+    assert(!reabierto.construido() && reabierto.abrir() && reabierto.construido());
+    assert(reabierto.num_docs() == original.num_docs());
+    assert(cerca(reabierto.largo_promedio(), original.largo_promedio(), 1e-9));
+    assert(reabierto.tamano_en_disco() == original.tamano_en_disco());
+    for (const auto& [t, df] : c.df) {
+        assert(reabierto.df(t) == df);
+        assert(reabierto.postings(t).size() == original.postings(t).size());
+    }
+    for (std::size_t i = 0; i < DOCUMENTOS.size(); ++i) {
+        const long long doc = static_cast<long long>(i);
+        assert(reabierto.largo_doc(doc) == original.largo_doc(doc));
+        assert(cerca(reabierto.norma_doc(doc), original.norma_doc(doc), 1e-9));
+    }
+    const auto antes = motor::texto::buscar(original, "water bottle", 3, Ranking::BM25);
+    const auto despues = motor::texto::buscar(reabierto, "water bottle", 3, Ranking::BM25);
+    assert(antes.size() == despues.size() && !antes.empty());
+    for (std::size_t i = 0; i < antes.size(); ++i)
+        assert(antes[i].doc_id == despues[i].doc_id && cerca(antes[i].score, despues[i].score, 1e-9));
+
+    reabierto.invalidar();
+    IndiceInvertido borrado(DIRECTORIO);
+    assert(!borrado.abrir());
+    std::cout << "reabrir: el indice guardado da los mismos postings y scores; invalidar lo borra\n";
+}
+
 void prueba_ranking_desde() {
     assert(motor::texto::ranking_desde("TF_IDF") == Ranking::TF_IDF);
     assert(motor::texto::ranking_desde("BM25") == Ranking::BM25);
@@ -234,6 +268,7 @@ int main() {
     prueba_postings();
     prueba_ranking();
     prueba_corpus_manual();
+    prueba_reabrir();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }

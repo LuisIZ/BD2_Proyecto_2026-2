@@ -56,6 +56,8 @@ ordenados de mayor a menor; los empates se rompen por `doc_id`.
 ## SQL
 
 ```sql
+CREATE INDEX idx_contenido ON documentos (contenido) USING SPIMI;
+
 SELECT * FROM documentos
 WHERE MATCH(contenido, 'base de datos vectorial')
 USING TF_IDF LIMIT 10;
@@ -66,11 +68,32 @@ USING BM25
 ORDER BY relevancia DESC;
 ```
 
-En el ejecutor actual, `MATCH` recorre las filas que sobreviven los demás filtros, construye
-un índice SPIMI temporal, rankea y luego proyecta/limita las filas. Es una implementación
-funcional de la sintaxis, pero no conserva el índice entre consultas: el tiempo de construir
-SPIMI forma parte de cada consulta. Para medir solo latencia de búsqueda hace falta integrar
-un índice de texto persistente al catálogo.
+`CREATE INDEX ... USING SPIMI` construye el índice invertido de una columna `VARCHAR` y lo guarda
+en el directorio `<tabla>__<indice>.spimi`. Ahí quedan `indice_spimi.bin` (postings) e
+`indice_meta.bin` (diccionario, largos y normas), así que el índice se puede reabrir sin
+volver a construirlo. `MATCH` usa ese índice (vía `Text Scan` del planificador): rankea con
+`buscar` y después busca cada fila por su posición. Si la columna no tiene índice SPIMI,
+`MATCH` falla con un error que dice cómo crearlo. Las demás condiciones del `WHERE` se
+aplican como filtro sobre las filas ya rankeadas.
+
+Con `LIMIT`, sin otros filtros y ordenando por `SCORE()` descendente (o sin `ORDER BY`), el
+ranking solo pide los `k` mejores documentos.
+
+### Qué pasa con INSERT y DELETE
+
+El índice no se actualiza fila a fila: un `INSERT` o `DELETE` lo invalida (borra sus
+archivos) y se reconstruye en la siguiente búsqueda con `MATCH`, que lo indica en el plan.
+Así varias inserciones seguidas cuestan una sola reconstrucción.
+
+### EXPLAIN ANALYZE
+
+```
+Text Scan using idx_contenido on documentos (contenido)
+  Index Cond: MATCH(contenido, 'machine learning') USING BM25
+```
+
+Con los detalles `ranking`, `postings_leidos`, `paginas_indice`, las páginas de datos leídas,
+las filas y el tiempo.
 
 ## Pruebas
 

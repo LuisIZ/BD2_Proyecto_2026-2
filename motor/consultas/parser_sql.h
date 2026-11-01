@@ -14,12 +14,12 @@ namespace sql {
 //   CREATE TABLE t (col INT [PRIMARY KEY], col FLOAT, col VARCHAR(n), col POINT, ...) [USING HEAP|SEQUENTIAL|BPLUS]
 //   CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 //   COPY t FROM FILE 'ruta.csv'
-//   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE]
+//   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE|SPIMI]
 //   DROP TABLE t
 //   INSERT INTO t VALUES (v1, v2, ...)
 //   DELETE FROM t [WHERE cond]
 //   SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
-//     FROM t [WHERE cond [AND cond]... | MATCH(columna, 'consulta')]
+//     FROM t [WHERE cond [AND cond]... [AND MATCH(columna, 'consulta')]]
 //     [USING TF_IDF|BM25] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
 //   SCORE() se proyecta como columna; admite AS alias.
 //   SHOW TABLES

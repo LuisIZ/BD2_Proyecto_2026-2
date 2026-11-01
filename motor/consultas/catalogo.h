@@ -37,7 +37,9 @@ struct Tabla {
 
     // -1 si no existe; ignora mayúsculas
     int posicion_columna(const std::string& nombre) const;
+    // indice_sobre ignora los SPIMI: esos solo los usa MATCH, via indice_texto
     const Indice* indice_sobre(const std::string& columna) const;
+    const Indice* indice_texto(const std::string& columna) const;
     // bytes de un registro de tamaño fijo (B+ agrupado): pk primero, luego el resto
     std::uint16_t tam_registro_fijo() const;
 };
