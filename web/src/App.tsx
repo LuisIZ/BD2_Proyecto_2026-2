@@ -303,7 +303,9 @@ export default function App() {
                               ? "Hash extensible"
                               : index.tipo === "RTREE"
                                 ? "R-Tree"
-                                : "B+ no agrupado"}{" "}
+                                : index.tipo === "SPIMI"
+                                  ? "Índice invertido SPIMI"
+                                  : "B+ no agrupado"}{" "}
                             · {index.columna}
                           </small>
                         </li>

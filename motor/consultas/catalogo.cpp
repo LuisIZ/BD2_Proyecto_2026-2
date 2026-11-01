@@ -53,7 +53,15 @@ int Tabla::posicion_columna(const std::string& buscada) const {
 const Indice* Tabla::indice_sobre(const std::string& columna) const {
     const std::string c = minusculas(columna);
     for (const Indice& indice : indices) {
-        if (minusculas(indice.columna) == c) return &indice;
+        if (indice.tipo != "SPIMI" && minusculas(indice.columna) == c) return &indice;
+    }
+    return nullptr;
+}
+
+const Indice* Tabla::indice_texto(const std::string& columna) const {
+    const std::string c = minusculas(columna);
+    for (const Indice& indice : indices) {
+        if (indice.tipo == "SPIMI" && minusculas(indice.columna) == c) return &indice;
     }
     return nullptr;
 }

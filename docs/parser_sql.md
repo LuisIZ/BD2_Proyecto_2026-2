@@ -44,7 +44,7 @@ Palabras clave sin distinguir mayúsculas. Varias sentencias se separan con `;`.
 CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), col POINT, ...) [USING HEAP | SEQUENTIAL | BPLUS]
 CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 COPY t FROM FILE 'ruta.csv'
-CREATE INDEX nombre ON t (col) [USING BPLUS | HASH | RTREE]
+CREATE INDEX nombre ON t (col) [USING BPLUS | HASH | RTREE | SPIMI]
 DROP TABLE t
 INSERT INTO t VALUES (v1, v2, ...)
 DELETE FROM t [WHERE cond]
@@ -66,12 +66,11 @@ cond  := col (= | != | <> | < | <= | > | >=) valor
 valor := entero | 'texto' | POINT(lat, lon)
 ```
 
-`MATCH` necesita `USING TF_IDF` o `USING BM25`. Usa la columna completa de tipo
-`VARCHAR`; los términos se normalizan como se describe en
+`MATCH` necesita `USING TF_IDF` o `USING BM25` y un índice `SPIMI` sobre la columna
+`VARCHAR`; sin él falla con un error. Los términos se normalizan como se describe en
 [busqueda_texto.md](busqueda_texto.md). `SCORE()` se puede proyectar con un alias y ordenar
-por él. Esta ruta reconstruye el índice SPIMI temporalmente para cada consulta, por lo que
-es funcional pero incluye el tiempo de indexación en el costo de consulta; todavía no hay
-un catálogo de índices de texto persistentes.
+por él, y `MATCH` se combina con otras condiciones con `AND`. `DELETE` no admite `MATCH`.
+Un `INSERT` o `DELETE` invalida el índice SPIMI y se reconstruye en el siguiente `MATCH`.
 
 Tipos: `INT` (int32), `VARCHAR(n)` y `POINT` (latitud y longitud; ver
 [sql_espacial.md](sql_espacial.md)). La clave primaria debe ser `INT` y puede ser
