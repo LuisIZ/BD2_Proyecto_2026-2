@@ -185,6 +185,34 @@ void prueba_ranking() {
     std::cout << "ranking: TF-IDF y BM25 iguales a la fuerza bruta con consultas de 1, 3 y 5+ palabras\n";
 }
 
+void prueba_corpus_manual() {
+    const std::string directorio = DIRECTORIO + "_manual";
+    std::filesystem::remove_all(directorio);
+    std::filesystem::create_directories(directorio);
+    IndiceInvertido indice(directorio);
+    indice.agregar(0, "cat dog");
+    indice.agregar(1, "cat cat bird");
+    indice.agregar(2, "dog bird fish");
+    indice.construir();
+
+    auto tfidf = motor::texto::buscar(indice, "cat fish", 10, Ranking::TF_IDF);
+    assert(tfidf.size() == 3);
+    assert(tfidf[0].doc_id == 2 && cerca(tfidf[0].score, 0.5416385, 1e-6));
+    assert(tfidf[1].doc_id == 1 && cerca(tfidf[1].score, 0.2745201, 1e-6));
+    assert(tfidf[2].doc_id == 0 && cerca(tfidf[2].score, 0.2448298, 1e-6));
+
+    auto okapi = motor::texto::buscar(indice, "cat fish", 10, Ranking::BM25);
+    assert(okapi.size() == 3);
+    assert(okapi[0].doc_id == 2 && cerca(okapi[0].score, 0.9331132, 1e-6));
+    assert(okapi[1].doc_id == 1 && cerca(okapi[1].score, 0.6243067, 1e-6));
+    assert(okapi[2].doc_id == 0 && cerca(okapi[2].score, 0.5235483, 1e-6));
+
+    // con k = 2 el heap deja solo los dos mejores
+    tfidf = motor::texto::buscar(indice, "cat fish", 2, Ranking::TF_IDF);
+    assert(tfidf.size() == 2 && tfidf[0].doc_id == 2 && tfidf[1].doc_id == 1);
+    std::cout << "corpus manual: scores de TF-IDF y BM25 iguales al calculo a mano (1e-6) y top-k con heap\n";
+}
+
 void prueba_ranking_desde() {
     assert(motor::texto::ranking_desde("TF_IDF") == Ranking::TF_IDF);
     assert(motor::texto::ranking_desde("BM25") == Ranking::BM25);
@@ -205,6 +233,7 @@ int main() {
     prueba_tokenizar();
     prueba_postings();
     prueba_ranking();
+    prueba_corpus_manual();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -69,21 +70,32 @@ inline std::vector<Resultado> buscar(IndiceInvertido& indice, const std::string&
         }
     }
 
-    std::vector<Resultado> resultados;
-    resultados.reserve(scores.size());
+    //heap de tamaño k
+    auto mejor = [](const Resultado& a, const Resultado& b) {
+        if (a.score != b.score) return a.score > b.score;
+        return a.doc_id < b.doc_id;
+    };
+    std::priority_queue<Resultado, std::vector<Resultado>, decltype(mejor)> heap(mejor);
     for (const auto& [doc_id, puntaje] : scores) {
         const double normalizado = ranking == Ranking::TF_IDF
             ? (norma_consulta == 0.0 || indice.norma_doc(doc_id) == 0.0
                    ? 0.0
                    : puntaje / (std::sqrt(norma_consulta) * indice.norma_doc(doc_id)))
             : puntaje;
-        if (normalizado > 0.0) resultados.push_back({doc_id, normalizado});
+        if (normalizado <= 0.0) continue;
+        const Resultado actual{doc_id, normalizado};
+        if (heap.size() < static_cast<std::size_t>(k)) {
+            heap.push(actual);
+        } else if (mejor(actual, heap.top())) {
+            heap.pop();
+            heap.push(actual);
+        }
     }
-    std::sort(resultados.begin(), resultados.end(), [](const Resultado& a, const Resultado& b) {
-        if (a.score != b.score) return a.score > b.score;
-        return a.doc_id < b.doc_id;
-    });
-    if (resultados.size() > static_cast<std::size_t>(k)) resultados.resize(static_cast<std::size_t>(k));
+    std::vector<Resultado> resultados(heap.size());
+    for (std::size_t i = resultados.size(); i > 0; --i) {
+        resultados[i - 1] = heap.top();
+        heap.pop();
+    }
     return resultados;
 }
 
