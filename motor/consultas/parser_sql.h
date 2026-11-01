@@ -29,9 +29,10 @@ namespace sql {
 //
 //   cond  := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
 //          | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+//          | distancia(col, VECTOR(x1, ..., xk) [, 'euclidiana' | 'producto_punto' | 'coseno']) (< | <= | > | >=) numero
 //          | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
 //   valor := entero | decimal | 'texto' | POINT(lat, lon) | VECTOR(x1, x2, ..., xk)
-//   ORDER BY también acepta distancia(col, POINT(lat, lon) [, metrica]) para los k vecinos más cercanos.
+//   ORDER BY también acepta distancia(col, POINT(...) | VECTOR(...) [, metrica]) para los k vecinos más cercanos.
 //
 // EXPLAIN devuelve el plan sin tocar los datos; con ANALYZE lo ejecuta y añade
 // las filas, páginas y tiempos reales de cada nodo.
@@ -71,8 +72,8 @@ struct Condicion {
     Valor valor;
     Valor hasta;     // solo BETWEEN
     std::string funcion;  // DISTANCIA | DENTRO, vacía si se compara la columna
-    Valor punto;          // solo DISTANCIA
-    std::string metrica;  // HAVERSINE | EUCLIDIANA
+    Valor punto;          // solo DISTANCIA: POINT o VECTOR
+    std::string metrica;  // POINT: HAVERSINE | EUCLIDIANA; VECTOR: EUCLIDIANA | PRODUCTO_PUNTO | COSENO
     std::vector<Valor> poligono;  // solo DENTRO: vértices en orden
 };
 

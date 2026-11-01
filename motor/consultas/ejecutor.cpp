@@ -9,6 +9,7 @@
 #include "../indices/hash_extensible_disco.h"
 #include "../indices/rtree.h"
 #include "../texto/ranking.h"
+#include "../vectorial/vector.h"
 
 #include <algorithm>
 #include <cctype>
@@ -70,6 +71,25 @@ struct FilaFisica {
 
 double distancia_m(const Valor& a, const Valor& b, const std::string& metrica) {
     return espacial::distancia_m({a.lat_e6, a.lon_e6}, {b.lat_e6, b.lon_e6}, espacial::metrica_desde(metrica));
+}
+
+// POINT: metros; VECTOR: la métrica de vector.h (menor = más parecido)
+double distancia_valores(const Valor& a, const Valor& b, const std::string& metrica) {
+    if (a.es_vector) return vectorial::distancia(a.componentes, b.componentes, vectorial::metrica_vec_desde(metrica));
+    return distancia_m(a, b, metrica);
+}
+
+// distancia(col, centro) compara POINT con POINT y VECTOR con VECTOR de la misma dimension
+void validar_distancia(const Columna& col, const Valor& centro) {
+    if (col.tipo == TipoColumna::POINT && centro.es_punto) return;
+    if (col.tipo == TipoColumna::VECTOR && centro.es_vector) {
+        if (centro.componentes.size() == col.tam) return;
+        throw std::runtime_error("el vector de consulta tiene " + std::to_string(centro.componentes.size()) + " componentes y la columna " +
+                                 col.nombre + " es VECTOR(" + std::to_string(col.tam) + ")");
+    }
+    if (col.tipo == TipoColumna::POINT) throw std::runtime_error("la columna " + col.nombre + " es POINT: distancia necesita POINT(lat, lon)");
+    if (col.tipo == TipoColumna::VECTOR) throw std::runtime_error("la columna " + col.nombre + " es VECTOR: distancia necesita VECTOR(...)");
+    throw std::runtime_error("distancia necesita una columna POINT o VECTOR y " + col.nombre + " no lo es");
 }
 
 bool microgrados_de(const std::string& s, int& salida) {
@@ -147,8 +167,8 @@ bool dentro_de_poligono(const Valor& p, const std::vector<Valor>& vertices) {
 bool cumple(const Valor& v, const Condicion& c) {
     if (c.funcion == "DENTRO") return dentro_de_poligono(v, c.poligono);
     if (c.funcion == "DISTANCIA") {
-        const double d = distancia_m(v, c.punto, c.metrica);
-        const double limite = static_cast<double>(c.valor.entero);
+        const double d = distancia_valores(v, c.punto, c.metrica);
+        const double limite = c.valor.numero();
         if (c.op == "<") return d < limite;
         if (c.op == "<=") return d <= limite;
         if (c.op == ">") return d > limite;
@@ -165,8 +185,10 @@ bool cumple(const Valor& v, const Condicion& c) {
     return false;
 }
 
-std::string describir_distancia(const std::string& columna, const Valor& punto, const std::string& metrica) {
-    return "distancia(" + columna + ", " + punto.a_texto() + ") [" + (metrica == "EUCLIDIANA" ? "euclidiana" : "haversine") + "]";
+// el vector de consulta puede tener cientos de componentes: el plan solo muestra cuántos
+std::string describir_distancia(const std::string& columna, const Valor& centro, const std::string& metrica) {
+    const std::string valor = centro.es_vector ? "VECTOR(" + texto(centro.componentes.size()) + " dimensiones)" : centro.a_texto();
+    return "distancia(" + columna + ", " + valor + ") [" + minusculas(metrica) + "]";
 }
 
 std::string describir_orden(const Sentencia& s) {
@@ -315,22 +337,54 @@ public:
 
     // --- lectura ---
 
-    std::vector<FilaFisica> escanear() {
-        std::vector<FilaFisica> salida;
+    // entrega las filas de una en una, sin guardarlas todas en memoria
+    template <typename Visitar>
+    void recorrer(Visitar visitar) {
         if (heap_) {
             heap_->recorrer([&](const RecordId& rid, const std::byte* datos, std::uint16_t largo) {
                 Registro r;
-                if (decodificar_registro(datos, largo, r)) salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), rid});
+                if (decodificar_registro(datos, largo, r)) visitar(FilaFisica{desempaquetar_variable(tabla_, r.clave, r.valor), rid});
                 return true;
             });
         } else if (seq_) {
-            for (const Registro& r : seq_->scan()) salida.push_back({desempaquetar_variable(tabla_, r.clave, r.valor), {}});
+            for (const Registro& r : seq_->scan()) visitar(FilaFisica{desempaquetar_variable(tabla_, r.clave, r.valor), {}});
         } else {
             arbol_->buscar_rango_bytes(INT_MIN, INT_MAX, [&](const void* datos) {
-                salida.push_back({desempaquetar_fijo(tabla_, static_cast<const char*>(datos)), {}});
+                visitar(FilaFisica{desempaquetar_fijo(tabla_, static_cast<const char*>(datos)), {}});
                 return true;
             });
         }
+    }
+
+    std::vector<FilaFisica> escanear() {
+        std::vector<FilaFisica> salida;
+        recorrer([&](FilaFisica&& f) { salida.push_back(std::move(f)); });
+        return salida;
+    }
+
+    // k-NN exacto sin indice: una pasada por la tabla guardando los k mejores en
+    // un max-heap (arriba el peor de los k). Devuelve de menor a mayor distancia.
+    std::vector<FilaFisica> knn_secuencial(int col, const Valor& centro, long long k, const std::string& metrica, long& calculadas) {
+        using Candidato = std::pair<double, FilaFisica>;
+        const auto peor_arriba = [](const Candidato& a, const Candidato& b) { return a.first < b.first; };
+        const vectorial::MetricaVec m = vectorial::metrica_vec_desde(metrica);
+        std::vector<Candidato> mejores;
+        calculadas = 0;
+        recorrer([&](FilaFisica&& f) {
+            const double d = vectorial::distancia(f.fila[static_cast<std::size_t>(col)].componentes, centro.componentes, m);
+            ++calculadas;
+            if (static_cast<long long>(mejores.size()) < k) {
+                mejores.emplace_back(d, std::move(f));
+                std::push_heap(mejores.begin(), mejores.end(), peor_arriba);
+            } else if (d < mejores.front().first) {
+                std::pop_heap(mejores.begin(), mejores.end(), peor_arriba);
+                mejores.back() = Candidato(d, std::move(f));
+                std::push_heap(mejores.begin(), mejores.end(), peor_arriba);
+            }
+        });
+        std::sort_heap(mejores.begin(), mejores.end(), peor_arriba);
+        std::vector<FilaFisica> salida;
+        for (Candidato& c : mejores) salida.push_back(std::move(c.second));
         return salida;
     }
 
@@ -653,7 +707,7 @@ private:
 // EXPLAIN a secas puede mostrar el mismo plan que correrá EXPLAIN ANALYZE sin
 // tocar una sola página de datos, como hace PostgreSQL.
 
-enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, INDICE_ORDEN, ESPACIAL_RANGO, ESPACIAL_KNN, ESPACIAL_CAJA, TEXTO };
+enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, INDICE_ORDEN, ESPACIAL_RANGO, ESPACIAL_KNN, ESPACIAL_CAJA, TEXTO, VECTORIAL };
 
 struct Plan {
     Via via = Via::SCAN;
@@ -687,6 +741,7 @@ std::string nombre_nodo(Via via, const Tabla& tabla) {
         case Via::ESPACIAL_CAJA: return "Index Scan";
         case Via::INDICE_RANGO: return "Index Range Scan";
         case Via::TEXTO: return "Text Scan";
+        case Via::VECTORIAL: return "Seq Vector Scan";
         case Via::SCAN: break;
     }
     return "Seq Scan";
@@ -703,6 +758,7 @@ std::string id_operacion(Via via) {
         case Via::ESPACIAL_KNN: return "knn_espacial";
         case Via::ESPACIAL_CAJA: return "poligono_espacial";
         case Via::TEXTO: return "busqueda_texto";
+        case Via::VECTORIAL: return "knn_vectorial";
         case Via::SCAN: break;
     }
     return "scan_completo";
@@ -770,7 +826,7 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
             continue;
         }
         if (c.funcion == "DISTANCIA") {
-            if (!es_point) throw std::runtime_error("distancia necesita una columna POINT y " + c.columna + " no lo es");
+            validar_distancia(tabla.columnas[col], c.punto);
             const Indice* indice = indices_disponibles ? tabla.indice_sobre(c.columna) : nullptr;
             const bool acota = (c.op == "<" || c.op == "<=") && c.valor.entero > 0;
             if (plan.condicion_usada < 0 && indice && indice->tipo == "RTREE" && acota) {
@@ -789,7 +845,7 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
         if (tabla.columnas[col].tipo == TipoColumna::VECTOR) throw std::runtime_error("la columna " + c.columna + " es VECTOR; comparala con distancia(...)");
         if (tabla.columnas[col].tipo == TipoColumna::INT && !c.valor.es_entero) throw std::runtime_error("la columna " + c.columna + " es INT");
         if (tabla.columnas[col].tipo == TipoColumna::FLOAT && !c.valor.es_numero()) throw std::runtime_error("la columna " + c.columna + " es FLOAT");
-        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && (c.valor.es_numero() || c.valor.es_punto)) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
+        if (tabla.columnas[col].tipo == TipoColumna::VARCHAR && (c.valor.es_numero() || c.valor.es_punto || c.valor.es_vector)) throw std::runtime_error("la columna " + c.columna + " es VARCHAR");
         if (plan.condicion_usada >= 0) continue;
 
         long long desde, hasta;
@@ -840,6 +896,19 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
             plan.condicion = describir_orden(*s) + " LIMIT " + std::to_string(s->limite);
         }
     }
+    // k-NN de vectores sin indice: recorrido completo con un heap de k. Con WHERE
+    // no se puede (habria que filtrar antes de elegir los k), y cae en Seq Scan + Sort
+    const int col_orden = s && s->order_by_distancia ? tabla.posicion_columna(s->order_by) : -1;
+    if (col_orden >= 0 && tabla.columnas[static_cast<std::size_t>(col_orden)].tipo == TipoColumna::VECTOR &&
+        condiciones.empty() && !s->descendente && s->limite > 0 && !agrupa) {
+        validar_distancia(tabla.columnas[static_cast<std::size_t>(col_orden)], s->order_by_punto);
+        plan.via = Via::VECTORIAL;
+        plan.centro = s->order_by_punto;
+        plan.k = s->limite;
+        plan.metrica = s->order_by_metrica;
+        plan.columna = s->order_by;
+        plan.condicion = describir_orden(*s) + " LIMIT " + std::to_string(s->limite);
+    }
     // order by con b+: se recorre el indice en orden
     if (s && indices_disponibles && plan.via == Via::SCAN && condiciones.empty() && !s->order_by.empty() && !s->order_by_distancia && !agrupa) {
         const Indice* indice = tabla.indice_sobre(s->order_by);
@@ -878,6 +947,7 @@ long long filas_estimadas(const Plan& plan, std::size_t registros) {
         case Via::ESPACIAL_KNN: return std::min(n, plan.k);
         case Via::ESPACIAL_CAJA: return std::max<long long>(1, n / 10);
         case Via::TEXTO: return plan.k > 0 ? std::min(n, plan.k) : std::max<long long>(1, n / 10);
+        case Via::VECTORIAL: return std::min(n, plan.k);
         case Via::INDICE_ORDEN:
         case Via::SCAN: break;
     }
@@ -904,6 +974,7 @@ double costo_estimado(const Plan& plan, std::size_t paginas, std::size_t registr
         case Via::ESPACIAL_KNN:
         case Via::TEXTO:
         case Via::ESPACIAL_CAJA: return alto + static_cast<double>(filas);
+        case Via::VECTORIAL:  // sin indice: lee toda la tabla, igual que el Seq Scan
         case Via::SCAN: break;
     }
     return total;
@@ -926,6 +997,7 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
     const auto inicio = Reloj::now();
     almacen.reiniciar_contadores();
     long visitados = -1;
+    long calculadas = 0;
     switch (plan.via) {
         case Via::PK_IGUAL: acceso.filas = almacen.buscar_pk(plan.desde); break;
         case Via::PK_RANGO: acceso.filas = almacen.rango_pk(plan.desde, plan.hasta); break;
@@ -948,6 +1020,10 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
         case Via::TEXTO:
             acceso.filas = almacen.buscar_texto(plan.indice, s->texto_consulta, motor::texto::ranking_desde(plan.ranking),
                                                 plan.k > 0 ? static_cast<int>(plan.k) : INT_MAX, acceso.scores);
+            break;
+        case Via::VECTORIAL:
+            acceso.filas = almacen.knn_secuencial(tabla.posicion_columna(plan.columna), plan.centro, plan.k, plan.metrica, calculadas);
+            acceso.orden_por_indice = true;  // el heap ya las entrega de menor a mayor distancia: no hace falta Sort
             break;
         case Via::SCAN: acceso.filas = almacen.escanear(); break;
     }
@@ -987,6 +1063,11 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
         }
         paso.detalles.push_back({"paginas_leidas", texto(almacen.paginas_leidas())});
         paso.detalles.push_back({"filas", texto(acceso.filas.size())});
+        if (plan.via == Via::VECTORIAL) {
+            paso.detalles.push_back({"metrica", minusculas(plan.metrica)});
+            paso.detalles.push_back({"k", texto(static_cast<std::size_t>(plan.k))});
+            paso.detalles.push_back({"distancias_calculadas", texto(static_cast<std::size_t>(calculadas))});
+        }
         if (plan.via == Via::SCAN && !condiciones.empty()) {
             paso.detalles.push_back({"nota", tabla.organizacion == Organizacion::HEAP
                                                  ? "no hay indice sobre la columna: recorrido completo"
@@ -1075,6 +1156,7 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
         const char* etiqueta = "Filter: ";
         if (!p.indice.empty()) etiqueta = "Index Cond: ";
         else if (p.operacion == "ordenamiento") etiqueta = "Sort Key: ";
+        else if (p.operacion == "knn_vectorial") etiqueta = "Order By: ";
         else if (p.operacion.rfind("busqueda", 0) == 0 || p.operacion.rfind("rango", 0) == 0) etiqueta = "Key Cond: ";
         s += "\n" + sangria + etiqueta + p.condicion;
     }
@@ -1361,6 +1443,9 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
                                                  : "el indice guarda la clave primaria: cada fila encontrada se busca por clave"});
         } else if (!plan.columna.empty()) {
             paso.detalles.push_back({"columna", plan.columna});
+            if (plan.via == Via::VECTORIAL) {
+                paso.detalles.push_back({"nota", "sin indice: calcula la distancia de cada fila y guarda las k mejores en un heap"});
+            }
         } else if (!interna.condiciones.empty()) {
             paso.detalles.push_back({"nota", "ninguna condicion se resuelve con una estructura"});
         }
@@ -1936,7 +2021,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         if (por_distancia && (hay_agregados || !s.group_by.empty())) throw std::runtime_error("ORDER BY distancia no se combina con GROUP BY ni agregados");
         if (!hay_agregados && s.group_by.empty()) {
             const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
-            if (por_distancia && !es_point) throw std::runtime_error("distancia necesita una columna POINT y " + s.order_by + " no lo es");
+            if (por_distancia) validar_distancia(tabla.columnas[col], s.order_by_punto);
             if (!por_distancia && es_point) throw std::runtime_error("no se puede ordenar por la columna POINT " + s.order_by + "; usa distancia(...)");
             if (!por_distancia && tabla.columnas[col].tipo == TipoColumna::VECTOR) {
                 throw std::runtime_error("no se puede ordenar por la columna VECTOR " + s.order_by + "; usa distancia(...)");
@@ -1946,10 +2031,11 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &traza);
         objetivo = ordenador.ordenar(std::move(objetivo), [&](const Fila& f) {
             if (!por_distancia) return f[col];
+            if (s.order_by_punto.es_vector) return Valor::de_decimal(static_cast<float>(distancia_valores(f[col], s.order_by_punto, s.order_by_metrica)));
             return Valor::de_entero(std::llround(distancia_m(f[col], s.order_by_punto, s.order_by_metrica) * 1000));
         }, s.descendente);
         PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
-        if (por_distancia) paso.detalles.push_back({"clave", "distancia en milimetros"});
+        if (por_distancia) paso.detalles.push_back({"clave", s.order_by_punto.es_vector ? "distancia " + minusculas(s.order_by_metrica) : "distancia en milimetros"});
         for (const auto& [k, v] : traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
         paso.nodo = "Sort";
         paso.relacion = tabla.nombre;
