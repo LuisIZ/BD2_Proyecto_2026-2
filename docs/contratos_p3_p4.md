@@ -11,7 +11,7 @@ del benchmark está en [busqueda_texto.md](busqueda_texto.md),
 | `motor/texto/preprocesamiento.h` | `tokenizar(texto)`, stopwords inglés y Porter |
 | `motor/texto/indice_invertido.h` | `IndiceInvertido` con bloques SPIMI y merge a disco |
 | `motor/texto/ranking.h` | `buscar(indice, consulta, k, ranking)` con TF-IDF y BM25 |
-| `motor/consultas/parser_sql.{h,cpp}` | `MATCH`, `USING TF_IDF|BM25` y `SCORE()` |
+| `motor/consultas/parser_sql.{h,cpp}` | `MATCH`, `USING TF_IDF\|BM25` y `SCORE()` |
 | `motor/vectorial/vector.h` | `Vector`, `MetricaVec` y `distancia` |
 | `api/multimedia/extraer.py` | SIFT, cuantización FAISS, histogramas TF-IDF y cache |
 | `api/multimedia/indices.py` | Adaptadores IVF/HNSW con FAISS |
@@ -81,7 +81,8 @@ void normalizar(Vector& a);
 | Coseno | 1 − a · b / (‖a‖ ‖b‖) | `cosine` |
 
 En las tres, **un valor menor es más parecido**, así que el k-NN siempre ordena de menor a
-mayor. `VECTOR(K)` se guarda en `float32` (K = 256), igual que en FAISS.
+mayor. `VECTOR(K)` se guarda en `float32` (K = 256), igual que en FAISS. El tipo, el `COPY`
+y el k-NN secuencial del motor están en [vectores.md](vectores.md).
 
 ## 3. Índices IVF y HNSW (FAISS)
 

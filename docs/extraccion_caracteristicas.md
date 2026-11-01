@@ -44,7 +44,8 @@ El resultado se escribe en `datos/productos/`:
 
 - `vocabulario_K.npy` e `idf_K.npy`
 - `vectores_<n>.npy`, matriz float32 en el orden de filas del CSV
-- `vectores_<n>.csv`, encabezado `id,vector`, con valores `VECTOR(...)`
+- `vectores_<n>.csv`, encabezado `id,vector`, con valores `VECTOR(...)`, listo para
+  `COPY` en una tabla con una columna `vector VECTOR(K)` (ver [vectores.md](vectores.md))
 - `cache/`, histogramas por imagen, invalidado si cambia imagen o vocabulario
 
 Si se procesan colecciones distintas con el mismo K y se necesitan conservar sus
