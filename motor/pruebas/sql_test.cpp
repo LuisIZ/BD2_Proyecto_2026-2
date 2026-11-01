@@ -97,6 +97,17 @@ void prueba_parser() {
     s = motor::sql::parsear("SELECT * FROM p WHERE precio <= -2.5");
     assert(s.condiciones[0].valor.es_decimal && s.condiciones[0].valor.decimal == -2.5f);
 
+    s = motor::sql::parsear(
+        "SELECT *, SCORE() AS relevancia FROM articulos "
+        "WHERE MATCH(texto, 'machine learning') USING BM25 ORDER BY relevancia DESC LIMIT 10");
+    assert(s.busqueda_texto && s.columna_texto == "texto" && s.texto_consulta == "machine learning");
+    assert(s.ranking_texto == "BM25" && s.items.size() == 1 && s.items[0].score);
+    assert(s.items[0].etiqueta() == "relevancia" && s.descendente && s.limite == 10);
+    s = motor::sql::parsear("SELECT * FROM documentos WHERE MATCH(contenido, 'base de datos') USING TF_IDF");
+    assert(s.busqueda_texto && s.ranking_texto == "TF_IDF");
+    assert(falla("SELECT * FROM t WHERE MATCH(texto, 'foo')"));
+    assert(falla("SELECT * FROM t USING BM25"));
+
     assert(falla("SELECT FROM t"));
     assert(falla("SELECT * t"));
     assert(falla("SELECT * FROM t WHERE"));
@@ -189,6 +200,25 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     assert(e.ejecutar("SELECT * FROM " + t + " WHERE Index = 50").filas.empty());
     assert(e.ejecutar("DELETE FROM " + t + " WHERE Country = 'Nadie'").afectadas == 0);
     std::cout << "organizacion " << org << ": carga, busqueda, rango, agregados, insert, delete\n";
+}
+
+void prueba_busqueda_texto() {
+    const std::string db_texto = ".build/db_sql_text_test";
+    std::filesystem::remove_all(db_texto);
+    Catalogo catalogo(db_texto);
+    Ejecutor e(catalogo);
+    e.ejecutar("CREATE TABLE texto_docs (id INT PRIMARY KEY, contenido VARCHAR(200))");
+    e.ejecutar("INSERT INTO texto_docs VALUES (1, 'Running shoes with waterproof fabric')");
+    e.ejecutar("INSERT INTO texto_docs VALUES (2, 'Trail shoes for running and hiking')");
+    e.ejecutar("INSERT INTO texto_docs VALUES (3, 'Stainless steel water bottle')");
+    Resultado r = e.ejecutar(
+        "SELECT id, SCORE() AS relevancia FROM texto_docs "
+        "WHERE MATCH(contenido, 'running shoes') USING BM25 ORDER BY relevancia DESC LIMIT 10");
+    assert(r.filas.size() == 2 && r.columnas.size() == 2);
+    assert(r.columnas[1] == "relevancia" && r.filas[0][1].es_decimal && r.filas[0][1].decimal > 0);
+    assert(tiene_paso(r, "busqueda_texto"));
+    r = e.ejecutar("SELECT * FROM texto_docs WHERE MATCH(contenido, 'water bottle') USING TF_IDF LIMIT 10");
+    assert(r.filas.size() == 1 && r.filas[0][0].entero == 3);
 }
 
 void prueba_indice_secundario(Ejecutor& e) {
@@ -654,6 +684,7 @@ int main() {
     prueba_float();
     prueba_espacial();
     prueba_matriz_indices();
+    prueba_busqueda_texto();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }

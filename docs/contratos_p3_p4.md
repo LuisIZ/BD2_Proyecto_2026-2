@@ -1,21 +1,23 @@
 # Contratos de las Partes 3 y 4
 
-Interfaces que se fijan antes de implementar la búsqueda de texto (sección 2.3) y la búsqueda
-multimedia (sección 2.4), para que cada integrante trabaje en su rama sin esperar a los demás.
-Es lo mismo que se hizo en la Parte 2 con `distancia.h` y `rtree.h`.
+Contratos de integración para la búsqueda de texto (sección 2.3) y la búsqueda multimedia
+(sección 2.4). El estado actualizado de SPIMI, SIFT/FAISS, consultas de texto y los límites
+del benchmark está en [busqueda_texto.md](busqueda_texto.md),
+[extraccion_caracteristicas.md](extraccion_caracteristicas.md) y
+[comparacion_vectorial/README.md](comparacion_vectorial/README.md).
 
-| Archivo | Qué define | Implementa |
-|---|---|---|
-| `motor/texto/preprocesamiento.h` | `tokenizar(texto)` | Jimena (#53) |
-| `motor/texto/indice_invertido.h` | `IndiceInvertido` construido con SPIMI | Jimena (#53) |
-| `motor/texto/ranking.h` | `buscar(indice, consulta, k, ranking)` con TF-IDF y BM25 | Noé (#54) |
-| `motor/vectorial/vector.h` | `Vector`, `MetricaVec` y `distancia` | listo (#50) |
-| `api/multimedia/indices.py` | `IndiceVectorial` para IVF y HNSW con FAISS | Dayane (#60), Luis (#61) |
-| `motor/pruebas/texto_test.cpp` | pruebas de aceptación de texto | se agrega a `TESTS` en el PR de #53 |
-| `motor/pruebas/vectorial_test.cpp` | pruebas de las tres métricas | ya está en `make test` |
-
-Mientras un método no esté implementado lanza `no implementado` (`std::runtime_error` en C++,
-`NotImplementedError` en Python), así que el proyecto compila y `make test` sigue en verde.
+| Archivo | Qué define |
+|---|---|
+| `motor/texto/preprocesamiento.h` | `tokenizar(texto)`, stopwords inglés y Porter |
+| `motor/texto/indice_invertido.h` | `IndiceInvertido` con bloques SPIMI y merge a disco |
+| `motor/texto/ranking.h` | `buscar(indice, consulta, k, ranking)` con TF-IDF y BM25 |
+| `motor/consultas/parser_sql.{h,cpp}` | `MATCH`, `USING TF_IDF|BM25` y `SCORE()` |
+| `motor/vectorial/vector.h` | `Vector`, `MetricaVec` y `distancia` |
+| `api/multimedia/extraer.py` | SIFT, cuantización FAISS, histogramas TF-IDF y cache |
+| `api/multimedia/indices.py` | Adaptadores IVF/HNSW con FAISS |
+| `api/multimedia/bench_vectorial.py` | Ground truth Flat, IVF/HNSW, CSV, SVG y galería opcional |
+| `motor/pruebas/texto_test.cpp` | aceptación SPIMI/ranking; incluido en `make test` |
+| `motor/pruebas/vectorial_test.cpp` | pruebas de las tres métricas; incluido en `make test` |
 
 ## 1. Texto
 
