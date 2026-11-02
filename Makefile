@@ -65,7 +65,7 @@ BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_fil
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-ivf bench-vectorial bench-espacial bench-espacial-haversine bench-texto demo-transacciones clean
+.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-ivf bench-hnsw bench-vectorial bench-espacial bench-espacial-haversine bench-texto demo-transacciones clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -153,6 +153,10 @@ bench-agrupado: $(MOTOR_SQL)
 # IVF de FAISS vs fuerza bruta, 1k/10k/100k (ver docs/ivf.md)
 bench-ivf:
 	$(PYTHON) api/multimedia/bench_ivf.py
+
+# HNSW de FAISS: barrido de ef_busqueda y borrado logico con y sin reconstruir (ver docs/hnsw.md)
+bench-hnsw:
+	$(PYTHON) api/multimedia/bench_hnsw.py
 
 # comparacion vectorial (seccion 2.4.4): IVF vs HNSW vs Flat exacto vs k-NN secuencial del motor,
 # con los vectores SIFT de los 100k productos (api/multimedia/extraer.py); se miden sus primeros 1k, 10k y 100k
