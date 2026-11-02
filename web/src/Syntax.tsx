@@ -1,8 +1,10 @@
 const statements = `CREATE TABLE t FROM FILE 'datos/organizations-1000.csv'
   USING HEAP | SEQUENTIAL | BPLUS [PRIMARY KEY col] [INDEX (col, ...)];
 CREATE TABLE t (id INT PRIMARY KEY, nombre VARCHAR(40)) USING BPLUS;
+CREATE TABLE t (id INT PRIMARY KEY, precio FLOAT, lugar POINT, v VECTOR(256));
 CREATE INDEX i ON t (col) USING BPLUS;
 CREATE INDEX i ON t (texto) USING SPIMI;   -- índice invertido para MATCH, solo VARCHAR
+CREATE INDEX i ON t (lugar) USING RTREE;   -- índice espacial para POINT
 COPY t FROM FILE 'datos/organizations-1000.csv';   -- carga en una tabla ya creada
 DROP TABLE t;
 
@@ -14,6 +16,14 @@ SELECT * | col, ... | COUNT(*) | SUM(col) | AVG(col) | MIN(col) | MAX(col)
 SELECT *, SCORE() AS relevancia FROM t
   WHERE MATCH(texto, 'consulta') [AND col < v] USING TF_IDF | BM25
   [ORDER BY relevancia DESC] [LIMIT n];
+
+SELECT * FROM t WHERE distancia(lugar, POINT(lat, lon)) <= metros;
+SELECT * FROM t ORDER BY distancia(lugar, POINT(lat, lon)) LIMIT k;
+SELECT * FROM t WHERE dentro(lugar, POLYGON((lat lon, lat lon, lat lon, ...)));
+
+SELECT * FROM t ORDER BY distancia(v, VECTOR(x1, ..., x256)
+  [, 'euclidiana' | 'producto_punto' | 'coseno']) LIMIT k;
+SELECT * FROM t WHERE distancia(v, VECTOR(...), 'coseno') < 0.3;
 
 INSERT INTO t VALUES (v1, v2, ...);
 DELETE FROM t [WHERE ...];
@@ -49,6 +59,19 @@ const access = [
     "scan_completo",
     "rango_por_clave",
     "rango_por_clave",
+  ],
+  ["MATCH(col, '...') con índice SPIMI", "busqueda_texto", "busqueda_texto", "busqueda_texto"],
+  [
+    "distancia(POINT) con índice RTREE",
+    "knn_espacial / rango_espacial",
+    "knn_espacial / rango_espacial",
+    "knn_espacial / rango_espacial",
+  ],
+  [
+    "ORDER BY distancia(VECTOR) LIMIT k",
+    "knn_vectorial",
+    "knn_vectorial",
+    "knn_vectorial",
   ],
   [
     "Otra columna",

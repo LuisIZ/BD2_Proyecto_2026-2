@@ -141,3 +141,18 @@ test("MATCH real sobre productos_1k con Text Scan en el plan", async ({ page }) 
   await page.screenshot({ path: "test-results/texto.png", fullPage: true });
   expect(errors).toEqual([]);
 });
+
+test("ejemplos y sintaxis de texto, espacial y vectores", async ({ page }) => {
+  await page.goto("/");
+  const ejemplos = page.getByLabel("Ejemplos SQL");
+  const editor = page.getByRole("textbox", { name: "Editor SQL" });
+  await ejemplos.selectOption("texto");
+  await expect(editor).toHaveValue(/MATCH\(\w+, 'wooden door'\) USING BM25/);
+  await ejemplos.selectOption("knnEspacial");
+  await expect(editor).toHaveValue(/ORDER BY distancia\(\w+, POINT\(-12\.0464, -77\.0428\)\) LIMIT 5/);
+  await ejemplos.selectOption("knnVectorial");
+  await expect(editor).toHaveValue(/distancia\(\w+, VECTOR\((1, ){255}1\), 'coseno'\) LIMIT 10/);
+  await page.getByRole("button", { name: "Sintaxis", exact: true }).click();
+  await expect(page.getByText(/USING RTREE/)).toBeVisible();
+  await expect(page.getByRole("cell", { name: "ORDER BY distancia(VECTOR) LIMIT k" })).toBeVisible();
+});
