@@ -20,6 +20,11 @@ from multimedia.indices import IndiceVectorial
 TAMANOS_DEFAULT = (1_000, 10_000)
 METRICAS_DEFAULT = ("euclidean", "cosine")
 K = 10
+# barridos para la curva de recall contra tiempo
+NPROBES = (1, 2, 4, 8, 16, 32)
+EFS = (16, 32, 64, 128, 256)
+# nombre de la métrica en distancia(v, VECTOR(...), '...') del motor
+METRICA_MOTOR = {"euclidean": "euclidiana", "cosine": "coseno"}
 
 
 def _preparar(vectores, metrica):
@@ -51,8 +56,49 @@ def _tamano_disco(indice):
         return os.path.getsize(ruta)
 
 
-def benchmark_dataset(vectores, ids=None, metrica="euclidean", consultas=50, k=K, seed=7):
-    """Devuelve mediciones para una colección; Flat FAISS es el ground truth exacto."""
+def _literal_vector(v):
+    return "VECTOR(" + ",".join(f"{x:.8g}" for x in v) + ")"
+
+
+def benchmark_motor(motor, vectores, ids, metrica, consultas_np, exactos, k):
+    """k-NN secuencial del motor C++ (ORDER BY distancia(...) LIMIT k, docs/vectores.md).
+
+    Carga los vectores en una tabla HEAP con COPY y mide con el tiempo que informa el motor,
+    sin contar el arranque del proceso. Con el mismo ground truth, su recall debe ser 1."""
+    tabla = f"vec_{len(vectores)}"
+    with tempfile.TemporaryDirectory() as carpeta:
+        ruta = Path(carpeta) / "vectores.csv"
+        with ruta.open("w", encoding="utf-8", newline="") as archivo:
+            archivo.write("id,v\n")
+            for id_doc, v in zip(ids, vectores):
+                archivo.write(f'{id_doc},"{_literal_vector(v)}"\n')
+        motor.ejecutar(f"DROP TABLE {tabla}")  # el motor no tiene IF EXISTS; si no existe, falla y da igual
+        respuestas = motor.ejecutar(
+            f"CREATE TABLE {tabla} (id INT PRIMARY KEY, v VECTOR({vectores.shape[1]})) USING HEAP; "
+            f"COPY {tabla} FROM FILE '{ruta.as_posix()}'")
+    for respuesta in respuestas:
+        if not respuesta["ok"]:
+            raise RuntimeError(f"el motor no cargo los vectores: {respuesta['error']}")
+    tiempos, obtenidos = [], []
+    for consulta in consultas_np:
+        r = motor.ejecutar(f"SELECT id FROM {tabla} ORDER BY distancia(v, {_literal_vector(consulta)}, "
+                           f"'{METRICA_MOTOR[metrica]}') LIMIT {k}")[0]
+        if not r["ok"]:
+            raise RuntimeError(f"k-NN del motor: {r['error']}")
+        tiempos.append(r["tiempo_ms"])
+        obtenidos.append([fila[0] for fila in r["filas"]])
+    return {
+        "n": len(vectores), "dimension": vectores.shape[1], "metrica": metrica, "indice": "motor_secuencial",
+        "parametros": "Seq Vector Scan, heap de k", "construccion_ms": 0.0,
+        "consulta_ms": float(np.mean(tiempos)), "recall_at_10": _recall(obtenidos, exactos),
+        "memoria_index_bytes": 0, "disco_index_bytes": 0,
+    }
+
+
+def benchmark_dataset(vectores, ids=None, metrica="euclidean", consultas=50, k=K, seed=7, motor=None):
+    """Devuelve mediciones para una colección; Flat FAISS es el ground truth exacto.
+
+    Con `motor` (un MotorSQL de api/motor_cli.py) agrega el k-NN secuencial del motor C++."""
     vectores = np.ascontiguousarray(vectores, dtype=np.float32)
     if vectores.ndim != 2 or not len(vectores) or not vectores.shape[1]:
         raise ValueError("vectores debe tener forma (n, dimension) con n y dimension mayores que cero")
@@ -91,7 +137,7 @@ def benchmark_dataset(vectores, ids=None, metrica="euclidean", consultas=50, k=K
     inicio = time.perf_counter()
     ivf.construir(vectores, ids)
     construccion_ivf = (time.perf_counter() - inicio) * 1000
-    for nprobe in sorted({1, min(8, nlist), nlist}):
+    for nprobe in sorted({p for p in NPROBES if p < nlist} | {nlist}):
         ivf.parametros["nprobe"] = nprobe
         inicio = time.perf_counter()
         resultados = [ivf.knn(consulta, k) for consulta in consultas_np]
@@ -109,7 +155,7 @@ def benchmark_dataset(vectores, ids=None, metrica="euclidean", consultas=50, k=K
     inicio = time.perf_counter()
     hnsw.construir(vectores, ids)
     construccion_hnsw = (time.perf_counter() - inicio) * 1000
-    for ef in sorted({16, 64, min(128, len(x))}):
+    for ef in sorted({min(ef, len(x)) for ef in EFS}):
         hnsw.parametros["ef_busqueda"] = ef
         inicio = time.perf_counter()
         resultados = [hnsw.knn(consulta, k) for consulta in consultas_np]
@@ -123,6 +169,8 @@ def benchmark_dataset(vectores, ids=None, metrica="euclidean", consultas=50, k=K
             "memoria_index_bytes": hnsw.tamano_en_disco(),
             "disco_index_bytes": _tamano_disco(hnsw.indice),
         })
+    if motor is not None:
+        filas.append(benchmark_motor(motor, vectores, ids, metrica, consultas_np, exactos, k))
     return filas
 
 
@@ -152,7 +200,7 @@ def _graficar_svg(filas, destino, metrica, campo, titulo):
     xmin, xmax = math.log10(min(ns)), math.log10(max(ns)) if len(ns) > 1 else math.log10(min(ns) * 10)
     px = lambda n: left + (math.log10(n) - xmin) / (xmax - xmin) * (width - left - right)
     py = lambda y: height - bottom - y / ymax * (height - top - bottom)
-    colores = {"secuencial_exact": "#555", "IVF": "#1677c8", "HNSW": "#e87519"}
+    colores = {"secuencial_exact": "#555", "IVF": "#1677c8", "HNSW": "#e87519", "motor_secuencial": "#1baf7a"}
     elementos = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
                  '<rect width="100%" height="100%" fill="white"/>',
                  f'<text x="{width/2}" y="24" text-anchor="middle" font-family="sans-serif" font-size="16">{titulo} ({metrica})</text>',
@@ -272,18 +320,24 @@ def main():
     parser.add_argument("--productos-csv", help="CSV productos_<n>.csv para la galeria")
     parser.add_argument("--imagenes", help="raiz de imagenes extraidas para la galeria")
     parser.add_argument("--galerias", default=os.fspath(RAIZ / "docs" / "comparacion_vectorial" / "galerias"))
+    parser.add_argument("--motor", action="store_true",
+                        help="medir también el k-NN secuencial del motor C++ (base en .build/bench_vectorial)")
     args = parser.parse_args()
 
     todos = np.load(args.vectores, allow_pickle=False).astype(np.float32) if args.vectores else vectores_sinteticos(max(args.tamanos))
     ids = np.load(args.ids, allow_pickle=False).astype(np.int64) if args.ids else np.arange(1, len(todos) + 1)
     if len(ids) != len(todos):
         parser.error("--ids debe tener un id por fila de --vectores")
+    motor = None
+    if args.motor:
+        from motor_cli import MotorSQL
+        motor = MotorSQL(db=RAIZ / ".build" / "bench_vectorial")
     filas = []
     for n in args.tamanos:
         if n <= 0 or n > len(todos):
             parser.error(f"el tamaño {n} no es válido para {len(todos)} vectores")
         for metrica in args.metricas:
-            filas.extend(benchmark_dataset(todos[:n], ids[:n], metrica, args.consultas))
+            filas.extend(benchmark_dataset(todos[:n], ids[:n], metrica, args.consultas, motor=motor))
 
     columnas = ["n", "dimension", "metrica", "indice", "parametros", "construccion_ms",
                 "consulta_ms", "recall_at_10", "memoria_index_bytes", "disco_index_bytes"]
