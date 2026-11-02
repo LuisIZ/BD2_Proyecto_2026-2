@@ -53,9 +53,9 @@ vectores para consultas futuras, usa un archivo IDF distinto con `--idf` para ca
 coleccion y selecciona el correspondiente mediante `BD2_IDF_VISUAL`. El archivo IDF
 predeterminado se reemplaza en cada ejecucion.
 
-El CSV deja los IDs del dataset junto a los vectores, pero el motor SQL aún no acepta el
-tipo `VECTOR` en `COPY`; su integración corresponde al trabajo de tipos/consultas
-vectoriales. El `.npy` ya es directamente utilizable por FAISS y por el benchmark.
+El CSV deja los IDs del dataset junto a los vectores y se carga en el motor con `COPY` sobre
+una tabla con una columna `VECTOR(256)` ([vectores.md](vectores.md)). El `.npy` es el que
+usan FAISS y los benchmarks.
 
 ## Ejecución y configuración
 
@@ -74,9 +74,10 @@ vectoriales. El `.npy` ya es directamente utilizable por FAISS y por el benchmar
 personalizados. Después de generar los artefactos se puede seleccionar el modelo para
 `extract_features(ruta)` con `BD2_K`, `BD2_VOCABULARIO` y `BD2_IDF_VISUAL`.
 
-El tiempo total se imprime al final de cada corrida para anotar el caso de 100k. No se
-publican tiempos de 100k en este repositorio porque ese conjunto requiere extraer las
-imágenes y ejecutar el pipeline en la máquina que lo procesa.
+El tiempo total se imprime al final de cada corrida. Con los 100 000 productos, 7 procesos
+y el vocabulario entrenado con 1 000 000 de descriptores, la extracción completa tomó unos
+19 minutos en una laptop
+([comparacion_vectorial/README.md](comparacion_vectorial/README.md)).
 
 ## Dependencias y pruebas
 
@@ -91,5 +92,6 @@ $env:PYTHONPATH = "$PWD\api"
 
 La prueba de SIFT verifica dimensión 128, vector estable para la misma imagen, norma L2 y
 vecindad entre una imagen y otra escalada/rotada. La prueba de benchmark usa colecciones
-sintéticas de 1k y 10k para cubrir el código de IVF/HNSW, no reemplaza una corrida con las
-imágenes reales de los CSV.
+sintéticas de 1k y 10k para cubrir el código de IVF/HNSW; la corrida con los vectores reales
+de los 100k productos está en
+[comparacion_vectorial/README.md](comparacion_vectorial/README.md).

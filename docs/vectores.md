@@ -151,8 +151,11 @@ Output: id
 
 Con 20 000 vectores aleatorios de dimensión 256 en un heap file (3 registros de 1 KB por página
 de 4 KB, 6 667 páginas), la consulta de los 10 vecinos por coseno tarda unos 78 ms, y el vecino
-más cercano de una fila de la tabla es ella misma. La comparación con IVF y HNSW sobre los
-vectores reales de ABO se hace en #63 (`docs/comparacion_vectorial/`).
+más cercano de una fila de la tabla es ella misma. Con los vectores reales de los 100 000
+productos de ABO, el k-NN secuencial tarda unos 488 ms por consulta (lee las 33 334 páginas de
+la tabla), mientras que IVF con `nprobe = 8` y HNSW con `ef_busqueda = 64` responden en menos
+de 1 ms con un Recall@10 de entre 0,89 y 0,98
+([comparacion_vectorial/README.md](comparacion_vectorial/README.md)).
 
 ## 6. Relación con IVF, HNSW y SIMILAR_TO
 

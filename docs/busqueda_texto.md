@@ -38,10 +38,47 @@ El directorio final en memoria contiene término → offset/df (no termIDs); `po
 lee desde ese offset y devuelve la lista en orden de `doc_id`. Los bloques temporales se
 eliminan al terminar el merge.
 
+```mermaid
+flowchart LR
+    D["documentos<br/>doc_id creciente"] --> T["tokenizar<br/>minúsculas, stopwords, Porter"]
+    T --> B["bloque en memoria<br/>hash término → postings"]
+    B -->|"llega al límite (4 MB)"| O["ordenar sus términos<br/>y escribir bloque_i.bin"]
+    O -->|"bloque vacío, sigue"| B
+    O --> M["merge k-way<br/>cola de prioridad por término"]
+    M --> F["indice_spimi.bin<br/>postings (doc_id, tf)"]
+    M --> META["indice_meta.bin<br/>término → offset, df<br/>largos y normas"]
+```
+
+En el merge, la cola tiene el término actual de cada bloque. Se saca el menor, se juntan las
+listas de todos los bloques que lo tienen en el orden de los bloques (que es el de `doc_id`,
+porque los documentos llegan en orden) y se escribe una sola lista en el archivo final. Solo
+hay en memoria una entrada por bloque, no los bloques enteros.
+
 `agregar` exige IDs estrictamente crecientes y `construir` cierra la carga. Los metadatos
 de largo de documento y norma lnc se mantienen para calcular ranking. Las estadísticas
 `paginas_leidas()` y `tamano_en_disco()` reflejan lecturas de postings y el archivo final,
 respectivamente.
+
+### Dónde vive el diccionario
+
+El diseño inicial proponía dejar el diccionario final en páginas ordenadas, con búsqueda
+binaria, o en un B+ con claves `VARCHAR`. Se eligió mantenerlo en memoria: `construir()` lo
+arma y `abrir()` lo carga en un `unordered_map` término → (offset, df), y se guarda en
+`indice_meta.bin`. Los postings sí quedan en disco, en `indice_spimi.bin`, y una consulta
+solo lee las listas de sus términos.
+
+- Ubicar un término cuesta O(1) y ninguna lectura de disco. Las páginas que informa
+  `EXPLAIN ANALYZE` son solo las de postings: los bytes de cada lista leída divididos entre
+  4 KB, redondeando hacia arriba.
+- El costo es memoria proporcional al vocabulario, no a la cantidad de documentos. Con los
+  10 000 productos hay 8 108 términos, unos 0,2 MB de `indice_meta.bin` (los otros 0,2 MB son
+  el largo y la norma de cada documento). El vocabulario crece mucho más lento que la
+  colección (ley de Heaps), así que con el tamaño del proyecto cabe en memoria con holgura.
+- Abrir el índice lee `indice_meta.bin` completo una sola vez.
+- Si el vocabulario no cupiera en memoria, la alternativa sería la de la clase: escribir el
+  diccionario ordenado en páginas de 4 KB y ubicar el término con búsqueda binaria sobre ellas
+  (unas log2(páginas) lecturas) o con el B+ del motor sobre claves `VARCHAR`. No se
+  implementó.
 
 ## Ranking
 
@@ -109,9 +146,16 @@ mingw32-make .build/texto_test.exe .build/sql_test.exe
 scores contra cálculos en memoria para consultas de 1, 3 y 5 o más palabras. `sql_test`
 verifica parser y búsquedas SQL con las dos técnicas.
 
-## Comparación experimental pendiente
+## Comparación experimental
 
-La comparación de 1k/10k/100k documentos, longitudes de consulta 1/3/5+, juicio de
-relevancia y PostgreSQL GIN no se ejecuta todavía desde este cambio. Requiere un benchmark
-dedicado que controle el servidor PostgreSQL y un conjunto de relevancia anotado; los tests
-unitarios de ranking no sustituyen esas mediciones.
+La comparación con 1k, 10k y 100k productos, consultas de 1, 3 y 5 o más palabras, juicios
+de relevancia y el GIN de PostgreSQL está en
+[comparacion_texto/README.md](comparacion_texto/README.md) (`make bench-texto`). En resumen:
+
+- Con 100k productos y consultas de 5 o más palabras, SPIMI responde en 7,9 ms y GIN en
+  48,8 ms: el score sale de los postings, mientras que GIN tiene que leer cada fila candidata
+  para calcular `ts_rank`.
+- Sobre 10 000 productos, BM25 tiene la mejor precisión del motor (Precision@10 de 0,507
+  contra 0,360 de TF-IDF), casi igual a GIN (0,533).
+- SPIMI ocupa unas 3 veces más que GIN (48,3 MB contra 15,2 MB con 100k), porque sus
+  postings no están comprimidos y guardan el `tf`.
