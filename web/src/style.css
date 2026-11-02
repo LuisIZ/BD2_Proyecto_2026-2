@@ -478,6 +478,74 @@ td.score-cell {
 .score-value {
   position: relative;
 }
+/* búsqueda por similitud: galería de miniaturas en el orden del ranking */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 12px 16px 16px;
+  list-style: none;
+  max-height: 520px;
+  overflow: auto;
+}
+.gallery-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.gallery-item img,
+.gallery-missing {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 4px;
+  object-fit: contain;
+  background: #f4f6f4;
+}
+.gallery-missing {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.gallery-rank {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.gallery-name {
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gallery-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .row-number {
   width: 40px;
   color:#8d968f;

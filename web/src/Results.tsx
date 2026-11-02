@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Cell, Result } from "./types";
 import PlanGraph, { stepPages } from "./PlanGraph";
 import { highlight, parseTextSearch } from "./textSearch";
+import Gallery, { galleryColumns, parseSimilarSearch } from "./Gallery";
 
 function Highlighted({ text, stems }: { text: string; stems: string[] }) {
   return (
@@ -26,6 +27,7 @@ export function Results({
   onRowSelect?: (row: Cell[], columns: string[]) => void;
 }) {
   const [page, setPage] = useState(0);
+  const [layout, setLayout] = useState<"galeria" | "tabla">("galeria");
   const rows = result?.filas ?? [];
   const columns = result?.columnas ?? [];
   const pages = Math.max(1, Math.ceil(rows.length / 50));
@@ -40,6 +42,11 @@ export function Results({
     0,
     ...rows.map((row) => Number(row[scoreIndex]) || 0),
   );
+  const similar = result?.ok ? parseSimilarSearch(sql) : undefined;
+  // la galería necesita la columna id para pedir cada miniatura
+  const canShowGallery =
+    !!similar && rows.length > 0 && galleryColumns(columns, rows, similar).id >= 0;
+  const showGallery = canShowGallery && layout === "galeria";
 
   function download() {
     const escape = (value: unknown) =>
@@ -65,9 +72,24 @@ export function Results({
     >
       <div className="panel-heading">
         <h2 id="results-title">Resultados</h2>
-        <button onClick={download} disabled={!rows.length || busy}>
-          Exportar CSV
-        </button>
+        <div className="panel-actions">
+          {canShowGallery && (
+            <div className="segmented" role="group" aria-label="Vista de resultados">
+              {(["galeria", "tabla"] as const).map((item) => (
+                <button
+                  key={item}
+                  aria-pressed={layout === item}
+                  onClick={() => setLayout(item)}
+                >
+                  {item === "galeria" ? "Galería" : "Tabla"}
+                </button>
+              ))}
+            </div>
+          )}
+          <button onClick={download} disabled={!rows.length || busy}>
+            Exportar CSV
+          </button>
+        </div>
       </div>
       {!result ? (
         <p className="empty-small">Sin resultados.</p>
@@ -100,7 +122,28 @@ export function Results({
               )}
             </p>
           )}
-          {columns.length > 0 ? (
+          {similar && (
+            <p className="text-search" role="note">
+              Búsqueda por similitud
+              {similar.index ? ` con ${similar.index}` : " (k-NN secuencial)"}
+              {similar.metric ? `, métrica ${similar.metric}` : ""}
+              {similar.k ? `, k = ${similar.k}` : ""}
+              {!canShowGallery && rows.length > 0 && (
+                <span className="muted">
+                  {" "}
+                  · incluye la columna id en el SELECT para ver la galería
+                </span>
+              )}
+            </p>
+          )}
+          {showGallery && similar ? (
+            <Gallery
+              columns={columns}
+              rows={rows.slice(current * 50, (current + 1) * 50)}
+              search={similar}
+              offset={current * 50}
+            />
+          ) : columns.length > 0 ? (
             <div className="table-scroll">
               <table>
                 <caption className="sr-only">
