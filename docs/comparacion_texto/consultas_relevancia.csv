@@ -1,0 +1,31 @@
+consulta,texto,tipo,categoria_termina_en,relevantes_10k
+1,running shoes for men,SHOES,Men's Shoes/Sports & Outdoor Shoes/Running Shoes,49
+2,ottoman footstool,OTTOMAN,Accent Furniture/Ottomans,33
+3,bar stool,STOOL_SEATING,Home Bar Furniture/Barstools,30
+4,table lamp,LAMP,Lamps & Shades/Table Lamps,25
+5,flip wallet phone case,CELLULAR_PHONE_CASE,Cases & Covers/Flip & Wallet Cases,24
+6,dining chair,CHAIR,Kitchen & Dining Room Furniture/Chairs,24
+7,top handle handbag,HANDBAG,Handbags/Top-Handle Bags,22
+8,bed headboard,HEADBOARD,Headboards & Footboards/Headboards,19
+9,women earrings,FINEEARRING,Women/Jewelry/Earrings,19
+10,men loafers,SHOES,Casual Shoes/Loafers & Moccasins,20
+11,storage box with lid,HOME,Storage Boxes & Chests/Storage Boxes,18
+12,bed frame,BED,"Beds, Frames & Bases/Beds",17
+13,statement ring,FINERING,Jewelry/Rings/Statement,23
+14,wall clock,HOME_FURNITURE_AND_DECOR,Clocks/Wall Clocks,16
+15,women running shoes,SHOES,Women's Shoes/Sports & Outdoor Shoes/Running Shoes,16
+16,end table,TABLE,Tables/End Tables,17
+17,women fashion sneakers,SHOES,Fashion & Athletic Trainers/Fashion Trainers,26
+18,women sandals,SANDAL,Sandals & Slides/Fashion Sandals,13
+19,women slippers,SHOES,Women's Shoes/Fashion Slippers,13
+20,pendant necklace,FINENECKLACEBRACELETANKLET,Necklaces/Pendant Necklaces,12
+21,ballet flats,SHOES,Women's Shoes/Ballet Flats,12
+22,balaclava face mask,HAT,Hats & Caps/Balaclavas,16
+23,coffee table,TABLE,Tables/Coffee Tables,15
+24,stud earrings,FINEEARRING,Earrings/Stud,11
+25,wall stickers,HOME_FURNITURE_AND_DECOR,Wall Stickers & Murals,11
+26,clutch bag,HANDBAG,"Handbags, Purses & Clutches/Clutches",10
+27,sofa couch,SOFA,Living Room Furniture/Sofas & Couches,84
+28,trail mix snack,SNACK_MIX,Snack & Trail Mixes,10
+29,wall sconce,LIGHT_FIXTURE,Wall Lights/Wall Lamps & Sconces,10
+30,flower planter,PLANTER,"Pots, Planters & Container Accessories/Planters",10
