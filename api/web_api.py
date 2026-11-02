@@ -230,19 +230,24 @@ def experimentos():
 DATOS = Path(os.environ.get("BD2_DATOS", r"C:\datos_bd2"))
 CARPETAS_IMAGENES = [DATOS / "imagenes", DATOS / "imagenes_10k", DATOS / "imagenes_1k"]
 _rutas_imagenes = None
+_lock_imagenes = threading.Lock()
 
 
 def rutas_imagenes():
     """id del producto -> ruta de su imagen, leida del CSV de productos mas grande que haya.
     Los CSV son anidados (1k dentro de 10k dentro de 100k): un id es el mismo producto en los tres."""
     global _rutas_imagenes
-    if _rutas_imagenes is None:
-        candidatos = [RAIZ / "datos" / f"productos_{n}.csv" for n in ("100k", "10k", "1k")]
-        ruta = next((c for c in candidatos if c.is_file()), None)
-        _rutas_imagenes = {}
-        if ruta:
-            with ruta.open(encoding="utf-8", newline="") as archivo:
-                _rutas_imagenes = {int(fila["id"]): fila["imagen"] for fila in csv.DictReader(archivo)}
+    # la galeria pide varias miniaturas a la vez: el CSV se lee una sola vez y el
+    # diccionario se publica ya completo, para que ninguna peticion lo vea a medias
+    with _lock_imagenes:
+        if _rutas_imagenes is None:
+            candidatos = [RAIZ / "datos" / f"productos_{n}.csv" for n in ("100k", "10k", "1k")]
+            ruta = next((c for c in candidatos if c.is_file()), None)
+            rutas = {}
+            if ruta:
+                with ruta.open(encoding="utf-8", newline="") as archivo:
+                    rutas = {int(fila["id"]): fila["imagen"] for fila in csv.DictReader(archivo)}
+            _rutas_imagenes = rutas
     return _rutas_imagenes
 
 
