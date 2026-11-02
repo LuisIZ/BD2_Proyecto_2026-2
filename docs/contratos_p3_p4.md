@@ -94,6 +94,9 @@ explicar cómo funcionan por dentro y qué significa cada parámetro (eso va en 
 IndiceVectorial(tipo, metrica, **parametros)
     construir(vectores, ids)    # numpy float32 (n, K) e ids = claves primarias de la tabla
     knn(consulta, k)            # [(id, distancia), ...] de menor a mayor distancia
+    insertar(vectores, ids)     # sin reconstruir; error si un id ya está
+    eliminar(ids)               # devuelve cuántos estaban; los que no están se ignoran
+    cantidad()                  # vectores vivos
     guardar(ruta) / cargar(ruta)
     tamano_en_disco()
 ```
@@ -101,12 +104,17 @@ IndiceVectorial(tipo, metrica, **parametros)
 | Tipo | Clase de FAISS | Parámetros (por defecto) |
 |---|---|---|
 | `IVF` | `IndexIVFFlat` | `nlist` = 100 listas, `nprobe` = 8 listas revisadas por consulta |
-| `HNSW` | `IndexHNSWFlat` | `M` = 32 vecinos por nodo, `ef_construccion` = 40, `ef_busqueda` = 16 |
+| `HNSW` | `IndexHNSWFlat` | `M` = 32 vecinos por nodo, `ef_construccion` = 40, `ef_busqueda` = 16, `umbral_reconstruccion` = 0,30 |
 
 FAISS devuelve la euclidiana al cuadrado y, con producto interno, una similitud (mayor es
 mejor). El adaptador las convierte a la convención de `vector.h`, para que el Recall@10
 compare lo mismo que el motor. El coseno se hace con métrica de producto interno sobre
 vectores normalizados con `faiss.normalize_L2`, que equivale a `normalizar` en C++.
+
+`insertar` y `eliminar` mantienen el índice al día cuando la tabla cambia, sin reconstruirlo.
+El IVF borra de verdad (`remove_ids`). El HNSW no puede: marca la posición interna del vector
+como borrada, la búsqueda la salta, y al pasar el 30 % de borrados se reconstruye solo con los
+vivos (detalle en `docs/hnsw.md`). En los dos, los ids son las pk de la tabla y deben ser únicos.
 
 ## 4. Flujo
 
