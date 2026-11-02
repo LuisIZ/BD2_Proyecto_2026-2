@@ -58,14 +58,14 @@ MOTOR_SQL := $(BUILD)/motor_sql$(EXE)
 
 TESTS := pagina_slotted_test heap_file_test sequential_file_test bplus_agrupado_test \
          extendible_hash_test hash_disco_test distancia_test rtree_test transacciones_test external_algorithms_test sql_test \
-         vectorial_test
+         vectorial_test texto_test
 BENCHS := heap_file_bench sequential_file_bench bplus_agrupado_csv_test heap_file_escala_test indices_bench \
           extendible_hash_csv_test ejemplo_heap transacciones_demo espacial_bench
 
 TEST_BIN  := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(TESTS)))
 BENCH_BIN := $(addprefix $(BUILD)/,$(addsuffix $(EXE),$(BENCHS)))
 
-.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-ivf bench-espacial bench-espacial-haversine demo-transacciones clean
+.PHONY: all run setup gui motor test bench bench-indices bench-agrupado bench-ivf bench-vectorial bench-espacial bench-espacial-haversine demo-transacciones clean
 .SECONDARY:   # conserva todos los .o intermedios
 
 all: motor
@@ -89,6 +89,7 @@ test: $(TEST_BIN)
 	$(call RUN,$(BUILD)/external_algorithms_test$(EXE))
 	$(call RUN,$(BUILD)/sql_test$(EXE))
 	$(call RUN,$(BUILD)/vectorial_test$(EXE))
+	$(call RUN,$(BUILD)/texto_test$(EXE))
 	@echo todo verde
 
 bench: $(BUILD)/heap_file_bench$(EXE) $(BUILD)/sequential_file_bench$(EXE) $(BUILD)/bplus_agrupado_csv_test$(EXE)
@@ -145,6 +146,10 @@ bench-agrupado: $(MOTOR_SQL)
 # IVF de FAISS vs fuerza bruta, 1k/10k/100k (ver docs/ivf.md)
 bench-ivf:
 	$(PYTHON) api/multimedia/bench_ivf.py
+
+# IVF vs HNSW vs ground truth exacto (FAISS Flat), 1k/10k por defecto
+bench-vectorial:
+	$(PYTHON) api/multimedia/bench_vectorial.py
 
 # --- reglas ---
 

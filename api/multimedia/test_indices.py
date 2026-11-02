@@ -93,5 +93,36 @@ class PruebasIVF(unittest.TestCase):
             IndiceVectorial("IVF", "cosine").knn(self.consultas[0], 10)
 
 
+class PruebasHNSW(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.vectores = datos_agrupados(3000)
+        cls.ids = np.arange(1, 3001) * 10
+        cls.consultas = datos_agrupados(20, semilla=99)
+
+    def test_busqueda_y_metricas(self):
+        for metrica in METRICAS:
+            with self.subTest(metrica=metrica):
+                indice = IndiceVectorial(
+                    "HNSW", metrica, M=32, ef_construccion=100, ef_busqueda=256
+                ).construir(self.vectores, self.ids)
+                recalls = [
+                    recall(indice.knn(consulta, 10), fuerza_bruta(self.vectores, self.ids, consulta, 10, metrica))
+                    for consulta in self.consultas
+                ]
+                self.assertGreaterEqual(float(np.mean(recalls)), 0.9)
+
+    def test_guardar_y_cargar(self):
+        indice = IndiceVectorial("HNSW", "cosine", M=24, ef_busqueda=64).construir(
+            self.vectores, self.ids
+        )
+        with tempfile.TemporaryDirectory() as carpeta:
+            ruta = os.path.join(carpeta, "hnsw.index")
+            indice.guardar(ruta)
+            self.assertEqual(indice.tamano_en_disco(), os.path.getsize(ruta))
+            cargado = IndiceVectorial("HNSW", "cosine", ef_busqueda=64).cargar(ruta)
+            self.assertEqual(cargado.knn(self.consultas[0], 10), indice.knn(self.consultas[0], 10))
+
+
 if __name__ == "__main__":
     unittest.main()

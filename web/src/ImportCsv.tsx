@@ -89,7 +89,6 @@ export default function ImportCsv({
   }, [source, dataset, file]);
 
   const integers = columns.filter((column) => column.tipo === "INT");
-  const canIndex = organization === "HEAP";
   const toggleIndex = (name: string) =>
     setIndexes((current) =>
       current.includes(name)
@@ -114,7 +113,7 @@ export default function ImportCsv({
         nombre: name,
         organizacion: organization,
         clave: key || null,
-        indices: canIndex ? indexes : [],
+        indices: indexes,
         ...(source === "local"
           ? { contenido: await file!.text() }
           : { dataset }),
@@ -245,7 +244,7 @@ export default function ImportCsv({
             </small>
           </label>
           {integers.length > 1 && (
-            <fieldset className="checks" disabled={!canIndex}>
+            <fieldset className="checks">
               <legend>Índices B+ no agrupados</legend>
               {integers
                 .filter((column) => column.nombre !== key)
@@ -260,9 +259,8 @@ export default function ImportCsv({
                   </label>
                 ))}
               <small>
-                {canIndex
-                  ? "Aceleran las búsquedas por esa columna a cambio de espacio y de mantenimiento en cada INSERT."
-                  : "Solo se admiten sobre Heap: las otras organizaciones reubican los registros."}
+                Aceleran las búsquedas por esa columna a cambio de espacio y de
+                mantenimiento en cada INSERT.
               </small>
             </fieldset>
           )}

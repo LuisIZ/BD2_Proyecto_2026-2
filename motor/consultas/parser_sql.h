@@ -11,15 +11,17 @@ namespace sql {
 
 // Gramática soportada (palabras clave sin distinguir mayúsculas):
 //
-//   CREATE TABLE t (col INT [PRIMARY KEY], col FLOAT, col VARCHAR(n), col POINT, ...) [USING HEAP|SEQUENTIAL|BPLUS]
+//   CREATE TABLE t (col INT [PRIMARY KEY], col FLOAT, col VARCHAR(n), col POINT, col VECTOR(k), ...) [USING HEAP|SEQUENTIAL|BPLUS]
 //   CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 //   COPY t FROM FILE 'ruta.csv'
-//   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE]
+//   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE|SPIMI]
 //   DROP TABLE t
 //   INSERT INTO t VALUES (v1, v2, ...)
 //   DELETE FROM t [WHERE cond]
 //   SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
-//     FROM t [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
+//     FROM t [WHERE cond [AND cond]... [AND MATCH(columna, 'consulta')]]
+//     [USING TF_IDF|BM25] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
+//   SCORE() se proyecta como columna; admite AS alias.
 //   SHOW TABLES
 //   DESCRIBE t
 //   EXPLAIN [ANALYZE] <sentencia>
@@ -27,9 +29,10 @@ namespace sql {
 //
 //   cond  := col (= | != | <> | < | <= | > | >=) valor | col BETWEEN a AND b
 //          | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+//          | distancia(col, VECTOR(x1, ..., xk) [, 'euclidiana' | 'producto_punto' | 'coseno']) (< | <= | > | >=) numero
 //          | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
-//   valor := entero | decimal | 'texto' | POINT(lat, lon)
-//   ORDER BY también acepta distancia(col, POINT(lat, lon) [, metrica]) para los k vecinos más cercanos.
+//   valor := entero | decimal | 'texto' | POINT(lat, lon) | VECTOR(x1, x2, ..., xk)
+//   ORDER BY también acepta distancia(col, POINT(...) | VECTOR(...) [, metrica]) para los k vecinos más cercanos.
 //
 // EXPLAIN devuelve el plan sin tocar los datos; con ANALYZE lo ejecuta y añade
 // las filas, páginas y tiempos reales de cada nodo.
@@ -58,8 +61,8 @@ enum class TipoSentencia {
 
 struct ColumnaDef {
     std::string nombre;
-    std::string tipo;  // INT | FLOAT | VARCHAR | POINT
-    int tam = 0;       // largo máximo de VARCHAR
+    std::string tipo;  // INT | FLOAT | VARCHAR | POINT | VECTOR
+    int tam = 0;       // largo máximo de VARCHAR o dimensiones de VECTOR
     bool pk = false;
 };
 
@@ -69,15 +72,19 @@ struct Condicion {
     Valor valor;
     Valor hasta;     // solo BETWEEN
     std::string funcion;  // DISTANCIA | DENTRO, vacía si se compara la columna
-    Valor punto;          // solo DISTANCIA
-    std::string metrica;  // HAVERSINE | EUCLIDIANA
+    Valor punto;          // solo DISTANCIA: POINT o VECTOR
+    std::string metrica;  // POINT: HAVERSINE | EUCLIDIANA; VECTOR: EUCLIDIANA | PRODUCTO_PUNTO | COSENO
     std::vector<Valor> poligono;  // solo DENTRO: vértices en orden
 };
 
 struct ItemSelect {
     std::string columna;   // vacía para COUNT(*)
     std::string agregado;  // vacía, COUNT, SUM, AVG, MIN, MAX
+    std::string alias;
+    bool score = false;
     std::string etiqueta() const {
+        if (!alias.empty()) return alias;
+        if (score) return "score";
         if (agregado.empty()) return columna;
         return agregado + "(" + (columna.empty() ? "*" : columna) + ")";
     }
@@ -103,6 +110,10 @@ struct Sentencia {
 
     std::vector<Valor> valores;         // INSERT
     std::vector<Condicion> condiciones; // WHERE, unidas por AND
+    bool busqueda_texto = false;
+    std::string columna_texto;
+    std::string texto_consulta;
+    std::string ranking_texto;  // TF_IDF | BM25
 
     bool todas_las_columnas = false;
     std::vector<ItemSelect> items;

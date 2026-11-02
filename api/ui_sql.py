@@ -25,7 +25,7 @@ SELECT Index, Name, Country, Founded FROM organizaciones WHERE Index = 500;
 SELECT Index, Name FROM organizaciones WHERE Index BETWEEN 10 AND 20;
 SELECT Country, COUNT(*), AVG(Number_of_employees) FROM organizaciones GROUP BY Country ORDER BY Country LIMIT 10;
 
--- Indice secundario (solo sobre tablas HEAP)
+-- Indice secundario
 -- CREATE INDEX idx_founded ON organizaciones (Founded);
 
 -- Modificaciones

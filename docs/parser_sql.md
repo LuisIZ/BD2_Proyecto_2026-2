@@ -4,7 +4,7 @@
 
 | Archivo | Qué es |
 |---|---|
-| `motor/consultas/valor.h` | `Valor` (entero o texto) y `Fila`. |
+| `motor/consultas/valor.h` | `Valor` (entero, decimal, texto, punto o vector) y `Fila`. |
 | `motor/consultas/parser_sql.{h,cpp}` | Lexer + parser de descenso recursivo. Devuelve una `Sentencia`. |
 | `motor/consultas/catalogo.{h,cpp}` | Esquema de tablas, índices, serialización de filas a bytes y persistencia en `catalogo.txt`. |
 | `motor/consultas/ejecutor.{h,cpp}` | Planificador de acceso y ejecución sobre Heap, Sequential File, B+ agrupado, B+ no agrupado y hash extensible. ORDER BY y GROUP BY usan `external_algorithms.h`. |
@@ -41,16 +41,19 @@ echo "SELECT COUNT(*) FROM t" | .build/motor_sql --db datos/db
 Palabras clave sin distinguir mayúsculas. Varias sentencias se separan con `;`.
 
 ```sql
-CREATE TABLE t (col INT [PRIMARY KEY], col VARCHAR(n), col POINT, ...) [USING HEAP | SEQUENTIAL | BPLUS]
+CREATE TABLE t (col INT [PRIMARY KEY], col FLOAT, col VARCHAR(n), col POINT, col VECTOR(k), ...) [USING HEAP | SEQUENTIAL | BPLUS]
 CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 COPY t FROM FILE 'ruta.csv'
-CREATE INDEX nombre ON t (col) [USING BPLUS | HASH | RTREE]
+CREATE INDEX nombre ON t (col) [USING BPLUS | HASH | RTREE | SPIMI]
 DROP TABLE t
 INSERT INTO t VALUES (v1, v2, ...)
 DELETE FROM t [WHERE cond]
 SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
   FROM t [WHERE cond [AND cond]...] [GROUP BY col]
-  [ORDER BY col | distancia(col, POINT(lat, lon) [, metrica]) [ASC|DESC]] [LIMIT n]
+  [ORDER BY col | distancia(col, POINT(lat, lon) | VECTOR(x1, ..., xk) [, metrica]) [ASC|DESC]] [LIMIT n]
+SELECT * | col, SCORE() [AS alias] FROM t
+  WHERE MATCH(columna_texto, 'consulta') [AND cond]
+  USING TF_IDF|BM25 [ORDER BY alias [ASC|DESC]] [LIMIT n]
 SHOW TABLES
 DESCRIBE t
 EXPLAIN [ANALYZE] <sentencia>
@@ -59,19 +62,28 @@ BEGIN [TRANSACTION] | END [TRANSACTION] | COMMIT | ROLLBACK
 cond  := col (= | != | <> | < | <= | > | >=) valor
        | col BETWEEN a AND b
        | distancia(col, POINT(lat, lon) [, 'haversine' | 'euclidiana']) (< | <= | > | >=) metros
+       | distancia(col, VECTOR(x1, ..., xk) [, 'euclidiana' | 'producto_punto' | 'coseno']) (< | <= | > | >=) numero
        | dentro(col, POLYGON((lat lon, lat lon, lat lon, ...)))
-valor := entero | 'texto' | POINT(lat, lon)
+valor := entero | decimal | 'texto' | POINT(lat, lon) | VECTOR(x1, ..., xk)
 ```
 
-Tipos: `INT` (int32), `VARCHAR(n)` y `POINT` (latitud y longitud; ver
-[sql_espacial.md](sql_espacial.md)). La clave primaria debe ser `INT` y puede ser
+`MATCH` necesita `USING TF_IDF` o `USING BM25` y un índice `SPIMI` sobre la columna
+`VARCHAR`; sin él falla con un error. Los términos se normalizan como se describe en
+[busqueda_texto.md](busqueda_texto.md). `SCORE()` se puede proyectar con un alias y ordenar
+por él, y `MATCH` se combina con otras condiciones con `AND`. `DELETE` no admite `MATCH`.
+Un `INSERT` o `DELETE` invalida el índice SPIMI y se reconstruye en el siguiente `MATCH`.
+
+Tipos: `INT` (int32), `FLOAT` (float32, alias `REAL`), `VARCHAR(n)`, `POINT` (latitud y
+longitud; ver [sql_espacial.md](sql_espacial.md)) y `VECTOR(k)` (k float32, hasta 512; ver
+[vectores.md](vectores.md)). Los números aceptan notación científica (`1.25e-06`). La clave primaria debe ser `INT` y puede ser
 cualquier columna, no solo la primera (`codigo INT PRIMARY KEY` en su definición, o
 `PRIMARY KEY codigo` al final); si no se indica se toma la primera columna `INT`.
 `FROM FILE` infiere el esquema del CSV: `INT` si toda la columna son enteros, si no
-`VARCHAR` del largo máximo; los nombres de columna se
+`VARCHAR` del largo máximo (no infiere `FLOAT`, `POINT` ni `VECTOR`: para esos se crea la
+tabla con su esquema y se carga con `COPY`); los nombres de columna se
 normalizan a identificadores (`Organization Id` → `Organization_Id`). `INDEX (a, b)`
 construye un B+ no agrupado por columna cuando la carga termina, y equivale a lanzar un
-`CREATE INDEX` por cada una; solo vale sobre tablas `HEAP`.
+`CREATE INDEX` por cada una, sobre columnas `INT` o `VARCHAR` de cualquier organización.
 
 `COPY t FROM FILE 'ruta.csv'` carga datos en una tabla que **ya existe**, y así separa la
 definición del esquema de la carga. Los encabezados del CSV deben coincidir en nombre y
@@ -84,9 +96,11 @@ esquema, y sigue disponible.
 
 | `USING` | Estructura | Formato de fila | Índices secundarios |
 |---|---|---|---|
-| `HEAP` (defecto) | `HeapFile`, páginas slotted | variable: clave aparte, resto empaquetado (`INT` 4 B, `VARCHAR` 2 B largo + bytes) | sí, B+ no agrupado o hash extensible sobre columnas `INT` |
-| `SEQUENTIAL` | `SequentialFile` | igual que heap (mismos bytes por fila) | no: la reorganización reubica registros |
-| `BPLUS` | `BPlusAgrupado` | fijo: `[pk][INT 4 B \| VARCHAR n B]...` | no: la fila vive en la hoja |
+| `HEAP` (defecto) | `HeapFile`, páginas slotted | variable: clave aparte, resto empaquetado (`INT` y `FLOAT` 4 B, `VARCHAR` 2 B largo + bytes, `POINT` 8 B, `VECTOR(k)` 4·k B) | sí, B+ no agrupado o hash extensible sobre columnas `INT` o `VARCHAR`; R-Tree sobre `POINT` |
+| `SEQUENTIAL` | `SequentialFile` | igual que heap (mismos bytes por fila) | sí, igual que heap; el índice guarda la clave primaria |
+| `BPLUS` | `BPlusAgrupado` | fijo: `[pk][INT 4 B \| VARCHAR n B]...`; `FLOAT`, `POINT` y `VECTOR` como en el variable; hasta 2040 B por registro | sí, igual que heap; el índice guarda la clave primaria |
+
+La compatibilidad completa está en [indices_generales.md](indices_generales.md).
 
 La carga con `FROM FILE` y `COPY` usa `cargar_masivo` en las tres organizaciones: el B+
 agrupado construye las hojas al 90 %, el secuencial escribe el área principal de una vez
@@ -103,13 +117,14 @@ resolverse con una estructura y el resto se filtra en memoria:
 
 | Condición | Heap | Secuencial | B+ agrupado |
 |---|---|---|---|
-| columna con índice B+, `=` | `busqueda_por_indice` | — | — |
-| columna con índice B+, `BETWEEN` `<` `<=` `>` `>=` | `rango_por_indice` | — | — |
-| columna con índice hash, `=` | `busqueda_por_indice` | — | — |
-| columna con índice hash, rango | `scan_completo` + `filtro` (el hash no guarda orden) | — | — |
+| columna con índice B+, `=` | `busqueda_por_indice` | `busqueda_por_indice` | `busqueda_por_indice` |
+| columna con índice B+, `BETWEEN` `<` `<=` `>` `>=` | `rango_por_indice` | `rango_por_indice` | `rango_por_indice` |
+| columna con índice hash, `=` | `busqueda_por_indice` | `busqueda_por_indice` | `busqueda_por_indice` |
+| columna con índice hash, rango | `scan_completo` + `filtro` (el hash no guarda orden) | igual | igual |
 | clave primaria, `=` | `scan_completo` (no hay índice) | `busqueda_por_clave` | `busqueda_por_clave` |
 | clave primaria, rango | `scan_completo` | `rango_por_clave` | `rango_por_clave` |
 | cualquier otra | `scan_completo` + `filtro` | `scan_completo` + `filtro` | `scan_completo` + `filtro` |
+| sin `WHERE`, `ORDER BY distancia(col VECTOR, ...) LIMIT k` | `knn_vectorial` (max-heap con los k mejores, sin `ordenamiento`) | igual | igual |
 
 Después: `agrupacion` (`ExternalHashAggregate`), `ordenamiento` (`ExternalMergeSort`
 k-way, reporta `initial_runs` y `merge_passes`), `proyeccion` y `limite`.
@@ -203,14 +218,16 @@ columnas e índices para el panel de archivos.
 ## 7. Límites conocidos
 
 - Sin `UPDATE`, sin `JOIN`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
-- Agregados solo sobre columnas `INT`; `AVG` devuelve texto con dos decimales.
+- Agregados solo sobre columnas `INT` o `FLOAT`; `AVG` devuelve texto con dos decimales.
+- `VECTOR` no tiene índice en el motor: IVF y HNSW son los de FAISS en la API (#60, #61). Sin
+  ellos, el k-NN es secuencial (ver [vectores.md](vectores.md)).
 - `CREATE INDEX ... USING HASH` crea un hash extensible paginado en disco
   (`motor/indices/hash_extensible_disco.h`, archivo `<tabla>__<indice>.hash`): directorio y
   buckets en páginas de 4 KB, 255 entradas por bucket y cadenas de desborde cuando muchas
   claves caen en el mismo bucket. Solo resuelve igualdad. Su profundidad global, igual que
   la del hash en memoria, está limitada a 16 bits (65 536 entradas de directorio).
-- `CREATE INDEX ... USING RTREE` crea un R-Tree sobre una columna `POINT` de una tabla
-  `HEAP`; el planificador lo usa para el radio y el k-NN (ver [sql_espacial.md](sql_espacial.md)).
+- `CREATE INDEX ... USING RTREE` crea un R-Tree sobre una columna `POINT` de cualquier
+  tabla; el planificador lo usa para el radio y el k-NN (ver [sql_espacial.md](sql_espacial.md)).
 - Claves repetidas: la clave primaria es única; el resto de columnas admite repetidos.
 - Cada llamada al binario abre y cierra los archivos: todo queda en disco entre
   sentencias, pero la caché del B+ arranca fría en cada consulta.

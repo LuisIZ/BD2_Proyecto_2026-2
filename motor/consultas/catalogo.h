@@ -11,13 +11,16 @@
 namespace motor {
 namespace sql {
 
-enum class TipoColumna { INT, FLOAT, VARCHAR, POINT };
+enum class TipoColumna { INT, FLOAT, VARCHAR, POINT, VECTOR };
 enum class Organizacion { HEAP, SEQUENTIAL, BPLUS };
+
+// VECTOR(K) admite hasta 512 dimensiones: 2 KB por vector, para que el registro quepa en una página
+constexpr int MAX_DIMENSIONES = 512;
 
 struct Columna {
     std::string nombre;
     TipoColumna tipo = TipoColumna::INT;
-    std::uint16_t tam = 0;  // largo máximo de VARCHAR
+    std::uint16_t tam = 0;  // largo máximo de VARCHAR o dimensiones de VECTOR
 };
 
 struct Indice {
@@ -37,7 +40,9 @@ struct Tabla {
 
     // -1 si no existe; ignora mayúsculas
     int posicion_columna(const std::string& nombre) const;
+    // indice_sobre ignora los SPIMI: esos solo los usa MATCH, via indice_texto
     const Indice* indice_sobre(const std::string& columna) const;
+    const Indice* indice_texto(const std::string& columna) const;
     // bytes de un registro de tamaño fijo (B+ agrupado): pk primero, luego el resto
     std::uint16_t tam_registro_fijo() const;
 };
@@ -54,6 +59,7 @@ TipoColumna tipo_desde(const std::string& nombre);
 // uint16 largo + bytes, FLOAT como float32.
 // Fijo (B+ agrupado): [int32 pk][INT int32 | VARCHAR n bytes rellenos con 0]...
 // POINT: int32 lat + int32 lon en microgrados, en los dos formatos.
+// VECTOR(K): K float32 seguidos, en los dos formatos.
 
 int clave_de(const Tabla& tabla, const Fila& fila);
 std::string empaquetar_variable(const Tabla& tabla, const Fila& fila);

@@ -2,6 +2,7 @@ const statements = `CREATE TABLE t FROM FILE 'datos/organizations-1000.csv'
   USING HEAP | SEQUENTIAL | BPLUS [PRIMARY KEY col] [INDEX (col, ...)];
 CREATE TABLE t (id INT PRIMARY KEY, nombre VARCHAR(40)) USING BPLUS;
 CREATE INDEX i ON t (col) USING BPLUS;
+CREATE INDEX i ON t (texto) USING SPIMI;   -- índice invertido para MATCH, solo VARCHAR
 COPY t FROM FILE 'datos/organizations-1000.csv';   -- carga en una tabla ya creada
 DROP TABLE t;
 
@@ -9,6 +10,10 @@ SELECT * | col, ... | COUNT(*) | SUM(col) | AVG(col) | MIN(col) | MAX(col)
   FROM t
   [WHERE col = v AND col BETWEEN a AND b AND col >= v ...]
   [GROUP BY col] [ORDER BY col ASC | DESC] [LIMIT n];
+
+SELECT *, SCORE() AS relevancia FROM t
+  WHERE MATCH(texto, 'consulta') [AND col < v] USING TF_IDF | BM25
+  [ORDER BY relevancia DESC] [LIMIT n];
 
 INSERT INTO t VALUES (v1, v2, ...);
 DELETE FROM t [WHERE ...];
@@ -67,7 +72,8 @@ export default function Syntax() {
           seleccionas texto en el editor se ejecuta solo esa parte; con{" "}
           <kbd>Shift + Enter</kbd> o <strong>Ejecutar sentencia</strong> se
           ejecuta solo la sentencia donde está el cursor. Los índices B+ no
-          agrupados se crean sobre columnas INT de tablas HEAP.
+          agrupados y hash se crean sobre columnas INT o VARCHAR de cualquier
+          tabla.
         </p>
       </section>
       <section className="panel">

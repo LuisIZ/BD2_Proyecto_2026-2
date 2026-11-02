@@ -51,14 +51,25 @@ private:
             std::size_t inicio = i_;
             ++i_;
             while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
+            bool decimal = false;
             if (i_ < s_.size() && s_[i_] == '.') {
                 ++i_;
                 const std::size_t decimales = i_;
                 while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
                 if (i_ == decimales) throw std::runtime_error("numero mal formado: '" + s_.substr(inicio, i_ - inicio) + "'");
-                return {TipoToken::DECIMAL, s_.substr(inicio, i_ - inicio)};
+                decimal = true;
             }
-            return {TipoToken::NUMERO, s_.substr(inicio, i_ - inicio)};
+            // notación científica (1e-05), la que usa Python al escribir vectores
+            if (i_ < s_.size() && (s_[i_] == 'e' || s_[i_] == 'E')) {
+                std::size_t j = i_ + 1;
+                if (j < s_.size() && (s_[j] == '-' || s_[j] == '+')) ++j;
+                if (j < s_.size() && std::isdigit(static_cast<unsigned char>(s_[j]))) {
+                    i_ = j;
+                    while (i_ < s_.size() && std::isdigit(static_cast<unsigned char>(s_[i_]))) ++i_;
+                    decimal = true;
+                }
+            }
+            return {decimal ? TipoToken::DECIMAL : TipoToken::NUMERO, s_.substr(inicio, i_ - inicio)};
         }
         if (c == '\'' || c == '"') {
             const char comilla = c;
@@ -222,12 +233,32 @@ private:
             return Valor::de_decimal(v);
         }
         if (es_funcion("POINT")) return punto();
+        if (es_funcion("VECTOR")) return vector();
         error("se esperaba un valor");
+    }
+
+    Valor vector() {
+        avanzar();
+        esperar_simbolo("(");
+        std::vector<float> componentes;
+        while (true) {
+            const Token t = actual();
+            if (t.tipo != TipoToken::NUMERO && t.tipo != TipoToken::DECIMAL) error("se esperaba un numero dentro de VECTOR");
+            const float v = std::strtof(t.texto.c_str(), nullptr);
+            if (!std::isfinite(v)) error("numero fuera del rango de FLOAT");
+            componentes.push_back(v);
+            avanzar();
+            if (es_simbolo(",")) { avanzar(); continue; }
+            break;
+        }
+        esperar_simbolo(")");
+        return Valor::de_vector(std::move(componentes));
     }
 
     int microgrados() {
         const Token t = actual();
         if (t.tipo != TipoToken::NUMERO && t.tipo != TipoToken::DECIMAL) error("se esperaba una coordenada");
+        if (t.texto.find_first_of("eE") != std::string::npos) error("una coordenada no admite notacion cientifica");
         const bool negativo = t.texto[0] == '-';
         const std::string sin_signo = t.texto.substr(negativo ? 1 : 0);
         const std::size_t punto = sin_signo.find('.');
@@ -258,16 +289,24 @@ private:
         esperar_simbolo("(");
         columna = identificador();
         esperar_simbolo(",");
-        if (!es_funcion("POINT")) error("se esperaba POINT(lat, lon)");
-        centro = punto();
-        metrica = "HAVERSINE";
+        const bool es_vector = es_funcion("VECTOR");
+        if (!es_vector && !es_funcion("POINT")) error("se esperaba POINT(lat, lon) o VECTOR(x1, ..., xk)");
+        centro = es_vector ? vector() : punto();
+        metrica = es_vector ? "EUCLIDIANA" : "HAVERSINE";
         if (es_simbolo(",")) {
             avanzar();
             if (actual().tipo != TipoToken::TEXTO) error("se esperaba la metrica entre comillas");
             const std::string m = mayusculas(actual().texto);
-            if (m == "HAVERSINE" || m == "GEODESICA") metrica = "HAVERSINE";
-            else if (m == "EUCLIDIANA") metrica = "EUCLIDIANA";
-            else error("metrica desconocida '" + actual().texto + "' (haversine o euclidiana)");
+            if (es_vector) {
+                if (m == "EUCLIDIANA" || m == "EUCLIDEAN" || m == "L2") metrica = "EUCLIDIANA";
+                else if (m == "PRODUCTO_PUNTO" || m == "INNER_PRODUCT" || m == "IP") metrica = "PRODUCTO_PUNTO";
+                else if (m == "COSENO" || m == "COSINE") metrica = "COSENO";
+                else error("metrica desconocida '" + actual().texto + "' (euclidiana, producto_punto o coseno)");
+            } else {
+                if (m == "HAVERSINE" || m == "GEODESICA") metrica = "HAVERSINE";
+                else if (m == "EUCLIDIANA") metrica = "EUCLIDIANA";
+                else error("metrica desconocida '" + actual().texto + "' (haversine o euclidiana)");
+            }
             avanzar();
         }
         esperar_simbolo(")");
@@ -315,8 +354,14 @@ private:
                     if (col.tam <= 0) error("VARCHAR necesita un largo positivo");
                 } else if (tipo == "POINT") {
                     col.tipo = "POINT";
+                } else if (tipo == "VECTOR") {
+                    col.tipo = "VECTOR";
+                    esperar_simbolo("(");
+                    col.tam = static_cast<int>(numero());
+                    esperar_simbolo(")");
+                    if (col.tam <= 0) error("VECTOR necesita una dimension positiva");
                 } else {
-                    error("tipo desconocido '" + tipo + "' (INT, FLOAT, VARCHAR(n) o POINT)");
+                    error("tipo desconocido '" + tipo + "' (INT, FLOAT, VARCHAR(n), POINT o VECTOR(k))");
                 }
                 if (es("PRIMARY")) {
                     avanzar();
@@ -362,7 +407,8 @@ private:
             if (t == "BPLUS" || t == "BTREE") s.indice_tipo = "BPLUS";
             else if (t == "HASH") s.indice_tipo = "HASH";
             else if (t == "RTREE") s.indice_tipo = "RTREE";
-            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH o RTREE)");
+            else if (t == "SPIMI") s.indice_tipo = "SPIMI";
+            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH, RTREE o SPIMI)");
         }
     }
 
@@ -390,7 +436,20 @@ private:
     void where(Sentencia& s) {
         while (true) {
             Condicion c;
-            if (es_funcion("DENTRO")) {
+            if (es_funcion("MATCH")) {
+                if (s.busqueda_texto) error("solo se admite una funcion MATCH por consulta");
+                avanzar();
+                esperar_simbolo("(");
+                s.columna_texto = identificador();
+                esperar_simbolo(",");
+                if (actual().tipo != TipoToken::TEXTO) error("MATCH requiere una consulta entre comillas");
+                s.texto_consulta = actual().texto;
+                avanzar();
+                esperar_simbolo(")");
+                s.busqueda_texto = true;
+                if (es("AND")) { avanzar(); continue; }
+                break;
+            } else if (es_funcion("DENTRO")) {
                 c.funcion = "DENTRO";
                 avanzar();
                 esperar_simbolo("(");
@@ -425,7 +484,11 @@ private:
                 if (op != "<" && op != "<=" && op != ">" && op != ">=") error("distancia solo se compara con < <= > >=");
                 avanzar();
                 c.op = op;
-                if (actual().tipo != TipoToken::NUMERO) error("la distancia se compara con un entero en metros");
+                if (c.punto.es_vector) {
+                    if (actual().tipo != TipoToken::NUMERO && actual().tipo != TipoToken::DECIMAL) error("la distancia entre vectores se compara con un numero");
+                } else if (actual().tipo != TipoToken::NUMERO) {
+                    error("la distancia se compara con un entero en metros");
+                }
                 c.valor = valor();
                 s.condiciones.push_back(c);
                 if (es("AND")) { avanzar(); continue; }
@@ -456,35 +519,58 @@ private:
 
     void select(Sentencia& s) {
         s.tipo = TipoSentencia::SELECT;
-        if (es_simbolo("*")) {
-            avanzar();
-            s.todas_las_columnas = true;
-        } else {
-            while (true) {
+        while (true) {
+            if (es_simbolo("*")) {
+                if (!s.items.empty() || s.todas_las_columnas) error("'*' solo puede aparecer al inicio de la proyeccion");
+                avanzar();
+                s.todas_las_columnas = true;
+            } else {
                 ItemSelect item;
-                const std::string nombre = identificador();
-                const std::string may = mayusculas(nombre);
-                if ((may == "COUNT" || may == "SUM" || may == "AVG" || may == "MIN" || may == "MAX") && es_simbolo("(")) {
+                if (es_funcion("SCORE")) {
                     avanzar();
-                    item.agregado = may;
-                    if (es_simbolo("*")) {
-                        if (may != "COUNT") error("solo COUNT admite *");
-                        avanzar();
-                    } else {
-                        item.columna = identificador();
-                    }
+                    esperar_simbolo("(");
                     esperar_simbolo(")");
+                    item.score = true;
                 } else {
-                    item.columna = nombre;
+                    const std::string nombre = identificador();
+                    const std::string may = mayusculas(nombre);
+                    if ((may == "COUNT" || may == "SUM" || may == "AVG" || may == "MIN" || may == "MAX") && es_simbolo("(")) {
+                        avanzar();
+                        item.agregado = may;
+                        if (es_simbolo("*")) {
+                            if (may != "COUNT") error("solo COUNT admite *");
+                            avanzar();
+                        } else {
+                            item.columna = identificador();
+                        }
+                        esperar_simbolo(")");
+                    } else {
+                        item.columna = nombre;
+                    }
+                }
+                if (es("AS")) {
+                    if (!item.score) error("AS solo se admite para SCORE()");
+                    avanzar();
+                    item.alias = identificador();
                 }
                 s.items.push_back(item);
-                if (es_simbolo(",")) { avanzar(); continue; }
-                break;
             }
+            if (es_simbolo(",")) { avanzar(); continue; }
+            break;
         }
         esperar_palabra("FROM");
         s.tabla = identificador();
         if (es("WHERE")) { avanzar(); where(s); }
+        if (es("USING")) {
+            avanzar();
+            s.ranking_texto = mayusculas(identificador());
+            if (s.ranking_texto != "TF_IDF" && s.ranking_texto != "BM25")
+                error("ranking de texto desconocido (TF_IDF o BM25)");
+        }
+        if (s.busqueda_texto && s.ranking_texto.empty()) error("MATCH requiere USING TF_IDF o USING BM25");
+        if (!s.busqueda_texto && !s.ranking_texto.empty()) error("USING requiere una condicion MATCH");
+        for (const ItemSelect& item : s.items)
+            if (item.score && !s.busqueda_texto) error("SCORE() solo se usa con MATCH");
         if (es("GROUP")) { avanzar(); esperar_palabra("BY"); s.group_by = identificador(); }
         if (es("ORDER")) {
             avanzar();

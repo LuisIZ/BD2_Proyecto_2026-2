@@ -1,9 +1,13 @@
 #include "../consultas/catalogo.h"
 #include "../consultas/ejecutor.h"
 #include "../consultas/parser_sql.h"
+#include "../vectorial/vector.h"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -94,6 +98,38 @@ void prueba_parser() {
     assert(s.columnas[1].tipo == "FLOAT" && s.columnas[2].tipo == "FLOAT");
     s = motor::sql::parsear("SELECT * FROM p WHERE precio <= -2.5");
     assert(s.condiciones[0].valor.es_decimal && s.condiciones[0].valor.decimal == -2.5f);
+
+    s = motor::sql::parsear("CREATE TABLE img (id INT PRIMARY KEY, v VECTOR(256))");
+    assert(s.columnas[1].tipo == "VECTOR" && s.columnas[1].tam == 256);
+    s = motor::sql::parsear("INSERT INTO img VALUES (1, VECTOR(0.5, -2, 1e-05, 3.5E+2))");
+    assert(s.valores[1].es_vector && s.valores[1].componentes.size() == 4);
+    assert(s.valores[1].componentes[1] == -2.0f && s.valores[1].componentes[2] == 1e-05f && s.valores[1].componentes[3] == 350.0f);
+    assert(s.valores[1].a_texto() == "VECTOR(0.5, -2, 1e-05, 350)");
+    assert(falla("CREATE TABLE t (v VECTOR)"));
+    assert(falla("CREATE TABLE t (v VECTOR(0))"));
+    assert(falla("INSERT INTO t VALUES (1, VECTOR())"));
+    assert(falla("INSERT INTO t VALUES (1, VECTOR(1, 'a'))"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1e1, 2)) < 5") && "las coordenadas no usan exponentes");
+    s = motor::sql::parsear("SELECT id FROM img ORDER BY distancia(v, VECTOR(1, 0.5), 'cosine') LIMIT 3");
+    assert(s.order_by_distancia && s.order_by_punto.es_vector && s.order_by_metrica == "COSENO" && s.limite == 3);
+    s = motor::sql::parsear("SELECT id FROM img ORDER BY distancia(v, VECTOR(1, 0.5)) LIMIT 3");
+    assert(s.order_by_metrica == "EUCLIDIANA" && "la metrica por omision de un vector es la euclidiana");
+    s = motor::sql::parsear("SELECT * FROM img WHERE distancia(v, VECTOR(1, 2), 'producto_punto') <= -0.5");
+    assert(s.condiciones[0].metrica == "PRODUCTO_PUNTO" && s.condiciones[0].valor.decimal == -0.5f);
+    assert(falla("SELECT * FROM img WHERE distancia(v, VECTOR(1, 2), 'haversine') < 1"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1, 2), 'coseno') < 1"));
+    assert(falla("SELECT * FROM t WHERE distancia(p, POINT(1, 2)) < 1.5") && "con POINT se sigue comparando con metros enteros");
+
+    s = motor::sql::parsear(
+        "SELECT *, SCORE() AS relevancia FROM articulos "
+        "WHERE MATCH(texto, 'machine learning') USING BM25 ORDER BY relevancia DESC LIMIT 10");
+    assert(s.busqueda_texto && s.columna_texto == "texto" && s.texto_consulta == "machine learning");
+    assert(s.ranking_texto == "BM25" && s.items.size() == 1 && s.items[0].score);
+    assert(s.items[0].etiqueta() == "relevancia" && s.descendente && s.limite == 10);
+    s = motor::sql::parsear("SELECT * FROM documentos WHERE MATCH(contenido, 'base de datos') USING TF_IDF");
+    assert(s.busqueda_texto && s.ranking_texto == "TF_IDF");
+    assert(falla("SELECT * FROM t WHERE MATCH(texto, 'foo')"));
+    assert(falla("SELECT * FROM t USING BM25"));
 
     assert(falla("SELECT FROM t"));
     assert(falla("SELECT * t"));
@@ -189,9 +225,112 @@ void prueba_organizacion(Ejecutor& e, const std::string& org) {
     std::cout << "organizacion " << org << ": carga, busqueda, rango, agregados, insert, delete\n";
 }
 
+// MATCH con el indice SPIMI en las tres organizaciones
+void prueba_busqueda_texto() {
+    const std::string db_texto = ".build/db_sql_text_test";
+    std::filesystem::remove_all(db_texto);
+    Catalogo catalogo(db_texto);
+    Ejecutor e(catalogo);
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = "texto_" + org;
+        const std::string match = " WHERE MATCH(contenido, 'running shoes') USING BM25";
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, contenido VARCHAR(200), precio INT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES (1, 'Running shoes with waterproof fabric', 150)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (2, 'Trail shoes for running and hiking', 80)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (3, 'Stainless steel water bottle', 20)");
+
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + match) && "MATCH sin indice SPIMI");
+        e.ejecutar("CREATE INDEX idx ON " + t + " (contenido) USING SPIMI");
+
+        Resultado r = e.ejecutar("SELECT id, SCORE() AS relevancia FROM " + t + match + " ORDER BY relevancia DESC LIMIT 10");
+        assert(r.filas.size() == 2 && r.columnas.size() == 2);
+        assert(r.columnas[1] == "relevancia" && r.filas[0][1].es_decimal && r.filas[0][1].decimal > 0);
+        assert(r.filas[0][1].decimal >= r.filas[1][1].decimal);
+        assert(tiene_paso(r, "busqueda_texto"));
+        r = e.ejecutar("SELECT * FROM " + t + " WHERE MATCH(contenido, 'water bottle') USING TF_IDF LIMIT 10");
+        assert(r.filas.size() == 1 && r.filas[0][0].entero == 3);
+
+        // MATCH con otra condicion: el resto del WHERE filtra
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE MATCH(contenido, 'running shoes') AND precio < 100 USING BM25");
+        assert(r.filas.size() == 1 && r.filas[0][0].entero == 2);
+
+        // LIMIT sin filtros: el ranking solo pide los mejores k
+        r = e.ejecutar("SELECT id FROM " + t + match + " LIMIT 1");
+        assert(r.filas.size() == 1);
+
+        r = e.ejecutar("EXPLAIN ANALYZE SELECT id FROM " + t + match);
+        const std::string plan = texto_del_plan(r);
+        assert(plan.find("Text Scan using idx on " + t + " (contenido)") != std::string::npos);
+        assert(plan.find("Postings leidos:") != std::string::npos && plan.find("USING BM25") != std::string::npos);
+        assert(texto_del_plan(e.ejecutar("EXPLAIN SELECT id FROM " + t + match)).find("Text Scan using idx") != std::string::npos);
+
+        // INSERT y DELETE: el indice se reconstruye en la siguiente busqueda
+        e.ejecutar("INSERT INTO " + t + " VALUES (4, 'Running shoes for kids', 40)");
+        r = e.ejecutar("SELECT id FROM " + t + match);
+        assert(r.filas.size() == 3);
+        assert(texto_del_plan(e.ejecutar("EXPLAIN ANALYZE SELECT id FROM " + t + match)).find("Postings leidos:") != std::string::npos);
+        e.ejecutar("DELETE FROM " + t + " WHERE id = 1");
+        r = e.ejecutar("SELECT id FROM " + t + match);
+        assert(r.filas.size() == 2);
+        assert(falla_ejecucion(e, "DELETE FROM " + t + " WHERE MATCH(contenido, 'shoes') USING BM25") && "DELETE no admite MATCH");
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + " WHERE MATCH(precio, 'x') USING BM25") && "MATCH solo sobre VARCHAR");
+    }
+
+    // el indice sobrevive al cierre: otro catalogo lo reabre sin reconstruirlo
+    Catalogo reabierto(db_texto);
+    Ejecutor otro(reabierto);
+    Resultado r = otro.ejecutar("SELECT id FROM texto_HEAP WHERE MATCH(contenido, 'running shoes') USING TF_IDF");
+    assert(r.filas.size() == 2);
+    std::cout << "MATCH: indice SPIMI en las tres organizaciones, filtros, EXPLAIN, INSERT/DELETE y reapertura\n";
+}
+
+// CREATE INDEX ... USING SPIMI sobre VARCHAR en las tres organizaciones
+void prueba_indice_spimi() {
+    const std::string db = ".build/db_sql_spimi_test";
+    std::filesystem::remove_all(db);
+    Catalogo catalogo(db);
+    Ejecutor e(catalogo);
+    for (const std::string org : {"heap", "sequential", "bplus"}) {
+        const std::string t = "spimi_" + org;
+        const std::string archivo = db + "/" + t + "__s.spimi/indice_spimi.bin";
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, descripcion VARCHAR(100), precio INT) USING " + org);
+        e.ejecutar("INSERT INTO " + t + " VALUES (1, 'Running shoes with waterproof fabric', 50)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (2, 'Trail shoes for running and hiking', 80)");
+        e.ejecutar("INSERT INTO " + t + " VALUES (3, 'Stainless steel water bottle', 20)");
+
+        Resultado r = e.ejecutar("CREATE INDEX s ON " + t + " (descripcion) USING SPIMI");
+        assert(r.afectadas == 3 && tiene_paso(r, "construir_indice"));
+        assert(std::filesystem::exists(archivo));
+        assert(falla_ejecucion(e, "CREATE INDEX s2 ON " + t + " (descripcion) USING SPIMI") && "una columna, un indice SPIMI");
+        assert(falla_ejecucion(e, "CREATE INDEX s3 ON " + t + " (precio) USING SPIMI") && "SPIMI solo sobre VARCHAR");
+
+        // el SPIMI no estorba a los demas indices de la columna
+        e.ejecutar("CREATE INDEX b ON " + t + " (descripcion) USING BPLUS");
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE descripcion = 'Stainless steel water bottle'");
+        assert(r.filas.size() == 1 && r.filas[0][0].entero == 3);
+
+        // INSERT y DELETE invalidan el indice: se reconstruye en la proxima busqueda
+        e.ejecutar("INSERT INTO " + t + " VALUES (4, 'Glass water bottle', 15)");
+        assert(!std::filesystem::exists(archivo));
+        e.ejecutar("DROP TABLE " + t);
+        assert(!std::filesystem::exists(db + "/" + t + "__s.spimi"));
+    }
+    std::cout << "indice SPIMI: CREATE INDEX sobre VARCHAR en las tres organizaciones, se invalida al insertar y DROP lo borra\n";
+}
+
 void prueba_indice_secundario(Ejecutor& e) {
-    assert(falla_ejecucion(e, "CREATE INDEX i ON org_SEQUENTIAL (Founded)") && "solo sobre heap");
-    assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country)") && "solo INT");
+    assert(falla_ejecucion(e, "CREATE INDEX i ON org_HEAP (Country) USING RTREE") && "RTREE solo sobre POINT");
+
+    for (const std::string org : {"SEQUENTIAL", "BPLUS"}) {
+        const std::string t = "org_" + org;
+        assert(e.ejecutar("CREATE INDEX idx_" + org + " ON " + t + " (Founded)").afectadas == 201);
+        Resultado ri = e.ejecutar("SELECT Index FROM " + t + " WHERE Founded = 2005 ORDER BY Index");
+        assert(tiene_paso(ri, "busqueda_por_indice") && ri.filas.size() == 10 && ri.filas[0][0].entero == 105);
+        e.ejecutar("INSERT INTO " + t + " VALUES (400, 'Idx', 'Peru', 2005, 1)");
+        assert(e.ejecutar("SELECT Index FROM " + t + " WHERE Founded = 2005").filas.size() == 11);
+        e.ejecutar("DELETE FROM " + t + " WHERE Index = 400");
+        assert(e.ejecutar("SELECT Index FROM " + t + " WHERE Founded = 2005").filas.size() == 10);
+    }
 
     Resultado r = e.ejecutar("CREATE INDEX idx_f ON org_HEAP (Founded)");
     assert(r.afectadas == 201);
@@ -210,7 +349,7 @@ void prueba_indice_secundario(Ejecutor& e) {
 }
 
 void prueba_indice_hash(Ejecutor& e) {
-    assert(falla_ejecucion(e, "CREATE INDEX h ON org_SEQUENTIAL (Employees) USING HASH"));
+    assert(falla_ejecucion(e, "CREATE INDEX h ON org_SEQUENTIAL (Name) USING RTREE"));
     e.ejecutar("CREATE TABLE org_hash FROM FILE '" + CSV + "'");
     Resultado r = e.ejecutar("CREATE INDEX idx_emp ON org_hash (Employees) USING HASH");
     assert(r.afectadas == 300 && detalle_paso(r, "construir_indice", "estructura") == "hash_extensible");
@@ -440,6 +579,159 @@ void prueba_float() {
     std::cout << "FLOAT: float32 en heap, secuencial y B+, WHERE, ORDER BY, agregados y COPY\n";
 }
 
+void prueba_vector() {
+    {
+        Catalogo catalogo(DB);
+        Ejecutor e(catalogo);
+        for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+            const std::string t = std::string("vectores_") + org;
+            e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, v VECTOR(4), nombre VARCHAR(8)) USING " + org);
+            e.ejecutar("INSERT INTO " + t + " VALUES (2, VECTOR(0.1, -2, 3.25, 1e-05), 'b')");
+            e.ejecutar("INSERT INTO " + t + " VALUES (1, VECTOR(1, 2, 3, 4), 'a')");
+            const Resultado r = e.ejecutar("SELECT v, nombre FROM " + t + " WHERE id = 2");
+            assert(r.filas.size() == 1 && r.filas[0][0].es_vector && r.filas[0][1].texto == "b");
+            assert(r.filas[0][0].a_texto() == "VECTOR(0.1, -2, 3.25, 1e-05)" && "se guarda en float32 sin perder nada");
+            assert(e.ejecutar("DESCRIBE " + t).filas[1][1].texto == "VECTOR(4)");
+
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, VECTOR(1, 2, 3), 'c')") && "dimension distinta");
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, 'texto', 'c')"));
+            assert(falla_ejecucion(e, "INSERT INTO " + t + " VALUES (3, VECTOR(1, 2, 3, 4), VECTOR(1, 2))"));
+            assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE v = 1") && "un vector se compara con distancia");
+            assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY v"));
+            assert(falla_ejecucion(e, "CREATE INDEX iv ON " + t + " (v)") && "VECTOR no tiene indice en el motor");
+            e.ejecutar("DELETE FROM " + t + " WHERE id = 1");
+            assert(e.ejecutar("SELECT * FROM " + t).filas.size() == 1);
+        }
+        assert(falla_ejecucion(e, "CREATE TABLE t (id INT, v VECTOR(513))"));
+        assert(falla_ejecucion(e, "CREATE TABLE t (v VECTOR(4) PRIMARY KEY)"));
+        assert(falla_ejecucion(e, "CREATE TABLE t (id INT, v VECTOR(512)) USING BPLUS") && "el registro fijo pasa de 2040 bytes");
+        e.ejecutar("CREATE TABLE grande (id INT PRIMARY KEY, v VECTOR(512))");
+        e.ejecutar("DROP TABLE grande");
+
+        // COPY lee el formato que escribe extraer.py: "VECTOR(x1,x2,...)" entre comillas
+        const std::string csv = ".build/sql_test_vector.csv";
+        {
+            std::ofstream f(csv);
+            f << "id,v\n1,\"VECTOR(0.5,1.25e-06,-3,4)\"\n2,\"[1, 2, 3, 4]\"\n3,0 0 0 1\n";
+        }
+        e.ejecutar("CREATE TABLE copia_vector (id INT PRIMARY KEY, v VECTOR(4))");
+        assert(e.ejecutar("COPY copia_vector FROM FILE '" + csv + "'").afectadas == 3);
+        const Resultado r = e.ejecutar("SELECT v FROM copia_vector");
+        assert(r.filas[0][0].a_texto() == "VECTOR(0.5, 1.25e-06, -3, 4)" && r.filas[2][0].a_texto() == "VECTOR(0, 0, 0, 1)");
+        for (const char* malo : {"id,v\n1,\"VECTOR(1,2,3)\"\n", "id,v\n1,\"VECTOR(1,x,3,4)\"\n"}) {
+            {
+                std::ofstream f(csv);
+                f << malo;
+            }
+            e.ejecutar("CREATE TABLE copia_mala (id INT PRIMARY KEY, v VECTOR(4))");
+            assert(falla_ejecucion(e, "COPY copia_mala FROM FILE '" + csv + "'"));
+            e.ejecutar("DROP TABLE copia_mala");
+        }
+    }
+    // los vectores y la dimension sobreviven a reabrir el catalogo
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    assert(e.ejecutar("DESCRIBE copia_vector").filas[1][1].texto == "VECTOR(4)");
+    assert(e.ejecutar("SELECT v FROM copia_vector WHERE id = 1").filas[0][0].a_texto() == "VECTOR(0.5, 1.25e-06, -3, 4)");
+    e.ejecutar("DROP TABLE copia_vector");
+    std::cout << "VECTOR: float32 en heap, secuencial y B+, literal, COPY, DESCRIBE y reapertura\n";
+}
+
+std::string literal_vector(const motor::vectorial::Vector& v) {
+    return motor::sql::Valor::de_vector(v).a_texto();
+}
+
+// ids de los k vecinos calculados a mano; `acepta` deja fuera filas (para probar con WHERE)
+template <typename Acepta>
+std::vector<long long> knn_fuerza_bruta(const std::vector<motor::vectorial::Vector>& datos, const motor::vectorial::Vector& q, std::size_t k,
+                                        motor::vectorial::MetricaVec m, bool lejanos, Acepta acepta) {
+    std::vector<std::pair<double, long long>> todos;
+    for (std::size_t i = 0; i < datos.size(); ++i) {
+        if (acepta(static_cast<long long>(i + 1))) todos.push_back({motor::vectorial::distancia(datos[i], q, m), static_cast<long long>(i + 1)});
+    }
+    std::sort(todos.begin(), todos.end());
+    if (lejanos) std::reverse(todos.begin(), todos.end());
+    std::vector<long long> ids;
+    for (std::size_t i = 0; i < k && i < todos.size(); ++i) ids.push_back(todos[i].second);
+    return ids;
+}
+
+std::vector<long long> ids(const Resultado& r) {
+    std::vector<long long> salida;
+    for (const auto& f : r.filas) salida.push_back(f[0].entero);
+    return salida;
+}
+
+void prueba_knn_vectorial() {
+    using motor::vectorial::MetricaVec;
+    const std::size_t n = 300, dim = 16;
+    std::vector<motor::vectorial::Vector> datos(n, motor::vectorial::Vector(dim));
+    unsigned semilla = 7;
+    auto azar = [&]() {
+        semilla = semilla * 1103515245u + 12345u;
+        return static_cast<float>((semilla >> 8) % 20001) / 10000.0f - 1.0f;
+    };
+    for (auto& v : datos) for (float& x : v) x = azar();
+    const std::string csv = ".build/sql_test_knn.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,v\n";
+        for (std::size_t i = 0; i < n; ++i) f << i + 1 << ",\"" << literal_vector(datos[i]) << "\"\n";
+    }
+    std::vector<motor::vectorial::Vector> consultas(3, motor::vectorial::Vector(dim));
+    for (auto& q : consultas) for (float& x : q) x = azar();
+    consultas[2] = datos[41];  // una fila de la tabla: su vecino más cercano es ella misma
+    const std::pair<const char*, MetricaVec> metricas[] = {
+        {"euclidiana", MetricaVec::EUCLIDIANA}, {"producto_punto", MetricaVec::PRODUCTO_PUNTO}, {"coseno", MetricaVec::COSENO}};
+    const auto todas = [](long long) { return true; };
+
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = std::string("knn_") + org;
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, v VECTOR(16)) USING " + org);
+        e.ejecutar("COPY " + t + " FROM FILE '" + csv + "'");
+        for (const auto& q : consultas) {
+            for (const auto& [nombre, m] : metricas) {
+                const std::string dist = "distancia(v, " + literal_vector(q) + ", '" + nombre + "')";
+                Resultado r = e.ejecutar("SELECT id FROM " + t + " ORDER BY " + dist + " LIMIT 10");
+                assert(ids(r) == knn_fuerza_bruta(datos, q, 10, m, false, todas));
+                assert(tiene_paso(r, "knn_vectorial") && !tiene_paso(r, "ordenamiento") && "el heap ya entrega el orden");
+                assert(detalle_paso(r, "knn_vectorial", "distancias_calculadas") == std::to_string(n));
+
+                // con WHERE, DESC o sin LIMIT no sirve el heap: Seq Scan, filtro y Sort, con el mismo resultado
+                r = e.ejecutar("SELECT id FROM " + t + " WHERE id > 150 ORDER BY " + dist + " LIMIT 5");
+                assert(ids(r) == knn_fuerza_bruta(datos, q, 5, m, false, [](long long id) { return id > 150; }));
+                assert(!tiene_paso(r, "knn_vectorial") && tiene_paso(r, "ordenamiento"));
+                assert(ids(e.ejecutar("SELECT id FROM " + t + " ORDER BY " + dist + " DESC LIMIT 5")) ==
+                       knn_fuerza_bruta(datos, q, 5, m, true, todas));
+
+                // rango: todas las filas a menos de la distancia del 20.o vecino
+                const auto veinte = knn_fuerza_bruta(datos, q, 20, m, false, todas);
+                const double radio = motor::vectorial::distancia(datos[static_cast<std::size_t>(veinte.back() - 1)], q, m);
+                char limite[32];
+                std::snprintf(limite, sizeof(limite), "%.9g", radio + 1e-6);
+                r = e.ejecutar("SELECT COUNT(*) FROM " + t + " WHERE " + dist + " < " + limite);
+                assert(r.filas[0][0].entero == 20);
+            }
+        }
+        Resultado r = e.ejecutar("SELECT id FROM " + t + " ORDER BY distancia(v, " + literal_vector(consultas[2]) + ") LIMIT 1");
+        assert(r.filas[0][0].entero == 42);
+        r = e.ejecutar("EXPLAIN SELECT * FROM " + t + " ORDER BY distancia(v, " + literal_vector(consultas[0]) + ", 'coseno') LIMIT 3");
+        assert(texto_del_plan(r).find("Seq Vector Scan") != std::string::npos);
+        assert(texto_del_plan(r).find("VECTOR(16 dimensiones)") != std::string::npos);
+
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY distancia(v, VECTOR(1, 2)) LIMIT 3") && "dimension distinta");
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " ORDER BY distancia(v, POINT(1, 2)) LIMIT 3"));
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE distancia(id, " + literal_vector(consultas[0]) + ") < 1"));
+        e.ejecutar("DELETE FROM " + t + " WHERE distancia(v, " + literal_vector(consultas[2]) + ") < 0.0001");
+        assert(e.ejecutar("SELECT COUNT(*) FROM " + t).filas[0][0].entero == static_cast<long long>(n - 1));
+        e.ejecutar("DROP TABLE " + t);
+    }
+    std::cout << "k-NN de vectores: euclidiana, producto punto y coseno igual a la fuerza bruta en las tres organizaciones;\n"
+                 "          con heap (Seq Vector Scan) sin WHERE, con Sort si hay WHERE o DESC; rango y DELETE por distancia\n";
+}
+
 void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -505,8 +797,10 @@ void prueba_espacial() {
     const std::string knn = "SELECT nombre FROM tiendas_HEAP ORDER BY distancia(ubicacion, " + centro + ") LIMIT 3";
     const std::vector<std::string> sin_indice_radio = nombres(e.ejecutar(radio));
     const std::vector<std::string> sin_indice_knn = nombres(e.ejecutar(knn));
-    assert(falla_ejecucion(e, "CREATE INDEX g ON tiendas_SEQUENTIAL (ubicacion) USING RTREE"));
     assert(e.ejecutar("CREATE INDEX idx_geo ON tiendas_HEAP (ubicacion) USING RTREE").afectadas == 5);
+    assert(e.ejecutar("CREATE INDEX idx_geo ON tiendas_SEQUENTIAL (ubicacion) USING RTREE").afectadas == 5);
+    r = e.ejecutar("SELECT nombre FROM tiendas_SEQUENTIAL WHERE distancia(ubicacion, " + centro + ") < 6000 ORDER BY nombre");
+    assert(nombres(r) == sin_indice_radio && tiene_paso(r, "rango_espacial"));
 
     r = e.ejecutar(radio);
     assert(nombres(r) == sin_indice_radio && tiene_paso(r, "rango_espacial"));
@@ -540,6 +834,83 @@ void prueba_espacial() {
               << "          poligonos con ray casting; con R-Tree el radio, el k-NN y el poligono dan lo mismo que sin indice\n";
 }
 
+std::vector<std::string> filas_texto(const Resultado& r) {
+    std::vector<std::string> salida;
+    for (const auto& fila : r.filas) {
+        std::string s;
+        for (const auto& v : fila) s += v.a_texto() + "|";
+        salida.push_back(s);
+    }
+    return salida;
+}
+
+std::string con_tabla(std::string sql, const std::string& t) {
+    return sql.replace(sql.find("{t}"), 3, t);
+}
+
+void prueba_matriz_indices() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    const std::vector<std::string> columnas = {"num", "texto", "punto"};
+    const std::vector<std::vector<std::string>> consultas = {
+        {"SELECT id FROM {t} WHERE num = 3 ORDER BY id",
+         "SELECT id FROM {t} WHERE num BETWEEN 2 AND 4 ORDER BY id",
+         "SELECT num FROM {t} ORDER BY num"},
+        {"SELECT id FROM {t} WHERE texto = 'abcd1' ORDER BY id",
+         "SELECT id FROM {t} WHERE texto BETWEEN 'abcd2' AND 'abcd4' ORDER BY id",
+         "SELECT id FROM {t} WHERE texto >= 'zeta3' ORDER BY id",
+         "SELECT texto FROM {t} ORDER BY texto"},
+        {"SELECT id FROM {t} WHERE distancia(punto, POINT(-12.1, -77.1)) < 8000 ORDER BY id",
+         "SELECT id FROM {t} ORDER BY distancia(punto, POINT(-12.1, -77.1004)) LIMIT 3"}};
+    // plan esperado: {bplus o rtree, hash}
+    const std::vector<std::vector<std::array<std::string, 2>>> planes = {
+        {{"busqueda_por_indice", "busqueda_por_indice"}, {"rango_por_indice", "scan_completo"}, {"orden_por_indice", "ordenamiento"}},
+        {{"busqueda_por_indice", "busqueda_por_indice"}, {"", ""}, {"rango_por_indice", "scan_completo"}, {"orden_por_indice", "ordenamiento"}},
+        {{"rango_espacial", ""}, {"knn_espacial", ""}}};
+
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        for (const std::string idx : {"BPLUS", "HASH", "RTREE"}) {
+            const std::string t = "m_" + org + "_" + idx;
+            e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, num INT, texto VARCHAR(12), punto POINT) USING " + org);
+            for (int i = 1; i <= 40; ++i) {
+                char punto[48];
+                std::snprintf(punto, sizeof(punto), "POINT(%.2f, %.2f)", -12.0 - 0.01 * i, -77.0 - 0.01 * i);
+                e.ejecutar("INSERT INTO " + t + " VALUES (" + std::to_string(i) + ", " + std::to_string(i % 8) + ", '" +
+                           (i % 2 ? "abcd" : "zeta") + std::to_string(i % 7) + "', " + punto + ")");
+            }
+            for (std::size_t k = 0; k < columnas.size(); ++k) {
+                const std::string crear = "CREATE INDEX i_" + columnas[k] + " ON " + t + " (" + columnas[k] + ") USING " + idx;
+                if (idx == "RTREE" ? columnas[k] != "punto" : columnas[k] == "punto") {
+                    assert(falla_ejecucion(e, crear));
+                    continue;
+                }
+                std::vector<std::vector<std::string>> esperado;
+                for (const std::string& q : consultas[k]) esperado.push_back(filas_texto(e.ejecutar(con_tabla(q, t))));
+                assert(!esperado[0].empty());
+                assert(e.ejecutar(crear).afectadas == 40);
+
+                const std::size_t j = idx == "HASH" ? 1 : 0;
+                for (std::size_t q = 0; q < consultas[k].size(); ++q) {
+                    const Resultado r = e.ejecutar(con_tabla(consultas[k][q], t));
+                    assert(filas_texto(r) == esperado[q]);
+                    assert(planes[k][q][j].empty() || tiene_paso(r, planes[k][q][j]));
+                }
+
+                // insert y delete con el indice
+                const int borrar = std::stoi(esperado[0][0]);
+                const std::string nuevo = std::to_string(41 + k);
+                e.ejecutar("INSERT INTO " + t + " VALUES (" + nuevo + ", 3, 'abcd1', POINT(-12.1, -77.1))");
+                e.ejecutar("DELETE FROM " + t + " WHERE id = " + std::to_string(borrar));
+                esperado[0].erase(esperado[0].begin());
+                esperado[0].push_back(nuevo + "|");
+                assert(filas_texto(e.ejecutar(con_tabla(consultas[k][0], t))) == esperado[0]);
+            }
+        }
+    }
+    std::cout << "matriz de indices: HEAP, SEQUENTIAL y BPLUS x INT, VARCHAR y POINT x BPLUS, HASH y RTREE;\n"
+              << "          lo valido da lo mismo que sin indice y se mantiene con INSERT y DELETE; lo demas falla\n";
+}
+
 }  // namespace
 
 int main() {
@@ -561,7 +932,12 @@ int main() {
     prueba_tabla_manual();
     prueba_pk_no_primera();
     prueba_float();
+    prueba_vector();
+    prueba_knn_vectorial();
     prueba_espacial();
+    prueba_matriz_indices();
+    prueba_busqueda_texto();
+    prueba_indice_spimi();
     std::cout << "Prueba completada correctamente.\n";
     return 0;
 }
