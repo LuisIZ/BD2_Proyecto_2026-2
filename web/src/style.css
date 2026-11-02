@@ -1791,6 +1791,10 @@ tr.current td,
 .demo-step[aria-current] {
   background: #f0f6f1;
 }
+/* con el fondo claro del tema, el texto blanco del botón activo no se leía */
+.segmented button[aria-pressed="true"]:not(.primary) {
+  color: #246b41;
+}
 .plan-list dd,
 .text-button,
 details summary {

@@ -272,6 +272,12 @@ export const labels: Record<string, string> = {
   rango_por_indice: "Rango por índice",
   busqueda_por_clave: "Búsqueda por clave",
   rango_por_clave: "Rango por clave",
+  orden_por_indice: "Orden por índice",
+  rango_espacial: "Rango espacial",
+  knn_espacial: "k-NN espacial",
+  poligono_espacial: "Dentro del polígono",
+  busqueda_texto: "Búsqueda de texto",
+  knn_vectorial: "k-NN de vectores",
   filtro: "Filtro",
   agrupacion: "Agrupación",
   ordenamiento: "Ordenamiento",
@@ -420,10 +426,12 @@ export function Plan({ result }: { result?: Result }) {
                           ? "Index Cond"
                           : step.operacion === "ordenamiento"
                             ? "Sort Key"
-                            : step.operacion.startsWith("busqueda") ||
-                                step.operacion.startsWith("rango")
-                              ? "Key Cond"
-                              : "Filter"}
+                            : step.operacion.startsWith("knn")
+                              ? "Order By"
+                              : step.operacion.startsWith("busqueda") ||
+                                  step.operacion.startsWith("rango")
+                                ? "Key Cond"
+                                : "Filter"}
                         :
                       </span>{" "}
                       <code>{step.cond}</code>

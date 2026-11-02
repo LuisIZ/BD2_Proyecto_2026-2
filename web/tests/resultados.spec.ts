@@ -112,3 +112,32 @@ test("k-NN de vectores muestra la galería de miniaturas", async ({ page }) => {
   await expect(page.getByRole("cell", { name: "290", exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test("MATCH real sobre productos_1k con Text Scan en el plan", async ({ page }) => {
+  test.setTimeout(120000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await expect(page.getByRole("status").first()).toContainText("tabla");
+  const tabla = `productos_${Date.now()}`;
+  // el CSV de 1k está en el repo (docs/dataset.md), así que esta prueba usa el motor real
+  await execute(
+    page,
+    `CREATE TABLE ${tabla} (id INT PRIMARY KEY, item_id VARCHAR(20), nombre VARCHAR(200), tipo VARCHAR(50), categoria VARCHAR(200), marca VARCHAR(80), color VARCHAR(40), descripcion VARCHAR(1000), imagen VARCHAR(80)); ` +
+      `COPY ${tabla} FROM FILE 'datos/productos_1k.csv'; ` +
+      `CREATE INDEX idx_${tabla} ON ${tabla} (descripcion) USING SPIMI;`,
+  );
+  await execute(
+    page,
+    `SELECT id, nombre, SCORE() AS relevancia FROM ${tabla} WHERE MATCH(descripcion, 'wooden door') USING BM25 ORDER BY relevancia DESC LIMIT 5;`,
+  );
+  await expect(page.getByRole("note")).toContainText("con BM25");
+  await expect(page.locator("td.score-cell")).toHaveCount(5);
+  await expect(page.locator("td mark").first()).toHaveText(/wooden|door/i);
+  const textScan = page.locator(".plan-list strong").filter({ hasText: "Text Scan" });
+  await expect(textScan).toBeVisible();
+  await expect(textScan.locator(".plan-es")).toHaveText("Búsqueda de texto");
+  await expect(page.getByText("Index Cond:", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/texto.png", fullPage: true });
+  expect(errors).toEqual([]);
+});
