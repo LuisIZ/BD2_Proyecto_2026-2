@@ -314,3 +314,6 @@ datos/db/
 
 # dataset ABO: el de 100k pesa ~67 MB, se regenera con tools/dataset/preparar.py
 datos/productos_100k.csv
+
+# artefactos de api/multimedia/extraer.py: vocabulario, IDF, cache y vectores (cientos de MB)
+datos/productos/

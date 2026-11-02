@@ -154,9 +154,12 @@ bench-agrupado: $(MOTOR_SQL)
 bench-ivf:
 	$(PYTHON) api/multimedia/bench_ivf.py
 
-# IVF vs HNSW vs ground truth exacto (FAISS Flat), 1k/10k por defecto
-bench-vectorial:
-	$(PYTHON) api/multimedia/bench_vectorial.py
+# comparacion vectorial (seccion 2.4.4): IVF vs HNSW vs Flat exacto vs k-NN secuencial del motor,
+# con los vectores SIFT de los 100k productos (api/multimedia/extraer.py); se miden sus primeros 1k, 10k y 100k
+VECTORES ?= datos/productos/vectores_100000.npy
+bench-vectorial: $(MOTOR_SQL)
+	$(PYTHON) api/multimedia/bench_vectorial.py --vectores $(VECTORES) --tamanos 1000 10000 100000 --motor
+	$(PYTHON) docs/comparacion_vectorial/graficar.py
 
 # --- reglas ---
 
