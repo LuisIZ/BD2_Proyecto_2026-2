@@ -317,3 +317,6 @@ datos/productos_100k.csv
 
 # artefactos de api/multimedia/extraer.py: vocabulario, IDF, cache y vectores (cientos de MB)
 datos/productos/
+
+# artefactos de api/multimedia/extraer_audio.py y los audios descargados
+datos/audio/
