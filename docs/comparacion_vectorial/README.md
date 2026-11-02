@@ -2,8 +2,8 @@
 
 Sección 2.4.4 del enunciado. Se compara el k-NN secuencial del motor C++ (`ORDER BY
 distancia(v, VECTOR(...)) LIMIT 10`, [vectores.md](../vectores.md)) con los índices IVF y HNSW
-de FAISS ([ivf.md](../ivf.md), `api/multimedia/indices.py`) y con el Flat exacto de FAISS, sobre
-los vectores de las imágenes de los productos de ABO.
+de FAISS ([ivf.md](../ivf.md), [hnsw.md](../hnsw.md), `api/multimedia/indices.py`) y con el
+Flat exacto de FAISS, sobre los vectores de las imágenes de los productos de ABO.
 
 ```powershell
 # 1. vectores SIFT -> K-Means -> histograma TF-IDF de los 100k productos (~19 min con 7 procesos)

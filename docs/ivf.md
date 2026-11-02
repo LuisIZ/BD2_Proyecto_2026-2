@@ -53,7 +53,9 @@ flowchart LR
 Insertar después de construir es lo mismo que el paso 3: el vector va a la lista de su
 centroide más cercano, sin reentrenar. Si se insertan muchos vectores de una zona nueva,
 las listas se desbalancean y conviene reconstruir. FAISS también permite borrar por id
-(`remove_ids`), que recorre las listas.
+(`remove_ids`), que recorre las listas. El adaptador expone las dos cosas como
+`insertar(vectores, ids)` y `eliminar(ids)`; el HNSW, en cambio, solo puede borrar de forma
+lógica ([hnsw.md](hnsw.md#borrado)).
 
 ## Búsqueda
 
