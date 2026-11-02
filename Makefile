@@ -130,6 +130,7 @@ bench-espacial-haversine: $(BUILD)/espacial_bench$(EXE)
 bench-texto: $(BUILD)/texto_bench$(EXE)
 	@$(call MKDIR,datos/resultados)
 	$(call RUN,$(BUILD)/texto_bench$(EXE))
+	$(PYTHON) docs/comparacion_texto/relevancia.py
 
 # transacciones (seccion 2.1.4): hilos con y sin locks sobre la misma cuenta
 demo-transacciones: $(BUILD)/transacciones_demo$(EXE)

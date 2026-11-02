@@ -1,0 +1,91 @@
+tecnica,consulta,texto,relevantes,aciertos,p10,r10,r10_max
+tf_idf,1,running shoes for men,49,6,0.6,0.1224,0.2041
+tf_idf,2,ottoman footstool,33,8,0.8,0.2424,0.303
+tf_idf,3,bar stool,30,5,0.5,0.1667,0.3333
+tf_idf,4,table lamp,25,4,0.4,0.16,0.4
+tf_idf,5,flip wallet phone case,24,0,0.0,0.0,0.4167
+tf_idf,6,dining chair,24,5,0.5,0.2083,0.4167
+tf_idf,7,top handle handbag,22,9,0.9,0.4091,0.4545
+tf_idf,8,bed headboard,19,0,0.0,0.0,0.5263
+tf_idf,9,women earrings,19,0,0.0,0.0,0.5263
+tf_idf,10,men loafers,20,0,0.0,0.0,0.5
+tf_idf,11,storage box with lid,18,3,0.3,0.1667,0.5556
+tf_idf,12,bed frame,17,0,0.0,0.0,0.5882
+tf_idf,13,statement ring,23,0,0.0,0.0,0.4348
+tf_idf,14,wall clock,16,5,0.5,0.3125,0.625
+tf_idf,15,women running shoes,16,6,0.6,0.375,0.625
+tf_idf,16,end table,17,2,0.2,0.1176,0.5882
+tf_idf,17,women fashion sneakers,26,2,0.2,0.0769,0.3846
+tf_idf,18,women sandals,13,1,0.1,0.0769,0.7692
+tf_idf,19,women slippers,13,0,0.0,0.0,0.7692
+tf_idf,20,pendant necklace,12,0,0.0,0.0,0.8333
+tf_idf,21,ballet flats,12,0,0.0,0.0,0.8333
+tf_idf,22,balaclava face mask,16,8,0.8,0.5,0.625
+tf_idf,23,coffee table,15,2,0.2,0.1333,0.6667
+tf_idf,24,stud earrings,11,0,0.0,0.0,0.9091
+tf_idf,25,wall stickers,11,8,0.8,0.7273,0.9091
+tf_idf,26,clutch bag,10,7,0.7,0.7,1.0
+tf_idf,27,sofa couch,84,7,0.7,0.0833,0.119
+tf_idf,28,trail mix snack,10,5,0.5,0.5,1.0
+tf_idf,29,wall sconce,10,10,1.0,1.0,1.0
+tf_idf,30,flower planter,10,5,0.5,0.5,1.0
+bm25,1,running shoes for men,49,10,1.0,0.2041,0.2041
+bm25,2,ottoman footstool,33,8,0.8,0.2424,0.303
+bm25,3,bar stool,30,9,0.9,0.3,0.3333
+bm25,4,table lamp,25,8,0.8,0.32,0.4
+bm25,5,flip wallet phone case,24,4,0.4,0.1667,0.4167
+bm25,6,dining chair,24,6,0.6,0.25,0.4167
+bm25,7,top handle handbag,22,7,0.7,0.3182,0.4545
+bm25,8,bed headboard,19,2,0.2,0.1053,0.5263
+bm25,9,women earrings,19,0,0.0,0.0,0.5263
+bm25,10,men loafers,20,0,0.0,0.0,0.5
+bm25,11,storage box with lid,18,3,0.3,0.1667,0.5556
+bm25,12,bed frame,17,7,0.7,0.4118,0.5882
+bm25,13,statement ring,23,0,0.0,0.0,0.4348
+bm25,14,wall clock,16,10,1.0,0.625,0.625
+bm25,15,women running shoes,16,8,0.8,0.5,0.625
+bm25,16,end table,17,6,0.6,0.3529,0.5882
+bm25,17,women fashion sneakers,26,3,0.3,0.1154,0.3846
+bm25,18,women sandals,13,0,0.0,0.0,0.7692
+bm25,19,women slippers,13,0,0.0,0.0,0.7692
+bm25,20,pendant necklace,12,2,0.2,0.1667,0.8333
+bm25,21,ballet flats,12,0,0.0,0.0,0.8333
+bm25,22,balaclava face mask,16,8,0.8,0.5,0.625
+bm25,23,coffee table,15,6,0.6,0.4,0.6667
+bm25,24,stud earrings,11,3,0.3,0.2727,0.9091
+bm25,25,wall stickers,11,8,0.8,0.7273,0.9091
+bm25,26,clutch bag,10,7,0.7,0.7,1.0
+bm25,27,sofa couch,84,6,0.6,0.0714,0.119
+bm25,28,trail mix snack,10,5,0.5,0.5,1.0
+bm25,29,wall sconce,10,10,1.0,1.0,1.0
+bm25,30,flower planter,10,6,0.6,0.6,1.0
+gin,1,running shoes for men,49,10,1.0,0.2041,0.2041
+gin,2,ottoman footstool,33,8,0.8,0.2424,0.303
+gin,3,bar stool,30,9,0.9,0.3,0.3333
+gin,4,table lamp,25,10,1.0,0.4,0.4
+gin,5,flip wallet phone case,24,5,0.5,0.2083,0.4167
+gin,6,dining chair,24,8,0.8,0.3333,0.4167
+gin,7,top handle handbag,22,3,0.3,0.1364,0.4545
+gin,8,bed headboard,19,2,0.2,0.1053,0.5263
+gin,9,women earrings,19,4,0.4,0.2105,0.5263
+gin,10,men loafers,20,9,0.9,0.45,0.5
+gin,11,storage box with lid,18,3,0.3,0.1667,0.5556
+gin,12,bed frame,17,5,0.5,0.2941,0.5882
+gin,13,statement ring,23,1,0.1,0.0435,0.4348
+gin,14,wall clock,16,10,1.0,0.625,0.625
+gin,15,women running shoes,16,8,0.8,0.5,0.625
+gin,16,end table,17,6,0.6,0.3529,0.5882
+gin,17,women fashion sneakers,26,1,0.1,0.0385,0.3846
+gin,18,women sandals,13,2,0.2,0.1538,0.7692
+gin,19,women slippers,13,0,0.0,0.0,0.7692
+gin,20,pendant necklace,12,4,0.4,0.3333,0.8333
+gin,21,ballet flats,12,0,0.0,0.0,0.8333
+gin,22,balaclava face mask,16,8,0.8,0.5,0.625
+gin,23,coffee table,15,5,0.5,0.3333,0.6667
+gin,24,stud earrings,11,5,0.5,0.4545,0.9091
+gin,25,wall stickers,11,8,0.8,0.7273,0.9091
+gin,26,clutch bag,10,0,0.0,0.0,1.0
+gin,27,sofa couch,84,6,0.6,0.0714,0.119
+gin,28,trail mix snack,10,4,0.4,0.4,1.0
+gin,29,wall sconce,10,10,1.0,1.0,1.0
+gin,30,flower planter,10,6,0.6,0.6,1.0

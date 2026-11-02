@@ -21,8 +21,10 @@
 --                           y bd2.datos = '/datos'
 --      Si falta el de 100k, se omite ese tamaño.
 --   2. pgAdmin > Query Tool > abrir este archivo > F5 (o psql -f datos/resultados/gin_bench.sql).
---   3. Exportar el último SELECT como datos/resultados/gin_bench.csv
---      (en psql: \copy (SELECT * FROM gin_resultados ORDER BY n, operacion, palabras) TO 'datos/resultados/gin_bench.csv' CSV HEADER).
+--   3. Exportar gin_resultados como datos/resultados/gin_bench.csv y gin_ranking como
+--      datos/resultados/gin_ranking.csv (en pgAdmin, botón de descarga del resultado; en psql:
+--      \copy (SELECT * FROM gin_resultados ORDER BY n, operacion, palabras) TO 'datos/resultados/gin_bench.csv' CSV HEADER
+--      \copy (SELECT * FROM gin_ranking ORDER BY consulta, posicion) TO 'datos/resultados/gin_ranking.csv' CSV HEADER).
 
 SET bd2.datos = 'C:/datos_bd2/productos';
 
@@ -134,3 +136,56 @@ SELECT estructura, n, operacion, palabras, round(tiempo_ms, 4) AS tiempo_ms,
        round(resultados, 2) AS resultados, bytes
 FROM gin_resultados
 ORDER BY n, operacion DESC, palabras;
+
+-- Juicios de relevancia: top 10 de GIN para las 30 consultas de
+-- docs/comparacion_texto/consultas_relevancia.csv sobre los mismos 10k productos que usa
+-- texto_bench. docs/comparacion_texto/relevancia.py calcula Precision@10 y Recall@10.
+-- Los empates de ts_rank se rompen por id, igual que en el motor.
+DROP TABLE IF EXISTS gin_ranking;
+CREATE TABLE gin_ranking (consulta integer, posicion integer, id integer, score real);
+WITH consultas (consulta, texto) AS (
+    VALUES
+        (1, 'running shoes for men'),
+        (2, 'ottoman footstool'),
+        (3, 'bar stool'),
+        (4, 'table lamp'),
+        (5, 'flip wallet phone case'),
+        (6, 'dining chair'),
+        (7, 'top handle handbag'),
+        (8, 'bed headboard'),
+        (9, 'women earrings'),
+        (10, 'men loafers'),
+        (11, 'storage box with lid'),
+        (12, 'bed frame'),
+        (13, 'statement ring'),
+        (14, 'wall clock'),
+        (15, 'women running shoes'),
+        (16, 'end table'),
+        (17, 'women fashion sneakers'),
+        (18, 'women sandals'),
+        (19, 'women slippers'),
+        (20, 'pendant necklace'),
+        (21, 'ballet flats'),
+        (22, 'balaclava face mask'),
+        (23, 'coffee table'),
+        (24, 'stud earrings'),
+        (25, 'wall stickers'),
+        (26, 'clutch bag'),
+        (27, 'sofa couch'),
+        (28, 'trail mix snack'),
+        (29, 'wall sconce'),
+        (30, 'flower planter')
+)
+INSERT INTO gin_ranking
+SELECT c.consulta, row_number() OVER (PARTITION BY c.consulta ORDER BY r.score DESC, r.id), r.id, r.score
+FROM consultas c
+CROSS JOIN LATERAL (
+    SELECT id, ts_rank(doc, q) AS score
+    FROM gin_productos_10k,
+         (SELECT replace(plainto_tsquery('english', c.texto)::text, '&', '|')::tsquery) AS t(q)
+    WHERE doc @@ q
+    ORDER BY score DESC, id
+    LIMIT 10
+) r;
+
+SELECT consulta, count(*) AS resultados FROM gin_ranking GROUP BY consulta ORDER BY consulta;

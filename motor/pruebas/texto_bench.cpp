@@ -2,10 +2,14 @@
 // ranking TF-IDF (coseno) y BM25 sobre la descripción de los productos de ABO.
 //
 //   texto_bench [--salida datos/resultados/texto_bench.csv] [--repeticiones 5]
+//               [--relevancia docs/comparacion_texto/consultas_relevancia.csv]
+//               [--ranking datos/resultados/texto_ranking.csv]
 //
 // Para cada n (1k, 10k y 100k, si está el CSV) construye el índice y lo reabre desde
 // disco, y mide las mismas consultas de 1, 3 y 5 o más palabras con los dos rankings.
 // Las consultas son las de datos/resultados/gin_bench.sql, para comparar con GIN.
+// Con el índice de 10k guarda además el top 10 de las 30 consultas con juicios de
+// relevancia, que evalúa docs/comparacion_texto/relevancia.py (Precision@10 y Recall@10).
 
 #include "../texto/indice_invertido.h"
 #include "../texto/ranking.h"
@@ -87,6 +91,22 @@ std::vector<std::pair<long long, std::string>> leer_productos(const std::string&
     return docs;
 }
 
+// (consulta, texto) de los juicios de relevancia
+std::vector<std::pair<std::string, std::string>> leer_consultas(const std::string& ruta) {
+    std::ifstream entrada(ruta, std::ios::binary);
+    if (!entrada) throw std::runtime_error("no se pudo abrir " + ruta);
+    std::string linea;
+    std::getline(entrada, linea);
+    std::vector<std::pair<std::string, std::string>> consultas;
+    while (std::getline(entrada, linea)) {
+        if (!linea.empty() && linea.back() == '\r') linea.pop_back();
+        if (linea.empty()) continue;
+        const std::vector<std::string> campos = campos_csv(linea);
+        consultas.emplace_back(campos.at(0), campos.at(1));
+    }
+    return consultas;
+}
+
 double ms_desde(Reloj::time_point inicio) {
     return std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
 }
@@ -95,13 +115,18 @@ double ms_desde(Reloj::time_point inicio) {
 
 int main(int argc, char** argv) {
     std::string salida = "datos/resultados/texto_bench.csv";
+    std::string relevancia = "docs/comparacion_texto/consultas_relevancia.csv";
+    std::string salida_ranking = "datos/resultados/texto_ranking.csv";
     int repeticiones = 5;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--salida" && i + 1 < argc) salida = argv[++i];
         else if (arg == "--repeticiones" && i + 1 < argc) repeticiones = std::stoi(argv[++i]);
+        else if (arg == "--relevancia" && i + 1 < argc) relevancia = argv[++i];
+        else if (arg == "--ranking" && i + 1 < argc) salida_ranking = argv[++i];
         else {
-            std::cerr << "uso: texto_bench [--salida ruta.csv] [--repeticiones 5]\n";
+            std::cerr << "uso: texto_bench [--salida ruta.csv] [--repeticiones 5] [--relevancia consultas.csv]"
+                         " [--ranking ranking.csv]\n";
             return 1;
         }
     }
@@ -162,6 +187,22 @@ int main(int argc, char** argv) {
                 std::cout << "  " << tecnica << " " << palabras << " palabra(s): " << t << " ms, "
                           << (indice.postings_leidos() - postings_antes) / veces << " postings\n";
             }
+        }
+
+        // top 10 de las consultas con juicios de relevancia, sobre el corpus de 10k
+        if (n == 10000 && std::filesystem::exists(relevancia)) {
+            std::ofstream ranking(salida_ranking);
+            ranking << "tecnica,consulta,posicion,id,score\n";
+            for (const auto& [consulta, texto] : leer_consultas(relevancia)) {
+                for (const Ranking r : {Ranking::TF_IDF, Ranking::BM25}) {
+                    const auto top = buscar(indice, texto, 10, r);
+                    for (std::size_t p = 0; p < top.size(); ++p) {
+                        ranking << (r == Ranking::TF_IDF ? "tf_idf" : "bm25") << ',' << consulta << ',' << p + 1
+                                << ',' << top[p].doc_id << ',' << top[p].score << '\n';
+                    }
+                }
+            }
+            std::cout << "  top 10 de " << relevancia << " en " << salida_ranking << "\n";
         }
     }
     std::cout << "resultados en " << salida << "\n";
