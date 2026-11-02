@@ -448,6 +448,104 @@ th.num,
 td.num {
   text-align: right;
 }
+/* búsqueda de texto: score con barra y términos resaltados */
+.text-search {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+td mark {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: #fde68a;
+  color: inherit;
+}
+th.score-col,
+td.score-cell {
+  text-align: right;
+  min-width: 110px;
+}
+td.score-cell {
+  position: relative;
+}
+.score-bar {
+  position: absolute;
+  inset: 6px auto 6px 0;
+  border-radius: 0 3px 3px 0;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.score-value {
+  position: relative;
+}
+/* búsqueda por similitud: galería de miniaturas en el orden del ranking */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 12px 16px 16px;
+  list-style: none;
+  max-height: 520px;
+  overflow: auto;
+}
+.gallery-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.gallery-item img,
+.gallery-missing {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 4px;
+  object-fit: contain;
+  background: #f4f6f4;
+}
+.gallery-missing {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.gallery-rank {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.gallery-name {
+  margin: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gallery-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .row-number {
   width: 40px;
   color:#8d968f;
@@ -506,6 +604,20 @@ td.num {
 .map-dot.selected {
   background: #b6ff3b;
   border: 1px solid #405520;
+}
+.map-dot.query {
+  background: #c2255c;
+}
+/* vecinos del k-NN numerados en el orden del resultado */
+.knn-label {
+  display: grid;
+  place-items: center;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #c2255c;
+  color: #ffffff;
+  font: 700 11px/1 system-ui, sans-serif;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
 }
 .empty-small {
   padding: 16px;
@@ -1678,6 +1790,10 @@ tr.current td,
 .demo-step.current,
 .demo-step[aria-current] {
   background: #f0f6f1;
+}
+/* con el fondo claro del tema, el texto blanco del botón activo no se leía */
+.segmented button[aria-pressed="true"]:not(.primary) {
+  color: #246b41;
 }
 .plan-list dd,
 .text-button,

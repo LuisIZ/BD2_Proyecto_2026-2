@@ -1,21 +1,52 @@
 import { useState } from "react";
 import type { Cell, Result } from "./types";
 import PlanGraph, { stepPages } from "./PlanGraph";
+import { highlight, parseTextSearch } from "./textSearch";
+import Gallery, { galleryColumns, parseSimilarSearch } from "./Gallery";
+
+function Highlighted({ text, stems }: { text: string; stems: string[] }) {
+  return (
+    <>
+      {highlight(text, stems).map((fragment, i) =>
+        fragment.hit ? <mark key={i}>{fragment.text}</mark> : fragment.text,
+      )}
+    </>
+  );
+}
 
 export function Results({
   result,
+  sql = "",
   busy,
   onRowSelect,
 }: {
   result?: Result;
+  /** sentencia que produjo el resultado; con MATCH se resaltan los términos */
+  sql?: string;
   busy: boolean;
   onRowSelect?: (row: Cell[], columns: string[]) => void;
 }) {
   const [page, setPage] = useState(0);
+  const [layout, setLayout] = useState<"galeria" | "tabla">("galeria");
   const rows = result?.filas ?? [];
   const columns = result?.columnas ?? [];
   const pages = Math.max(1, Math.ceil(rows.length / 50));
   const current = Math.min(page, pages - 1);
+  const text = result?.ok ? parseTextSearch(sql) : undefined;
+  const scoreIndex = text
+    ? columns.findIndex((col) =>
+        [text.scoreColumn, "score", "relevancia"].includes(col.toLowerCase()),
+      )
+    : -1;
+  const maxScore = Math.max(
+    0,
+    ...rows.map((row) => Number(row[scoreIndex]) || 0),
+  );
+  const similar = result?.ok ? parseSimilarSearch(sql) : undefined;
+  // la galería necesita la columna id para pedir cada miniatura
+  const canShowGallery =
+    !!similar && rows.length > 0 && galleryColumns(columns, rows, similar).id >= 0;
+  const showGallery = canShowGallery && layout === "galeria";
 
   function download() {
     const escape = (value: unknown) =>
@@ -41,9 +72,24 @@ export function Results({
     >
       <div className="panel-heading">
         <h2 id="results-title">Resultados</h2>
-        <button onClick={download} disabled={!rows.length || busy}>
-          Exportar CSV
-        </button>
+        <div className="panel-actions">
+          {canShowGallery && (
+            <div className="segmented" role="group" aria-label="Vista de resultados">
+              {(["galeria", "tabla"] as const).map((item) => (
+                <button
+                  key={item}
+                  aria-pressed={layout === item}
+                  onClick={() => setLayout(item)}
+                >
+                  {item === "galeria" ? "Galería" : "Tabla"}
+                </button>
+              ))}
+            </div>
+          )}
+          <button onClick={download} disabled={!rows.length || busy}>
+            Exportar CSV
+          </button>
+        </div>
       </div>
       {!result ? (
         <p className="empty-small">Sin resultados.</p>
@@ -63,7 +109,41 @@ export function Results({
               ms
             </span>
           </div>
-          {columns.length > 0 ? (
+          {text && (
+            <p className="text-search" role="note">
+              Búsqueda de texto en <code>{text.column}</code>
+              {text.ranking ? ` con ${text.ranking === "TF_IDF" ? "TF-IDF" : "BM25"}` : ""}:{" "}
+              «{text.query}»
+              {text.terms.length > 0 && (
+                <span className="muted">
+                  {" "}
+                  · términos resaltados: {text.terms.join(", ")}
+                </span>
+              )}
+            </p>
+          )}
+          {similar && (
+            <p className="text-search" role="note">
+              Búsqueda por similitud
+              {similar.index ? ` con ${similar.index}` : " (k-NN secuencial)"}
+              {similar.metric ? `, métrica ${similar.metric}` : ""}
+              {similar.k ? `, k = ${similar.k}` : ""}
+              {!canShowGallery && rows.length > 0 && (
+                <span className="muted">
+                  {" "}
+                  · incluye la columna id en el SELECT para ver la galería
+                </span>
+              )}
+            </p>
+          )}
+          {showGallery && similar ? (
+            <Gallery
+              columns={columns}
+              rows={rows.slice(current * 50, (current + 1) * 50)}
+              search={similar}
+              offset={current * 50}
+            />
+          ) : columns.length > 0 ? (
             <div className="table-scroll">
               <table>
                 <caption className="sr-only">
@@ -75,7 +155,11 @@ export function Results({
                       #
                     </th>
                     {columns.map((col, i) => (
-                      <th scope="col" key={i}>
+                      <th
+                        scope="col"
+                        key={i}
+                        className={i === scoreIndex ? "score-col" : undefined}
+                      >
                         {col}
                       </th>
                     ))}
@@ -106,17 +190,38 @@ export function Results({
                         }}
                       >
                         <td className="row-number">{current * 50 + i + 1}</td>
-                        {row.map((cell, j) => (
-                          <td
-                            key={j}
-                            className={
-                              typeof cell === "number" ? "numeric" : ""
-                            }
-                            title={String(cell ?? "")}
-                          >
-                            {cell ?? "NULL"}
-                          </td>
-                        ))}
+                        {row.map((cell, j) =>
+                          j === scoreIndex ? (
+                            <td key={j} className="numeric score-cell" title={String(cell ?? "")}>
+                              <span
+                                className="score-bar"
+                                style={{
+                                  width: `${maxScore > 0 ? (Number(cell) / maxScore) * 100 : 0}%`,
+                                }}
+                              />
+                              <span className="score-value">
+                                {Number(cell).toLocaleString("es-PE", {
+                                  minimumFractionDigits: 4,
+                                  maximumFractionDigits: 4,
+                                })}
+                              </span>
+                            </td>
+                          ) : (
+                            <td
+                              key={j}
+                              className={
+                                typeof cell === "number" ? "numeric" : ""
+                              }
+                              title={String(cell ?? "")}
+                            >
+                              {text && typeof cell === "string" ? (
+                                <Highlighted text={cell} stems={text.stems} />
+                              ) : (
+                                (cell ?? "NULL")
+                              )}
+                            </td>
+                          ),
+                        )}
                       </tr>
                     ))}
                 </tbody>
@@ -167,6 +272,12 @@ export const labels: Record<string, string> = {
   rango_por_indice: "Rango por índice",
   busqueda_por_clave: "Búsqueda por clave",
   rango_por_clave: "Rango por clave",
+  orden_por_indice: "Orden por índice",
+  rango_espacial: "Rango espacial",
+  knn_espacial: "k-NN espacial",
+  poligono_espacial: "Dentro del polígono",
+  busqueda_texto: "Búsqueda de texto",
+  knn_vectorial: "k-NN de vectores",
   filtro: "Filtro",
   agrupacion: "Agrupación",
   ordenamiento: "Ordenamiento",
@@ -315,10 +426,12 @@ export function Plan({ result }: { result?: Result }) {
                           ? "Index Cond"
                           : step.operacion === "ordenamiento"
                             ? "Sort Key"
-                            : step.operacion.startsWith("busqueda") ||
-                                step.operacion.startsWith("rango")
-                              ? "Key Cond"
-                              : "Filter"}
+                            : step.operacion.startsWith("knn")
+                              ? "Order By"
+                              : step.operacion.startsWith("busqueda") ||
+                                  step.operacion.startsWith("rango")
+                                ? "Key Cond"
+                                : "Filter"}
                         :
                       </span>{" "}
                       <code>{step.cond}</code>

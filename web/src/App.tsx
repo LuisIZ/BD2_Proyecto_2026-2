@@ -8,7 +8,7 @@ import Demo from "./Demo";
 import Syntax from "./Syntax";
 import { Plan, Results } from "./Results";
 import SpatialMap from "./SpatialMap";
-import { statementAt } from "./sql";
+import { splitStatements, statementAt } from "./sql";
 import type { Cell } from "./types";
 
 const views = [
@@ -54,6 +54,18 @@ export default function App() {
   const text =
     table?.columnas.find((column) => column.tipo !== "INT")?.nombre ??
     "Country";
+  // columnas para los ejemplos de texto, espacial y vectores; si la tabla no las tiene,
+  // el ejemplo usa un nombre genérico que se puede reemplazar
+  const longText =
+    table?.columnas
+      .filter((column) => column.tipo === "VARCHAR")
+      .sort((a, b) => b.tam - a.tam)[0]?.nombre ?? "descripcion";
+  const point =
+    table?.columnas.find((column) => column.tipo === "POINT")?.nombre ??
+    "ubicacion";
+  const vectorColumn = table?.columnas.find((column) => column.tipo === "VECTOR");
+  // un vector de unos con la dimensión de la columna (256 si no hay columna VECTOR)
+  const queryVector = `VECTOR(${Array(vectorColumn?.tam || 256).fill(1).join(", ")})`;
   const activeResult = results[resultIndex];
   const resultTableName =
     /\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(
@@ -175,6 +187,16 @@ export default function App() {
     indice: `CREATE INDEX idx_${name}_${pk} ON ${name} (${pk}) USING BPLUS;`,
     insertar: `INSERT INTO ${name} VALUES (${table ? table.columnas.map((column) => (column.tipo === "INT" ? (column.pk ? "100001" : "1") : "'x'")).join(", ") : "100001, 'id', 'x', 'x', 'x', 'x', 2026, 'x', 1"});`,
     eliminar: `DELETE FROM ${name} WHERE ${pk} = 100001;`,
+    spimi: `CREATE INDEX idx_${name}_${longText} ON ${name} (${longText}) USING SPIMI;`,
+    texto: `SELECT ${pk}, ${longText}, SCORE() AS relevancia FROM ${name}
+  WHERE MATCH(${longText}, 'wooden door') USING BM25
+  ORDER BY relevancia DESC LIMIT 10;`,
+    knnEspacial: `SELECT * FROM ${name}
+  ORDER BY distancia(${point}, POINT(-12.0464, -77.0428)) LIMIT 5;`,
+    radio: `SELECT * FROM ${name}
+  WHERE distancia(${point}, POINT(-12.0464, -77.0428)) <= 3000;`,
+    knnVectorial: `SELECT ${pk} FROM ${name}
+  ORDER BY distancia(${vectorColumn?.nombre ?? "v"}, ${queryVector}, 'coseno') LIMIT 10;`,
   };
 
   return (
@@ -362,6 +384,17 @@ export default function App() {
                     <option value="indice">Crear índice B+ (heap)</option>
                     <option value="insertar">INSERT</option>
                     <option value="eliminar">DELETE</option>
+                    <optgroup label="Texto (Parte 3)">
+                      <option value="spimi">Crear índice SPIMI</option>
+                      <option value="texto">MATCH con score BM25</option>
+                    </optgroup>
+                    <optgroup label="Espacial (Parte 2)">
+                      <option value="radio">Rango por radio</option>
+                      <option value="knnEspacial">k-NN espacial</option>
+                    </optgroup>
+                    <optgroup label="Vectores (Parte 4)">
+                      <option value="knnVectorial">k-NN de vectores</option>
+                    </optgroup>
                   </select>
                   <select
                     aria-label="Historial de consultas"
@@ -479,6 +512,7 @@ export default function App() {
             <Results
               key={`${execution}-${resultIndex}`}
               result={activeResult}
+              sql={splitStatements(resultSql)[resultIndex]?.text ?? resultSql}
               busy={busy}
               onRowSelect={(values, columns) =>
                 setMapSelection({ values, columns })
