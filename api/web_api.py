@@ -1,6 +1,7 @@
 """API local para React. Arranque: python -m uvicorn api.web_api:app."""
 
 import csv
+import hashlib
 import os
 import re
 import sys
@@ -10,7 +11,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+import cv2
+import numpy as np
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -110,7 +113,7 @@ def preparar_similitud(sql):
     if "similar_to" not in sql.lower():
         return sql, []
     try:
-        return reescribir(sql, motor.catalogo(), indices_faiss)
+        return reescribir(sql, motor.catalogo(), indices_faiss, extraer=vector_de_imagen)
     except (ErrorMotor, OSError, ValueError, RuntimeError) as error:
         raise HTTPException(400, f"SIMILAR_TO: {error}") from error
 
@@ -324,3 +327,60 @@ def audio(id: int):
     if ruta.is_relative_to(AUDIOS.resolve()) and ruta.is_file():
         return FileResponse(ruta, media_type="audio/wav", headers={"Cache-Control": "public, max-age=86400"})
     raise HTTPException(404, f"Falta el audio {relativa} en {AUDIOS}. Ver docs/extraccion_audio.md.")
+
+
+# --- imagenes de consulta para SIMILAR_TO('archivo') (Parte 4) ---
+
+SUBIDAS = RAIZ / ".build" / "subidas"
+EXTENSIONES_IMAGEN = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+MAX_SUBIDA = 10 * 1024 * 1024
+
+
+def ruta_imagen(nombre):
+    """Donde se busca el archivo de SIMILAR_TO('nombre'): las imagenes subidas y las
+    carpetas de imagenes del dataset (ahi 'nombre' es la ruta relativa del CSV de productos)."""
+    for carpeta in [SUBIDAS, *CARPETAS_IMAGENES]:
+        ruta = (carpeta / nombre).resolve()
+        if ruta.is_relative_to(carpeta.resolve()) and ruta.is_file():
+            return ruta
+    raise FileNotFoundError(f"no se encontro la imagen {nombre}: subela con POST /api/multimedia/subir")
+
+
+def vector_de_imagen(nombre):
+    """El mismo vector que extraer.py guardo para cada producto: SIFT, palabras visuales y TF-IDF."""
+    from multimedia.extraer import extract_features  # carga OpenCV y el vocabulario solo si hace falta
+
+    return extract_features(ruta_imagen(nombre))
+
+
+def guardar_subida(contenido, nombre):
+    """Guarda la imagen con el hash de su contenido como nombre: subir dos veces la misma no duplica."""
+    extension = Path(nombre).suffix.lower()
+    if extension not in EXTENSIONES_IMAGEN:
+        raise ValueError(f"extension no admitida: {extension or '(ninguna)'} ({', '.join(sorted(EXTENSIONES_IMAGEN))})")
+    if not contenido or len(contenido) > MAX_SUBIDA:
+        raise ValueError("la imagen debe pesar entre 1 byte y 10 MB")
+    if cv2.imdecode(np.frombuffer(contenido, dtype=np.uint8), cv2.IMREAD_GRAYSCALE) is None:
+        raise ValueError("el archivo no es una imagen que OpenCV pueda leer")
+    SUBIDAS.mkdir(parents=True, exist_ok=True)
+    archivo = hashlib.sha1(contenido).hexdigest()[:16] + extension
+    (SUBIDAS / archivo).write_bytes(contenido)
+    return archivo
+
+
+@app.post("/api/multimedia/subir")
+async def subir(request: Request, nombre: str):
+    """El cuerpo es la imagen tal cual (fetch con body: archivo); devuelve el nombre para SIMILAR_TO."""
+    try:
+        archivo = guardar_subida(await request.body(), nombre)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"archivo": archivo, "consulta": f"SIMILAR_TO('{archivo}', k=10)"}
+
+
+@app.get("/api/multimedia/subidas/{archivo}")
+def subida(archivo: str):
+    ruta = (SUBIDAS / archivo).resolve()
+    if not ruta.is_relative_to(SUBIDAS.resolve()) or not ruta.is_file():
+        raise HTTPException(404, f"No hay una imagen subida con el nombre {archivo}.")
+    return FileResponse(ruta, headers={"Cache-Control": "public, max-age=86400"})

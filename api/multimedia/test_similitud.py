@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -221,6 +222,105 @@ class PruebaSimilarTo(ConMotor):
         self.assertEqual((busqueda["indice"], busqueda["candidatos"]), ("f_hnsw", 4))
         self.assertEqual(sincronizados["f_hnsw"]["eliminados"], 1, "el DELETE del mismo lote se aplica despues")
         self.assertEqual(sincronizados["f_ivf"]["eliminados"], 1)
+
+
+def imagen_patron(semilla):
+    """Circulos al azar: SIFT encuentra esquinas y bordes distintos en cada una."""
+    import cv2
+
+    rng = np.random.default_rng(semilla)
+    imagen = np.zeros((256, 256), dtype=np.uint8)
+    for _ in range(60):
+        x, y = rng.integers(10, 246, size=2)
+        cv2.circle(imagen, (int(x), int(y)), int(rng.integers(3, 15)), int(rng.integers(80, 256)), thickness=int(rng.integers(1, 4)))
+    return cv2.imencode(".png", imagen)[1].tobytes()
+
+
+class PruebaImagenDeConsulta(ConMotor):
+    """SIMILAR_TO('archivo'): la API extrae el vector de la imagen subida, igual que extraer.py con el catalogo."""
+
+    def setUp(self):
+        super().setUp()
+        import sys
+
+        from multimedia.extraer import extract_features, extraer_descriptores
+
+        sys.path.insert(0, str(RAIZ))
+        from api import web_api
+
+        self.web_api = web_api
+        self.antes = (web_api.motor, web_api.indices_faiss, web_api.SUBIDAS, dict(os.environ))
+        web_api.motor, web_api.indices_faiss = self.motor, self.indices
+        web_api.SUBIDAS = Path(self.dir) / "subidas"
+
+        # vocabulario visual de DIMENSION palabras sacado de las mismas imagenes, e IDF plano
+        self.imagenes = {pk: imagen_patron(pk) for pk in range(1, 7)}
+        rutas = {}
+        for pk, contenido in self.imagenes.items():
+            rutas[pk] = os.path.join(self.dir, f"img{pk}.png")
+            with open(rutas[pk], "wb") as f:
+                f.write(contenido)
+        descriptores = np.vstack([extraer_descriptores(r) for r in rutas.values()])
+        vocabulario = descriptores[np.random.default_rng(1).choice(len(descriptores), DIMENSION, replace=False)]
+        os.environ["BD2_VOCABULARIO"] = os.path.join(self.dir, "vocabulario.npy")
+        os.environ["BD2_IDF_VISUAL"] = os.path.join(self.dir, "idf.npy")
+        np.save(os.environ["BD2_VOCABULARIO"], vocabulario)
+        np.save(os.environ["BD2_IDF_VISUAL"], np.ones(DIMENSION, dtype=np.float32))
+
+        self.sql(f"CREATE TABLE imagenes (id INT PRIMARY KEY, v VECTOR({DIMENSION}))")
+        for pk, ruta in rutas.items():
+            self.sql(f"INSERT INTO imagenes VALUES ({pk}, {literal(extract_features(ruta))})")
+
+    def tearDown(self):
+        self.web_api.motor, self.web_api.indices_faiss, self.web_api.SUBIDAS, entorno = self.antes
+        os.environ.clear()
+        os.environ.update(entorno)
+        super().tearDown()
+
+    def consultar(self, sql):
+        return self.web_api.consultas(self.web_api.Consulta(sql=sql))
+
+    def test_subir_y_buscar(self):
+        import asyncio
+
+        class Peticion:
+            def __init__(self, cuerpo):
+                self.cuerpo = cuerpo
+
+            async def body(self):
+                return self.cuerpo
+
+        respuesta = asyncio.run(self.web_api.subir(Peticion(self.imagenes[4]), "zapato.PNG"))
+        archivo = respuesta["archivo"]
+        self.assertTrue(archivo.endswith(".png") and respuesta["consulta"] == f"SIMILAR_TO('{archivo}', k=10)")
+        self.assertEqual(self.web_api.guardar_subida(self.imagenes[4], "otra.png"), archivo, "la misma imagen, el mismo nombre")
+
+        # sin indice (k-NN secuencial del motor) y con HNSW: la imagen 4 es su propio vecino mas cercano
+        r = self.consultar(f"SELECT id, SIMILARITY_SCORE() FROM imagenes WHERE SIMILAR_TO('{archivo}', k=2)")
+        self.assertEqual(r["resultados"][0]["filas"][0][0], 4)
+        self.assertAlmostEqual(r["resultados"][0]["filas"][0][1], 1.0, places=5)
+        self.consultar("CREATE INDEX imagenes_hnsw ON imagenes (v) USING HNSW")
+        r = self.consultar(f"SELECT id FROM imagenes WHERE SIMILAR_TO(v, '{archivo}', k=3) USING HNSW")
+        self.assertEqual(r["resultados"][0]["filas"][0][0], 4)
+        self.assertEqual(r["faiss"][0]["candidatos"], 3)
+        plan = self.consultar(f"EXPLAIN SELECT id FROM imagenes WHERE SIMILAR_TO('{archivo}') USING HNSW")["resultados"][0]
+        self.assertTrue(plan["ok"], plan.get("error"))
+
+    def test_errores(self):
+        from fastapi import HTTPException
+
+        for contenido, nombre, mensaje in [
+            (self.imagenes[1], "foto.txt", "extension"),
+            (b"no soy una imagen", "foto.jpg", "OpenCV"),
+            (b"", "foto.jpg", "10 MB"),
+        ]:
+            with self.assertRaisesRegex(ValueError, mensaje):
+                self.web_api.guardar_subida(contenido, nombre)
+        with self.assertRaises(HTTPException) as error:
+            self.consultar("SELECT id FROM imagenes WHERE SIMILAR_TO('no_existe.jpg')")
+        self.assertIn("no se encontro la imagen", error.exception.detail)
+        with self.assertRaises(HTTPException):
+            self.consultar("SELECT id FROM imagenes WHERE SIMILAR_TO('../img1.png')")
 
 
 if __name__ == "__main__":
