@@ -284,6 +284,15 @@ private:
         return Valor::de_punto(lat, lon);
     }
 
+    // nombre de la metrica de vectores en el token actual (sin avanzar)
+    std::string metrica_vector() const {
+        const std::string m = mayusculas(actual().texto);
+        if (m == "EUCLIDIANA" || m == "EUCLIDEAN" || m == "L2") return "EUCLIDIANA";
+        if (m == "PRODUCTO_PUNTO" || m == "INNER_PRODUCT" || m == "IP") return "PRODUCTO_PUNTO";
+        if (m == "COSENO" || m == "COSINE") return "COSENO";
+        error("metrica desconocida '" + actual().texto + "' (euclidiana, producto_punto o coseno)");
+    }
+
     void distancia(std::string& columna, Valor& centro, std::string& metrica) {
         avanzar();
         esperar_simbolo("(");
@@ -298,10 +307,7 @@ private:
             if (actual().tipo != TipoToken::TEXTO) error("se esperaba la metrica entre comillas");
             const std::string m = mayusculas(actual().texto);
             if (es_vector) {
-                if (m == "EUCLIDIANA" || m == "EUCLIDEAN" || m == "L2") metrica = "EUCLIDIANA";
-                else if (m == "PRODUCTO_PUNTO" || m == "INNER_PRODUCT" || m == "IP") metrica = "PRODUCTO_PUNTO";
-                else if (m == "COSENO" || m == "COSINE") metrica = "COSENO";
-                else error("metrica desconocida '" + actual().texto + "' (euclidiana, producto_punto o coseno)");
+                metrica = metrica_vector();
             } else {
                 if (m == "HAVERSINE" || m == "GEODESICA") metrica = "HAVERSINE";
                 else if (m == "EUCLIDIANA") metrica = "EUCLIDIANA";
@@ -408,7 +414,27 @@ private:
             else if (t == "HASH") s.indice_tipo = "HASH";
             else if (t == "RTREE") s.indice_tipo = "RTREE";
             else if (t == "SPIMI") s.indice_tipo = "SPIMI";
-            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH, RTREE o SPIMI)");
+            else if (t == "IVF" || t == "HNSW") s.indice_tipo = t;
+            else error("tipo de indice desconocido '" + t + "' (BPLUS, HASH, RTREE, SPIMI, IVF o HNSW)");
+        }
+        if (es("WITH")) {
+            // los parametros los valida el ejecutor, que sabe cuales admite cada indice
+            if (s.indice_tipo != "IVF" && s.indice_tipo != "HNSW") error("WITH (...) solo se usa con indices IVF o HNSW");
+            avanzar();
+            esperar_simbolo("(");
+            while (true) {
+                const std::string nombre = identificador();
+                esperar_simbolo("=");
+                const Token t = actual();
+                if (t.tipo != TipoToken::NUMERO && t.tipo != TipoToken::DECIMAL && t.tipo != TipoToken::IDENT && t.tipo != TipoToken::TEXTO) {
+                    error("se esperaba el valor del parametro " + nombre);
+                }
+                s.indice_parametros.push_back({nombre, t.texto});
+                avanzar();
+                if (es_simbolo(",")) { avanzar(); continue; }
+                esperar_simbolo(")");
+                break;
+            }
         }
     }
 
@@ -447,6 +473,11 @@ private:
                 avanzar();
                 esperar_simbolo(")");
                 s.busqueda_texto = true;
+                if (es("AND")) { avanzar(); continue; }
+                break;
+            } else if (es_funcion("SIMILAR_TO")) {
+                if (s.busqueda_similar) error("solo se admite una funcion SIMILAR_TO por consulta");
+                similar_to(s);
                 if (es("AND")) { avanzar(); continue; }
                 break;
             } else if (es_funcion("DENTRO")) {
@@ -517,6 +548,35 @@ private:
         }
     }
 
+    // SIMILAR_TO([col,] 'archivo' | VECTOR(...) [, k = n])
+    void similar_to(Sentencia& s) {
+        avanzar();
+        esperar_simbolo("(");
+        if (actual().tipo == TipoToken::IDENT && !es_funcion("VECTOR")) {
+            s.columna_similar = identificador();
+            esperar_simbolo(",");
+        }
+        if (actual().tipo == TipoToken::TEXTO) {
+            s.archivo_similar = actual().texto;
+            if (s.archivo_similar.empty()) error("SIMILAR_TO necesita el nombre del archivo");
+            avanzar();
+        } else if (es_funcion("VECTOR")) {
+            s.vector_similar = vector();
+        } else {
+            error("SIMILAR_TO espera un archivo entre comillas o un VECTOR(...)");
+        }
+        if (es_simbolo(",")) {
+            avanzar();
+            if (!es("K")) error("se esperaba k = numero de vecinos");
+            avanzar();
+            esperar_simbolo("=");
+            s.k_similar = numero();
+            if (s.k_similar <= 0) error("k debe ser mayor que cero");
+        }
+        esperar_simbolo(")");
+        s.busqueda_similar = true;
+    }
+
     void select(Sentencia& s) {
         s.tipo = TipoSentencia::SELECT;
         while (true) {
@@ -526,7 +586,8 @@ private:
                 s.todas_las_columnas = true;
             } else {
                 ItemSelect item;
-                if (es_funcion("SCORE")) {
+                if (es_funcion("SCORE") || es_funcion("SIMILARITY_SCORE")) {
+                    item.similitud = es("SIMILARITY_SCORE");
                     avanzar();
                     esperar_simbolo("(");
                     esperar_simbolo(")");
@@ -549,7 +610,7 @@ private:
                     }
                 }
                 if (es("AS")) {
-                    if (!item.score) error("AS solo se admite para SCORE()");
+                    if (!item.score) error("AS solo se admite para SCORE() y SIMILARITY_SCORE()");
                     avanzar();
                     item.alias = identificador();
                 }
@@ -561,16 +622,46 @@ private:
         esperar_palabra("FROM");
         s.tabla = identificador();
         if (es("WHERE")) { avanzar(); where(s); }
+        if (s.busqueda_texto && s.busqueda_similar) error("MATCH y SIMILAR_TO no se combinan en una consulta");
         if (es("USING")) {
             avanzar();
-            s.ranking_texto = mayusculas(identificador());
-            if (s.ranking_texto != "TF_IDF" && s.ranking_texto != "BM25")
-                error("ranking de texto desconocido (TF_IDF o BM25)");
+            const std::string tipo = mayusculas(identificador());
+            if (tipo == "IVF" || tipo == "HNSW") {
+                if (!s.busqueda_similar) error("USING " + tipo + " requiere una condicion SIMILAR_TO");
+                s.indice_similar = tipo;
+                if (es("CANDIDATES")) {
+                    // la API pone aqui las pk que encontro FAISS; puede no haber ninguna
+                    avanzar();
+                    esperar_simbolo("(");
+                    s.hay_candidatos = true;
+                    while (!es_simbolo(")")) {
+                        s.candidatos.push_back(numero());
+                        if (!es_simbolo(",")) break;
+                        avanzar();
+                        if (es_simbolo(")")) error("se esperaba otra pk despues de la coma");
+                    }
+                    esperar_simbolo(")");
+                }
+            } else {
+                if (tipo != "TF_IDF" && tipo != "BM25") error("USING espera TF_IDF o BM25 (texto) o IVF o HNSW (vectores)");
+                s.ranking_texto = tipo;
+            }
+        }
+        if (es("WITH")) {
+            avanzar();
+            esperar_palabra("METRIC");
+            esperar_simbolo("=");
+            if (!s.busqueda_similar) error("WITH METRIC requiere una condicion SIMILAR_TO");
+            if (actual().tipo != TipoToken::IDENT && actual().tipo != TipoToken::TEXTO) error("se esperaba la metrica");
+            s.metrica_similar = metrica_vector();
+            avanzar();
         }
         if (s.busqueda_texto && s.ranking_texto.empty()) error("MATCH requiere USING TF_IDF o USING BM25");
-        if (!s.busqueda_texto && !s.ranking_texto.empty()) error("USING requiere una condicion MATCH");
-        for (const ItemSelect& item : s.items)
-            if (item.score && !s.busqueda_texto) error("SCORE() solo se usa con MATCH");
+        if (!s.busqueda_texto && !s.ranking_texto.empty()) error("USING " + s.ranking_texto + " requiere una condicion MATCH");
+        for (const ItemSelect& item : s.items) {
+            if (item.score && !item.similitud && !s.busqueda_texto) error("SCORE() solo se usa con MATCH");
+            if (item.similitud && !s.busqueda_similar) error("SIMILARITY_SCORE() solo se usa con SIMILAR_TO");
+        }
         if (es("GROUP")) { avanzar(); esperar_palabra("BY"); s.group_by = identificador(); }
         if (es("ORDER")) {
             avanzar();

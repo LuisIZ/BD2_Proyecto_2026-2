@@ -131,6 +131,46 @@ void prueba_parser() {
     assert(falla("SELECT * FROM t WHERE MATCH(texto, 'foo')"));
     assert(falla("SELECT * FROM t USING BM25"));
 
+    s = motor::sql::parsear(
+        "SELECT id, SIMILARITY_SCORE() FROM imagenes WHERE SIMILAR_TO('foto.jpg', k=10) USING HNSW WITH METRIC=cosine "
+        "ORDER BY score DESC");
+    assert(s.busqueda_similar && s.archivo_similar == "foto.jpg" && s.columna_similar.empty() && s.k_similar == 10);
+    assert(s.indice_similar == "HNSW" && s.metrica_similar == "COSENO" && !s.hay_candidatos);
+    assert(s.items[1].score && s.items[1].similitud && s.items[1].etiqueta() == "score" && s.order_by == "score");
+    s = motor::sql::parsear("SELECT * FROM img WHERE SIMILAR_TO(v, VECTOR(1, 0.5)) AND id > 3 WITH METRIC = 'euclidiana' LIMIT 2");
+    assert(s.columna_similar == "v" && s.vector_similar.componentes.size() == 2 && s.archivo_similar.empty());
+    assert(s.k_similar == 10 && "k por omision" && s.indice_similar.empty() && s.metrica_similar == "EUCLIDIANA");
+    assert(s.condiciones.size() == 1 && s.condiciones[0].columna == "id" && s.limite == 2);
+    s = motor::sql::parsear("SELECT * FROM img WHERE SIMILAR_TO(VECTOR(1, 2), k = 3)");
+    assert(s.metrica_similar == "COSENO" && "la metrica por omision de SIMILAR_TO es el coseno" && s.k_similar == 3);
+    s = motor::sql::parsear("SELECT id FROM img WHERE SIMILAR_TO(v, VECTOR(1, 2), k=3) USING IVF CANDIDATES (7, 2, 9) WITH METRIC=l2");
+    assert(s.indice_similar == "IVF" && s.hay_candidatos && s.candidatos == std::vector<long long>({7, 2, 9}));
+    s = motor::sql::parsear("SELECT id FROM img WHERE SIMILAR_TO(v, VECTOR(1, 2)) USING HNSW CANDIDATES ()");
+    assert(s.hay_candidatos && s.candidatos.empty() && "FAISS puede no encontrar nada");
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO(v)"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('')"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg', k=0)"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg', 5)"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg') AND SIMILAR_TO('b.jpg')"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg') USING BM25"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg') AND MATCH(t, 'x') USING BM25"));
+    assert(falla("SELECT * FROM img USING HNSW"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg') USING HNSW CANDIDATES (1,)"));
+    assert(falla("SELECT * FROM img WHERE SIMILAR_TO('a.jpg') WITH METRIC=haversine"));
+    assert(falla("SELECT * FROM img WITH METRIC=coseno"));
+    assert(falla("SELECT SIMILARITY_SCORE() FROM img"));
+    assert(falla("SELECT SCORE() FROM img WHERE SIMILAR_TO('a.jpg')") && "el score de texto es otro");
+    assert(falla("SELECT SIMILARITY_SCORE() FROM t WHERE MATCH(texto, 'x') USING BM25"));
+
+    s = motor::sql::parsear("CREATE INDEX iv ON img (v) USING HNSW WITH (M = 16, ef_busqueda = 64, metrica = coseno)");
+    assert(s.indice_tipo == "HNSW" && s.indice_parametros.size() == 3);
+    assert(s.indice_parametros[0].first == "M" && s.indice_parametros[0].second == "16" && s.indice_parametros[2].second == "coseno");
+    s = motor::sql::parsear("CREATE INDEX iv ON img (v) USING IVF");
+    assert(s.indice_tipo == "IVF" && s.indice_parametros.empty());
+    assert(falla("CREATE INDEX iv ON img (v) USING BPLUS WITH (M = 16)"));
+    assert(falla("CREATE INDEX iv ON img (v) USING IVF WITH (nlist)"));
+    assert(falla("CREATE INDEX iv ON img (v) USING IVF WITH ()"));
+
     assert(falla("SELECT FROM t"));
     assert(falla("SELECT * t"));
     assert(falla("SELECT * FROM t WHERE"));

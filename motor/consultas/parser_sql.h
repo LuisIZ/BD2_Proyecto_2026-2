@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace motor {
@@ -15,6 +16,7 @@ namespace sql {
 //   CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 //   COPY t FROM FILE 'ruta.csv'
 //   CREATE INDEX nombre ON t (col) [USING BPLUS|HASH|RTREE|SPIMI]
+//   CREATE INDEX nombre ON t (col) USING IVF|HNSW [WITH (parametro = valor, ...)]
 //   DROP TABLE t
 //   INSERT INTO t VALUES (v1, v2, ...)
 //   DELETE FROM t [WHERE cond]
@@ -22,6 +24,11 @@ namespace sql {
 //     FROM t [WHERE cond [AND cond]... [AND MATCH(columna, 'consulta')]]
 //     [USING TF_IDF|BM25] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
 //   SCORE() se proyecta como columna; admite AS alias.
+//   SELECT ... FROM t WHERE SIMILAR_TO([col,] 'archivo' | VECTOR(...) [, k = n]) [AND cond]...
+//     [USING IVF|HNSW [CANDIDATES (pk, ...)]] [WITH METRIC = euclidiana|producto_punto|coseno]
+//   SIMILARITY_SCORE() se proyecta como columna (mayor = más parecido); admite AS alias.
+//   La API cambia 'archivo' por VECTOR(...) y, con USING IVF|HNSW, agrega CANDIDATES
+//   con las pk que encontró FAISS.
 //   SHOW TABLES
 //   DESCRIBE t
 //   EXPLAIN [ANALYZE] <sentencia>
@@ -81,7 +88,8 @@ struct ItemSelect {
     std::string columna;   // vacía para COUNT(*)
     std::string agregado;  // vacía, COUNT, SUM, AVG, MIN, MAX
     std::string alias;
-    bool score = false;
+    bool score = false;      // SCORE() o SIMILARITY_SCORE()
+    bool similitud = false;  // SIMILARITY_SCORE()
     std::string etiqueta() const {
         if (!alias.empty()) return alias;
         if (score) return "score";
@@ -100,7 +108,8 @@ struct Sentencia {
 
     std::string indice_nombre;
     std::string indice_columna;
-    std::string indice_tipo;   // BPLUS | HASH | RTREE
+    std::string indice_tipo;   // BPLUS | HASH | RTREE | SPIMI | IVF | HNSW
+    std::vector<std::pair<std::string, std::string>> indice_parametros;  // WITH (nlist = 100, ...)
     std::vector<std::string> indices;  // INDEX (a, b) en CREATE TABLE FROM FILE
 
     // EXPLAIN [ANALYZE]: la sentencia explicada viaja en `explicada`
@@ -114,6 +123,17 @@ struct Sentencia {
     std::string columna_texto;
     std::string texto_consulta;
     std::string ranking_texto;  // TF_IDF | BM25
+
+    // SIMILAR_TO: los k vecinos más parecidos al vector (o a la imagen, antes de que la API la cambie)
+    bool busqueda_similar = false;
+    std::string columna_similar;  // vacía: la única columna VECTOR de la tabla
+    std::string archivo_similar;  // 'foto.jpg'
+    Valor vector_similar;
+    long long k_similar = 10;
+    std::string metrica_similar = "COSENO";
+    std::string indice_similar;   // IVF | HNSW; vacío = k-NN secuencial del motor
+    bool hay_candidatos = false;
+    std::vector<long long> candidatos;  // pk que devolvió FAISS, de la más parecida a la menos
 
     bool todas_las_columnas = false;
     std::vector<ItemSelect> items;
