@@ -1,6 +1,6 @@
 # Extracción de características de audio
 
-Uso el mismo pipeline de imágenes ([extraccion_caracteristicas.md](extraccion_caracteristicas.md)), pero con MFCC en lugar de SIFT. El código está en `api/multimedia/extraer_audio.py` y uso `entrenar_vocabulario`, `calcular_vectores` y `guardar_vectores` de `extraer.py`.
+Se usa el mismo pipeline de imágenes ([extraccion_caracteristicas.md](extraccion_caracteristicas.md)), pero con MFCC en lugar de SIFT. El código está en `api/multimedia/extraer_audio.py` y reutiliza `entrenar_vocabulario`, `calcular_vectores` y `guardar_vectores` de `extraer.py`.
 
 1. `librosa` carga el audio en mono a 22 050 Hz (máximo 30 s) y calcula 13 coeficientes MFCC por cada ventana de 2048 muestras, con un salto de 512. Un audio de 30 s da unas 1 290 ventanas, y cada ventana es un descriptor de 13 dimensiones.
 2. FAISS K-Means aprende K "palabras acústicas" con una muestra de hasta 1 000 000 de ventanas.
@@ -11,7 +11,7 @@ Uso el mismo pipeline de imágenes ([extraccion_caracteristicas.md](extraccion_c
 
 ## Colección
 
-Usamos GTZAN (Kaggle, "GTZAN Dataset - Music Genre Classification"): 1000 clips de 30 s, 100 por cada uno de 10 géneros. Quitamos `jazz.00054.wav` porque está dañado y no se abre, así que son 999 audios. Los audios no se subieron al repositorio.
+Se usa GTZAN (Kaggle, "GTZAN Dataset - Music Genre Classification"): 1000 clips de 30 s, 100 por cada uno de 10 géneros. Se quitó `jazz.00054.wav` porque está dañado y no se abre, así que son 999 audios. Los audios no se subieron al repositorio.
 
 ```powershell
 # 1. CSV id,audio,genero
@@ -35,9 +35,15 @@ SELECT id FROM canciones ORDER BY distancia(vector, VECTOR(...), 'euclidiana') L
 
 El `id` es el mismo de `datos/audios_1k.csv`, que dice qué audio y qué género es cada uno.
 
+## Escucharlos en la web
+
+La carpeta que contiene los audios `genres_original` se copia a `C:\datos_bd2\audio\genres_original`. La API sirve cada audio en `/api/audios/<id>` y usa `datos/audios_1k.csv` para saber qué archivo es.
+
+Si la consulta es sobre la tabla `canciones`, la galería muestra un reproductor en cada resultado en lugar de una miniatura.
+
 ## Resultados
 
-Para cada audio pedimos sus 5 vecinos más cercanos (euclidiana, sin contarse a sí mismo) y contamos cuántos son de su mismo género. Al azar sería 10 %.
+Para cada audio se piden sus 5 vecinos más cercanos (euclidiana, sin contarse a sí mismo) y se cuenta cuántos son de su mismo género. Al azar sería 10 %.
 
 | K | mismo género | tiempo |
 |---|---|---|
@@ -45,7 +51,7 @@ Para cada audio pedimos sus 5 vecinos más cercanos (euclidiana, sin contarse a 
 | 128 | 52 % | 56 s |
 | 256 | 54 % | 93 s |
 
-Nos quedamos con K=256, que es el valor por defecto y el mismo que usamos para las imágenes. Con K=256, clásica acierta 86 % y rock 25 %.
+Se eligió K=256, que es el valor por defecto y el mismo de las imágenes. Con K=256, clásica acierta 86 % y rock 25 %.
 
 ## Limitación
 
