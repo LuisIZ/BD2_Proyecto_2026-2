@@ -262,3 +262,34 @@ def imagen(id: int):
         if ruta.is_relative_to(carpeta.resolve()) and ruta.is_file():
             return FileResponse(ruta, headers={"Cache-Control": "public, max-age=86400"})
     raise HTTPException(404, f"Falta la imagen {relativa} en {DATOS}. Ver docs/dataset.md.")
+
+
+# audios de canciones (Parte 4)
+
+# audios de GTZAN que se copian a mano a esta carpeta
+AUDIOS = DATOS / "audio" / "genres_original"
+_rutas_audios = None
+
+
+def rutas_audios():
+    #id de la cancion -> ruta del audio dentro de AUDIOS, leida de datos/audios_1k.csv
+    global _rutas_audios
+    if _rutas_audios is None:
+        ruta = RAIZ / "datos" / "audios_1k.csv"
+        rutas = {}
+        if ruta.is_file():
+            with ruta.open(encoding="utf-8", newline="") as archivo:
+                rutas = {int(fila["id"]): fila["audio"] for fila in csv.DictReader(archivo)}
+        _rutas_audios = rutas
+    return _rutas_audios
+
+
+@app.get("/api/audios/{id}")
+def audio(id: int):
+    relativa = rutas_audios().get(id)
+    if relativa is None:
+        raise HTTPException(404, f"No hay una cancion con id {id}.")
+    ruta = (AUDIOS / relativa).resolve()
+    if ruta.is_relative_to(AUDIOS.resolve()) and ruta.is_file():
+        return FileResponse(ruta, media_type="audio/wav", headers={"Cache-Control": "public, max-age=86400"})
+    raise HTTPException(404, f"Falta el audio {relativa} en {AUDIOS}. Ver docs/extraccion_audio.md.")

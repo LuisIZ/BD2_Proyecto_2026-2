@@ -19,6 +19,7 @@ import faiss
 import numpy as np
 
 K_DEFAULT = 256
+DIMENSION_SIFT = 128
 MAX_DESCRIPTORES_POR_IMAGEN = 500
 MUESTRA_DESCRIPTORES_DEFAULT = 1_000_000
 RAIZ = Path(__file__).resolve().parents[2]
@@ -28,6 +29,7 @@ _WORKER_VOCABULARIO = None
 _WORKER_INDICE = None
 _WORKER_K = 0
 _WORKER_MAX_DESCRIPTORES = 0
+_WORKER_EXTRACTOR = None
 
 
 def _leer_imagen(ruta):
@@ -49,11 +51,11 @@ def extraer_descriptores(ruta, max_descriptores=MAX_DESCRIPTORES_POR_IMAGEN):
     return np.ascontiguousarray(descriptores[:max_descriptores], dtype=np.float32)
 
 
-def _indice_vocabulario(vocabulario):
+def _indice_vocabulario(vocabulario, dimension=DIMENSION_SIFT):
     vocabulario = np.ascontiguousarray(vocabulario, dtype=np.float32)
-    if vocabulario.ndim != 2 or vocabulario.shape[1] != 128 or vocabulario.shape[0] == 0:
-        raise ValueError("el vocabulario debe tener forma (K, 128) y K > 0")
-    indice = faiss.IndexFlatL2(128)
+    if vocabulario.ndim != 2 or vocabulario.shape[1] != dimension or vocabulario.shape[0] == 0:
+        raise ValueError(f"el vocabulario debe tener forma (K, {dimension}) y K > 0")
+    indice = faiss.IndexFlatL2(dimension)
     indice.add(vocabulario)
     return vocabulario, indice
 
@@ -120,11 +122,12 @@ def extract_features(ruta) -> np.ndarray:
     return _aplicar_tfidf(histograma, idf)[0]
 
 
-def _iniciar_worker(vocabulario, max_descriptores):
-    global _WORKER_VOCABULARIO, _WORKER_INDICE, _WORKER_K, _WORKER_MAX_DESCRIPTORES
-    _WORKER_VOCABULARIO, _WORKER_INDICE = _indice_vocabulario(vocabulario)
+def _iniciar_worker(vocabulario, max_descriptores, extractor=extraer_descriptores, dimension=DIMENSION_SIFT):
+    global _WORKER_VOCABULARIO, _WORKER_INDICE, _WORKER_K, _WORKER_MAX_DESCRIPTORES, _WORKER_EXTRACTOR
+    _WORKER_VOCABULARIO, _WORKER_INDICE = _indice_vocabulario(vocabulario, dimension)
     _WORKER_K = _WORKER_VOCABULARIO.shape[0]
     _WORKER_MAX_DESCRIPTORES = max_descriptores
+    _WORKER_EXTRACTOR = extractor
 
 
 def _histograma_archivado(tarea):
@@ -136,7 +139,7 @@ def _histograma_archivado(tarea):
         if histograma.shape == (_WORKER_K,):
             return histograma
 
-    descriptores = extraer_descriptores(ruta, _WORKER_MAX_DESCRIPTORES)
+    descriptores = _WORKER_EXTRACTOR(ruta, _WORKER_MAX_DESCRIPTORES)
     histograma = _histograma(descriptores, _WORKER_INDICE, _WORKER_K)
     if ruta_cache is not None:
         ruta_cache.parent.mkdir(parents=True, exist_ok=True)
@@ -161,27 +164,28 @@ def _cache_path(ruta, cache_dir, hash_vocabulario):
 
 
 def calcular_vectores(imagenes, vocabulario, procesos=None, cache_dir=None,
-                      max_descriptores=MAX_DESCRIPTORES_POR_IMAGEN):
+                      max_descriptores=MAX_DESCRIPTORES_POR_IMAGEN, extractor=extraer_descriptores,
+                      dimension=DIMENSION_SIFT):
     """Calcula histogramas por imagen sin retener descriptores entre imágenes."""
     rutas = [os.fspath(ruta) for ruta in imagenes]
     if not rutas:
         raise ValueError("la coleccion no contiene imagenes")
     if max_descriptores <= 0:
         raise ValueError("max_descriptores debe ser mayor que cero")
-    vocabulario, _ = _indice_vocabulario(vocabulario)
+    vocabulario, _ = _indice_vocabulario(vocabulario, dimension)
     huella_vocabulario = hashlib.sha256(vocabulario.tobytes()).hexdigest()
     tareas = [(ruta, _cache_path(ruta, cache_dir, huella_vocabulario)) for ruta in rutas]
     if procesos is not None and procesos <= 0:
         raise ValueError("procesos debe ser mayor que cero")
     procesos = min(len(rutas), procesos or max(1, min(8, multiprocessing.cpu_count() - 1)))
     if procesos <= 1:
-        _iniciar_worker(vocabulario, max_descriptores)
+        _iniciar_worker(vocabulario, max_descriptores, extractor, dimension)
         histogramas = [_histograma_archivado(tarea) for tarea in tareas]
     else:
         with multiprocessing.Pool(
             processes=procesos,
             initializer=_iniciar_worker,
-            initargs=(vocabulario, max_descriptores),
+            initargs=(vocabulario, max_descriptores, extractor, dimension),
         ) as pool:
             histogramas = list(pool.imap(_histograma_archivado, tareas, chunksize=1))
     matriz = np.vstack(histogramas).astype(np.float32, copy=False)
@@ -191,8 +195,9 @@ def calcular_vectores(imagenes, vocabulario, procesos=None, cache_dir=None,
 
 
 def entrenar_vocabulario(imagenes, k=K_DEFAULT, muestra_descriptores=MUESTRA_DESCRIPTORES_DEFAULT,
-                          procesos=None, seed=2026, max_descriptores=MAX_DESCRIPTORES_POR_IMAGEN):
-    """Entrena FAISS K-means con una muestra acotada y aleatoria de descriptores SIFT."""
+                          procesos=None, seed=2026, max_descriptores=MAX_DESCRIPTORES_POR_IMAGEN,
+                          extractor=extraer_descriptores, dimension=DIMENSION_SIFT):
+    """Entrena FAISS K-means con una muestra acotada y aleatoria de descriptores (SIFT por defecto)."""
     rutas = [os.fspath(ruta) for ruta in imagenes]
     if not rutas:
         raise ValueError("la coleccion no contiene imagenes")
@@ -220,14 +225,14 @@ def entrenar_vocabulario(imagenes, k=K_DEFAULT, muestra_descriptores=MUESTRA_DES
 
     if procesos <= 1:
         for ruta in rutas:
-            agregar_muestra(extraer_descriptores(ruta, max_descriptores))
+            agregar_muestra(extractor(ruta, max_descriptores))
             if total >= muestra_descriptores:
                 break
     else:
         with multiprocessing.Pool(processes=procesos) as pool:
             for descriptores in pool.imap(
                 _extraer_descriptores_worker,
-                ((ruta, max_descriptores) for ruta in rutas),
+                ((extractor, ruta, max_descriptores) for ruta in rutas),
                 chunksize=1,
             ):
                 agregar_muestra(descriptores)
@@ -237,14 +242,14 @@ def entrenar_vocabulario(imagenes, k=K_DEFAULT, muestra_descriptores=MUESTRA_DES
     if total < k:
         raise ValueError(f"solo se extrajeron {total} descriptores validos; se necesitan al menos k={k}")
     muestra_np = np.ascontiguousarray(np.vstack(muestra), dtype=np.float32)
-    kmeans = faiss.Kmeans(128, k, niter=25, seed=seed, verbose=False)
+    kmeans = faiss.Kmeans(dimension, k, niter=25, seed=seed, verbose=False)
     kmeans.train(muestra_np)
     return np.ascontiguousarray(kmeans.centroids, dtype=np.float32), total
 
 
 def _extraer_descriptores_worker(tarea):
-    ruta, max_descriptores = tarea
-    return extraer_descriptores(ruta, max_descriptores)
+    extractor, ruta, max_descriptores = tarea
+    return extractor(ruta, max_descriptores)
 
 
 def resolver_imagen(imagen, raiz_imagenes):
@@ -317,6 +322,33 @@ def extraer_imagenes_tar(csv_productos, archivo_tar, destino, limite=None):
     return extraidas, sorted(faltantes)
 
 
+def guardar_vectores(prefijo, ids, vectores):
+    prefijo = Path(prefijo)
+    prefijo.parent.mkdir(parents=True, exist_ok=True)
+    np.save(prefijo.with_suffix(".npy"), vectores, allow_pickle=False)
+    with prefijo.with_suffix(".csv").open("w", encoding="utf-8", newline="") as archivo:
+        escritor = csv.writer(archivo, lineterminator="\n")
+        escritor.writerow(["id", "vector"])
+        for id_fila, vector in zip(ids, vectores):
+            escritor.writerow([id_fila, "VECTOR(" + ",".join(f"{float(x):.8g}" for x in vector) + ")"])
+
+
+def cargar_o_entrenar_vocabulario(rutas, k, ruta, muestra_descriptores=MUESTRA_DESCRIPTORES_DEFAULT,
+                                  procesos=None, max_descriptores=MAX_DESCRIPTORES_POR_IMAGEN,
+                                  extractor=extraer_descriptores, dimension=DIMENSION_SIFT):
+    ruta = Path(ruta)
+    if ruta.is_file():
+        return np.load(ruta, allow_pickle=False)
+    vocabulario, muestra = entrenar_vocabulario(
+        rutas, k=k, muestra_descriptores=muestra_descriptores, procesos=procesos,
+        max_descriptores=max_descriptores, extractor=extractor, dimension=dimension,
+    )
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    np.save(ruta, vocabulario, allow_pickle=False)
+    print(f"vocabulario entrenado con {muestra:,} descriptores: {ruta}")
+    return vocabulario
+
+
 def procesar_csv(csv_productos, raiz_imagenes, k=K_DEFAULT, limite=None, procesos=None,
                  vocabulario_path=None, cache_dir=None, salida=None, archivo_tar=None,
                  muestra_descriptores=MUESTRA_DESCRIPTORES_DEFAULT, idf_path=None):
@@ -340,17 +372,10 @@ def procesar_csv(csv_productos, raiz_imagenes, k=K_DEFAULT, limite=None, proceso
         ids.append(int(fila["id"]))
         rutas.append(resolver_imagen(fila["imagen"], raiz_imagenes))
 
-    vocabulario_path = Path(vocabulario_path or _ruta_vocabulario(k))
     idf_path = Path(idf_path or _ruta_idf(k))
-    if vocabulario_path.is_file():
-        vocabulario = np.load(vocabulario_path, allow_pickle=False)
-    else:
-        vocabulario, muestra = entrenar_vocabulario(
-            rutas, k=k, muestra_descriptores=muestra_descriptores, procesos=procesos
-        )
-        vocabulario_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(vocabulario_path, vocabulario, allow_pickle=False)
-        print(f"vocabulario entrenado con {muestra:,} descriptores: {vocabulario_path}")
+    vocabulario = cargar_o_entrenar_vocabulario(
+        rutas, k, vocabulario_path or _ruta_vocabulario(k), muestra_descriptores, procesos
+    )
 
     t_inicio = time.perf_counter()
     histogramas, idf = calcular_vectores(rutas, vocabulario, procesos=procesos, cache_dir=cache_dir)
@@ -359,13 +384,7 @@ def procesar_csv(csv_productos, raiz_imagenes, k=K_DEFAULT, limite=None, proceso
     vectores = _aplicar_tfidf(histogramas, idf)
     tiempo = time.perf_counter() - inicio_total
     prefijo = Path(salida) if salida else VOCABULARIOS / f"vectores_{len(filas)}"
-    prefijo.parent.mkdir(parents=True, exist_ok=True)
-    np.save(prefijo.with_suffix(".npy"), vectores, allow_pickle=False)
-    with prefijo.with_suffix(".csv").open("w", encoding="utf-8", newline="") as archivo:
-        escritor = csv.writer(archivo, lineterminator="\n")
-        escritor.writerow(["id", "vector"])
-        for id_fila, vector in zip(ids, vectores):
-            escritor.writerow([id_fila, "VECTOR(" + ",".join(f"{float(x):.8g}" for x in vector) + ")"])
+    guardar_vectores(prefijo, ids, vectores)
     print(f"histogramas calculados en {time.perf_counter() - t_inicio:.2f} s")
     print(f"total {len(ids):,} imagenes en {tiempo:.2f} s; vectores: {prefijo.with_suffix('.npy')}")
     return np.asarray(ids, dtype=np.int64), vectores, tiempo

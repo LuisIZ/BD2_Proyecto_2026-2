@@ -12,6 +12,7 @@ export interface SimilarSearch {
   index?: string;
   /** alias de SIMILARITY_SCORE() en el SELECT */
   scoreColumn?: string;
+  table?: string;
 }
 
 export function parseSimilarSearch(sql: string): SimilarSearch | undefined {
@@ -30,6 +31,7 @@ export function parseSimilarSearch(sql: string): SimilarSearch | undefined {
     metric: metric?.toLowerCase(),
     index: /\bUSING\s+(IVF|HNSW)\b/i.exec(sql)?.[1].toUpperCase(),
     scoreColumn: /\bSIMILARITY_SCORE\s*\(\s*\)\s+(?:AS\s+)?(\w+)/i.exec(sql)?.[1],
+    table: /\bFROM\s+(\w+)/i.exec(sql)?.[1].toLowerCase(),
   };
 }
 
@@ -96,7 +98,16 @@ export default function Gallery({
         return (
           <li key={i} className="gallery-item">
             <span className="gallery-rank">{offset + i + 1}</span>
-            <Thumbnail id={row[id]} alt={title} />
+            {search.table === "canciones" ? (
+              <audio
+                controls
+                controlsList="nodownload noplaybackrate"
+                preload="none"
+                src={`/api/audios/${row[id]}`}
+              />
+            ) : (
+              <Thumbnail id={row[id]} alt={title} />
+            )}
             <p className="gallery-name" title={title}>
               {title}
             </p>
