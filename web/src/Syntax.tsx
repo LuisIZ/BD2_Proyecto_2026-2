@@ -74,6 +74,18 @@ const access = [
     "knn_vectorial",
   ],
   [
+    "SIMILAR_TO(...) sin USING (con WHERE: + top_k_vectorial)",
+    "knn_vectorial",
+    "knn_vectorial",
+    "knn_vectorial",
+  ],
+  [
+    "SIMILAR_TO(...) USING IVF | HNSW",
+    "knn_vectorial_indice",
+    "knn_vectorial_indice",
+    "knn_vectorial_indice",
+  ],
+  [
     "Otra columna",
     "scan_completo + filtro",
     "scan_completo + filtro",

@@ -40,6 +40,8 @@ const hints: Record<string, string> = {
   rango_por_indice: "Una página de datos por cada fila hallada",
   busqueda_texto: "Recorre los postings de los términos y ordena por score",
   knn_vectorial: "Mide la distancia a cada vector y guarda los k mejores en un heap",
+  knn_vectorial_indice: "Lee por clave los candidatos de FAISS y recalcula la distancia",
+  top_k_vectorial: "Ordena por distancia las filas del WHERE y se queda con k",
   knn_espacial: "Baja por el R-Tree hacia los puntos más cercanos",
   rango_espacial: "Revisa solo los nodos del R-Tree que tocan el círculo",
   poligono_espacial: "Revisa solo los nodos del R-Tree que tocan el polígono",

@@ -834,6 +834,129 @@ void prueba_indices_vectoriales() {
     std::cout << "IVF y HNSW: se registran con sus parametros sin construirse, DESCRIBE, reapertura y DROP TABLE\n";
 }
 
+std::string lista_pk(std::vector<long long> pks) {
+    std::string s;
+    for (std::size_t i = 0; i < pks.size(); ++i) s += (i ? ", " : "") + std::to_string(pks[i]);
+    return s;
+}
+
+void prueba_similar_to() {
+    using motor::vectorial::MetricaVec;
+    const std::size_t n = 200, dim = 8;
+    std::vector<motor::vectorial::Vector> datos(n, motor::vectorial::Vector(dim));
+    unsigned semilla = 11;
+    auto azar = [&]() {
+        semilla = semilla * 1103515245u + 12345u;
+        return static_cast<float>((semilla >> 8) % 20001) / 10000.0f - 1.0f;
+    };
+    for (auto& v : datos) for (float& x : v) x = azar();
+    motor::vectorial::Vector q(dim);
+    for (float& x : q) x = azar();
+    const std::string csv = ".build/sql_test_similar.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,v,nombre\n";
+        for (std::size_t i = 0; i < n; ++i) f << i + 1 << ",\"" << literal_vector(datos[i]) << "\",n" << (i + 1) % 7 << "\n";
+    }
+    const auto todas = [](long long) { return true; };
+    const std::string vq = literal_vector(q);
+
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    for (const char* org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        const std::string t = std::string("similar_") + org;
+        e.ejecutar("CREATE TABLE " + t + " (id INT PRIMARY KEY, v VECTOR(8), nombre VARCHAR(4)) USING " + org);
+        e.ejecutar("COPY " + t + " FROM FILE '" + csv + "'");
+
+        // sin indice: el k-NN secuencial del motor, con el coseno por omision
+        Resultado r = e.ejecutar("SELECT id, SIMILARITY_SCORE() FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=10)");
+        const auto coseno = knn_fuerza_bruta(datos, q, 10, MetricaVec::COSENO, false, todas);
+        assert(ids(r) == coseno && tiene_paso(r, "knn_vectorial") && r.columnas[1] == "score");
+        for (std::size_t i = 0; i < r.filas.size(); ++i) {
+            const double d = motor::vectorial::distancia(datos[static_cast<std::size_t>(coseno[i] - 1)], q, MetricaVec::COSENO);
+            assert(std::abs(r.filas[i][1].decimal - (1 - d)) < 1e-5 && "el score del coseno es el coseno");
+            if (i) assert(r.filas[i - 1][1].decimal >= r.filas[i][1].decimal);
+        }
+        for (const auto& [nombre, m] : {std::pair<const char*, MetricaVec>{"euclidiana", MetricaVec::EUCLIDIANA},
+                                        {"producto_punto", MetricaVec::PRODUCTO_PUNTO}}) {
+            r = e.ejecutar("SELECT id, SIMILARITY_SCORE() AS s FROM " + t + " WHERE SIMILAR_TO(v, " + vq + ", k=5) WITH METRIC=" + nombre);
+            const auto esperado = knn_fuerza_bruta(datos, q, 5, m, false, todas);
+            assert(ids(r) == esperado && r.columnas[1] == "s");
+            const double d = motor::vectorial::distancia(datos[static_cast<std::size_t>(esperado[0] - 1)], q, m);
+            assert(std::abs(r.filas[0][1].decimal - (m == MetricaVec::EUCLIDIANA ? 1 / (1 + d) : -d)) < 1e-4);
+        }
+
+        // ORDER BY y LIMIT se aplican sobre los k vecinos
+        std::vector<long long> invertido(coseno.rbegin(), coseno.rend());
+        assert(ids(e.ejecutar("SELECT id, SIMILARITY_SCORE() FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=10) ORDER BY score ASC")) == invertido);
+        assert(ids(e.ejecutar("SELECT id, SIMILARITY_SCORE() AS s FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=10) ORDER BY s DESC LIMIT 3")) ==
+               std::vector<long long>(coseno.begin(), coseno.begin() + 3));
+        std::vector<long long> por_id = coseno;
+        std::sort(por_id.begin(), por_id.end());
+        assert(ids(e.ejecutar("SELECT id FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=10) ORDER BY id")) == por_id);
+        assert(e.ejecutar("SELECT COUNT(*) FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=7)").filas[0][0].entero == 7);
+
+        // con WHERE: primero el filtro y despues los k mas cercanos entre los que pasan
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE id > 100 AND SIMILAR_TO(" + vq + ", k=4)");
+        assert(ids(r) == knn_fuerza_bruta(datos, q, 4, MetricaVec::COSENO, false, [](long long id) { return id > 100; }));
+        assert(tiene_paso(r, "top_k_vectorial") && detalle_paso(r, "top_k_vectorial", "entrada") == "100");
+
+        // USING HNSW: la API pone los candidatos de FAISS; el motor los lee y recalcula la distancia
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + " WHERE SIMILAR_TO(" + vq + ") USING HNSW") && "no hay indice");
+        e.ejecutar("CREATE INDEX " + t + "_hnsw ON " + t + " (v) USING HNSW");
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + " WHERE SIMILAR_TO(" + vq + ") USING HNSW") && "sin la API no hay candidatos");
+        assert(falla_ejecucion(e, "SELECT id FROM " + t + " WHERE SIMILAR_TO(" + vq + ") USING HNSW CANDIDATES (1) WITH METRIC=euclidiana") &&
+               "el indice es de coseno");
+        std::vector<long long> candidatos = {coseno[3], coseno[0], 99999, coseno[2], coseno[1]};  // desordenados y uno que no existe
+        r = e.ejecutar("SELECT id, SIMILARITY_SCORE() FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=4) USING HNSW CANDIDATES (" + lista_pk(candidatos) + ")");
+        assert(ids(r) == std::vector<long long>(coseno.begin(), coseno.begin() + 4) && tiene_paso(r, "knn_vectorial_indice"));
+        assert(detalle_paso(r, "knn_vectorial_indice", "candidatos") == "5" && detalle_paso(r, "knn_vectorial_indice", "estructura") == "hnsw_faiss");
+        candidatos.push_back(coseno[4]);
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=3) USING HNSW CANDIDATES (" + lista_pk(candidatos) + ")");
+        assert(ids(r) == std::vector<long long>(coseno.begin(), coseno.begin() + 3) && "mas candidatos que k: se queda con k");
+        // post-filtro: el WHERE se aplica a los candidatos, asi que pueden quedar menos de k
+        const std::vector<long long> cuatro(coseno.begin(), coseno.begin() + 4);
+        std::vector<long long> ordenados = cuatro;
+        std::sort(ordenados.begin(), ordenados.end());
+        const long long corte = ordenados[1];  // pasan los dos de pk mas alta
+        std::vector<long long> pasan;
+        for (long long id : cuatro) if (id > corte) pasan.push_back(id);
+        r = e.ejecutar("SELECT id FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=4) AND id > " + std::to_string(corte) +
+                       " USING HNSW CANDIDATES (" + lista_pk(cuatro) + ")");
+        assert(ids(r) == pasan && pasan.size() == 2 && tiene_paso(r, "filtro"));
+
+        // EXPLAIN: Seq Vector Scan sin indice, Vector Scan using ... con indice (sin ejecutar, no necesita candidatos)
+        std::string plan = texto_del_plan(e.ejecutar("EXPLAIN SELECT * FROM " + t + " WHERE SIMILAR_TO(" + vq + ", k=10)"));
+        assert(plan.find("Seq Vector Scan on " + t + " (coseno)") != std::string::npos);
+        assert(plan.find("Order By: SIMILAR_TO(v, VECTOR(8 dimensiones), k=10) [coseno]") != std::string::npos);
+        plan = texto_del_plan(e.ejecutar("EXPLAIN SELECT * FROM " + t + " WHERE SIMILAR_TO(" + vq + ") USING HNSW"));
+        assert(plan.find("Vector Scan using " + t + "_hnsw on " + t + " (HNSW, coseno, ef=64)") != std::string::npos);
+        plan = texto_del_plan(e.ejecutar("EXPLAIN SELECT * FROM " + t + " WHERE id > 3 AND SIMILAR_TO(" + vq + ")"));
+        assert(plan.find("Top-k") != std::string::npos);
+
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE SIMILAR_TO('foto.jpg')") && "la imagen la convierte la API");
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE SIMILAR_TO(VECTOR(1, 2))") && "dimension distinta");
+        assert(falla_ejecucion(e, "SELECT * FROM " + t + " WHERE SIMILAR_TO(nombre, " + vq + ")"));
+        assert(falla_ejecucion(e, "DELETE FROM " + t + " WHERE SIMILAR_TO(" + vq + ")"));
+        e.ejecutar("DROP TABLE " + t);
+    }
+
+    // con dos columnas VECTOR hay que decir cual
+    e.ejecutar("CREATE TABLE dos_vectores (id INT PRIMARY KEY, a VECTOR(2), b VECTOR(2))");
+    e.ejecutar("INSERT INTO dos_vectores VALUES (1, VECTOR(1, 0), VECTOR(0, 1))");
+    e.ejecutar("INSERT INTO dos_vectores VALUES (2, VECTOR(0, 1), VECTOR(1, 0))");
+    assert(falla_ejecucion(e, "SELECT id FROM dos_vectores WHERE SIMILAR_TO(VECTOR(1, 0), k=1)"));
+    assert(e.ejecutar("SELECT id FROM dos_vectores WHERE SIMILAR_TO(b, VECTOR(1, 0), k=1)").filas[0][0].entero == 2);
+    // un heap con indice hash sobre la clave lee los candidatos por el indice
+    e.ejecutar("CREATE INDEX dos_id ON dos_vectores (id) USING HASH");
+    e.ejecutar("CREATE INDEX dos_hnsw ON dos_vectores (a) USING HNSW");
+    const Resultado r = e.ejecutar("SELECT id FROM dos_vectores WHERE SIMILAR_TO(a, VECTOR(0, 1), k=2) USING HNSW CANDIDATES (1, 2)");
+    assert(ids(r) == std::vector<long long>({2, 1}));
+    e.ejecutar("DROP TABLE dos_vectores");
+    std::cout << "SIMILAR_TO: k-NN secuencial igual a la fuerza bruta en las tres organizaciones, SIMILARITY_SCORE,\n"
+                 "          ORDER BY y LIMIT sobre los k, WHERE + Top-k, CANDIDATES de FAISS con post-filtro y EXPLAIN\n";
+}
+
 struct Cambio {
     char op;
     int pk;
@@ -1143,6 +1266,7 @@ int main() {
     prueba_knn_vectorial();
     prueba_indices_vectoriales();
     prueba_cambios_vectoriales();
+    prueba_similar_to();
     prueba_espacial();
     prueba_matriz_indices();
     prueba_busqueda_texto();

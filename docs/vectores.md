@@ -138,7 +138,7 @@ EXPLAIN ANALYZE SELECT id FROM img ORDER BY distancia(v, VECTOR(...), 'coseno') 
 
 Projection on img (actual rows=10)
 Output: id
-  -> Seq Vector Scan on img  (cost=6667.00 rows=10) (actual time=77.502 rows=10 pages=6667)
+  -> Seq Vector Scan on img (coseno)  (cost=6667.00 rows=10) (actual time=77.502 rows=10 pages=6667)
      Order By: distancia(v, VECTOR(256 dimensiones)) [coseno] ASC LIMIT 10
 ```
 
