@@ -261,12 +261,14 @@ struct IndiceAbierto {
 std::string estructura_indice(const Indice& indice) {
     if (indice.tipo == "RTREE") return "r_tree";
     if (indice.tipo == "SPIMI") return "indice_invertido_spimi";
+    if (indice.es_vectorial()) return indice.tipo == "IVF" ? "ivf_faiss" : "hnsw_faiss";
     return indice.tipo == "HASH" ? "hash_extensible" : "bplus_no_agrupado";
 }
 
 std::string nombre_tipo_indice(const Indice& indice) {
     if (indice.tipo == "RTREE") return "R-Tree";
     if (indice.tipo == "SPIMI") return "indice invertido SPIMI";
+    if (indice.es_vectorial()) return indice.tipo;
     return indice.tipo == "HASH" ? "hash extensible" : "B+ no agrupado";
 }
 
@@ -280,6 +282,7 @@ const IndiceAdmitido ADMITIDOS[] = {
     {"HASH", TipoColumna::INT},   {"HASH", TipoColumna::VARCHAR},
     {"RTREE", TipoColumna::POINT},
     {"SPIMI", TipoColumna::VARCHAR},
+    {"IVF", TipoColumna::VECTOR},  {"HNSW", TipoColumna::VECTOR},
 };
 
 void validar_indice(const std::string& indice, TipoColumna columna) {
@@ -310,6 +313,7 @@ public:
                 break;
         }
         for (const Indice& indice : tabla.indices) {
+            if (indice.es_vectorial()) continue;  // viven en la API
             IndiceAbierto abierto;
             abierto.meta = &indice;
             if (indice.tipo == "RTREE") abierto.rtree = std::make_unique<RTree>(indice.archivo, false);
@@ -1240,6 +1244,52 @@ bool vector_de_texto(std::string s, Valor& salida) {
     return true;
 }
 
+// parámetros de FAISS que admite cada índice y su valor por omisión. Son los de
+// api/multimedia/indices.py, salvo ef_busqueda = 64, el que recomienda
+// docs/comparacion_vectorial para SIMILAR_TO
+struct ParametroVectorial {
+    const char* indice;
+    const char* nombre;
+    const char* omision;
+};
+
+const ParametroVectorial PARAMETROS_VECTORIALES[] = {
+    {"IVF", "metrica", "COSENO"},  {"IVF", "nlist", "100"},           {"IVF", "nprobe", "8"},
+    {"HNSW", "metrica", "COSENO"}, {"HNSW", "M", "32"},               {"HNSW", "ef_construccion", "40"},
+    {"HNSW", "ef_busqueda", "64"}, {"HNSW", "umbral_reconstruccion", "0.3"},
+};
+
+// valida WITH (...) y completa lo que falta con los valores por omisión, en un orden fijo
+std::vector<std::pair<std::string, std::string>> parametros_vectoriales(
+    const std::string& tipo, const std::vector<std::pair<std::string, std::string>>& dados) {
+    std::vector<std::pair<std::string, std::string>> salida;
+    std::string admitidos;
+    for (const ParametroVectorial& p : PARAMETROS_VECTORIALES) {
+        if (tipo != p.indice) continue;
+        salida.push_back({p.nombre, p.omision});
+        admitidos += (admitidos.empty() ? "" : ", ") + std::string(p.nombre);
+    }
+    std::set<std::string> vistos;
+    for (const auto& [nombre, valor] : dados) {
+        auto it = std::find_if(salida.begin(), salida.end(), [&](const auto& p) { return minusculas(p.first) == minusculas(nombre); });
+        if (it == salida.end()) throw std::runtime_error("un indice " + tipo + " no tiene el parametro " + nombre + " (" + admitidos + ")");
+        if (!vistos.insert(it->first).second) throw std::runtime_error("el parametro " + it->first + " esta repetido");
+        if (it->first == "metrica") {
+            it->second = metrica_vectorial(valor);
+            if (it->second.empty()) throw std::runtime_error("metrica desconocida '" + valor + "' (euclidiana, producto_punto o coseno)");
+        } else if (it->first == "umbral_reconstruccion") {
+            float v;
+            if (!es_decimal(valor, v) || v <= 0 || v > 1) throw std::runtime_error("umbral_reconstruccion debe estar entre 0 y 1");
+            it->second = texto_float(v);
+        } else {
+            long long v;
+            if (!es_entero(valor, v) || v <= 0 || v > 1000000) throw std::runtime_error(it->first + " debe ser un entero mayor que cero");
+            it->second = std::to_string(v);
+        }
+    }
+    return salida;
+}
+
 }  // namespace
 
 // --- Ejecutor ---
@@ -1663,7 +1713,8 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
 
     const auto inicio_carga = Reloj::now();
     Almacen almacen(catalogo_, tabla, false);
-    const bool vacia = almacen.registros() == 0 && tabla.indices.empty();
+    const bool vacia = almacen.registros() == 0 &&
+                       std::all_of(tabla.indices.begin(), tabla.indices.end(), [](const Indice& i) { return i.es_vectorial(); });
     almacen.reiniciar_contadores();
     // con la tabla vacía se puede escribir de una vez; si ya tiene datos hay que
     // insertar fila a fila para respetar el orden y mantener los índices
@@ -1780,16 +1831,22 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     const bool es_rtree = s.indice_tipo == "RTREE";
     validar_indice(s.indice_tipo, tabla.columnas[col].tipo);
     const bool es_spimi = s.indice_tipo == "SPIMI";
-    if (es_spimi ? tabla.indice_texto(s.indice_columna) : tabla.indice_sobre(s.indice_columna)) {
-        throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
+    const bool es_vectorial = s.indice_tipo == "IVF" || s.indice_tipo == "HNSW";
+    // una columna VECTOR puede tener un IVF y un HNSW a la vez, para compararlos
+    const Indice* existente = es_spimi ? tabla.indice_texto(s.indice_columna)
+                            : es_vectorial ? tabla.indice_vectorial(s.indice_columna, s.indice_tipo)
+                                           : tabla.indice_sobre(s.indice_columna);
+    if (existente) {
+        throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice" + (es_vectorial ? " " + s.indice_tipo : ""));
     }
     for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
+    if (es_vectorial) return registrar_indice_vectorial(s, tabla, tabla.columnas[col]);
 
     const bool es_hash = s.indice_tipo == "HASH";
     const std::string tipo = es_rtree ? "RTREE" : es_hash ? "HASH" : es_spimi ? "SPIMI" : "BPLUS";
     const std::string extension = es_rtree ? ".rtree" : es_hash ? ".hash" : es_spimi ? ".spimi" : ".bplus";
     Indice indice{s.indice_nombre, tabla.columnas[col].nombre, tipo,
-                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), extension)};
+                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), extension), {}};
     long entradas = 0;
     long disco = 0;
     {
@@ -1812,6 +1869,38 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     r.afectadas = static_cast<std::size_t>(entradas);
     r.mensaje = "indice " + indice.nombre + " (" + nombre_tipo_indice(indice) + ") creado sobre " + tabla.nombre + "." + indice.columna + " con " + std::to_string(entradas) + " entradas";
     r.plan.push_back({"construir_indice", {{"estructura", estructura_indice(indice)}, {"entradas", std::to_string(entradas)}, {"bytes", std::to_string(disco)}, {"archivo", indice.archivo}}});
+    return r;
+}
+
+// IVF y HNSW: el motor valida y anota el indice en el catalogo; el archivo lo
+// construye la API con FAISS, que vive en otro proceso
+Resultado Ejecutor::registrar_indice_vectorial(const Sentencia& s, Tabla& tabla, const Columna& columna) {
+    Indice indice{s.indice_nombre, columna.nombre, s.indice_tipo,
+                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), ".faiss"),
+                  parametros_vectoriales(s.indice_tipo, s.indice_parametros)};
+    std::size_t registros = 0;
+    {
+        Almacen almacen(catalogo_, tabla, false);
+        registros = almacen.registros();
+    }
+    // el k-means del IVF necesita al menos un vector por lista
+    if (indice.tipo == "IVF" && static_cast<long long>(registros) < std::stoll(indice.parametro("nlist"))) {
+        throw std::runtime_error("un IVF con nlist = " + indice.parametro("nlist") + " necesita al menos " + indice.parametro("nlist") +
+                                 " filas para entrenar y " + tabla.nombre + " tiene " + texto(registros));
+    }
+    tabla.indices.push_back(indice);
+    catalogo_.guardar();
+
+    Resultado r;
+    r.tipo = "create_index";
+    r.afectadas = registros;
+    r.mensaje = "indice " + indice.nombre + " (" + indice.tipo + ") registrado sobre " + tabla.nombre + "." + indice.columna +
+                "; FAISS lo construye en la API con " + texto(registros) + " vectores";
+    PasoPlan paso{"registrar_indice", {{"estructura", estructura_indice(indice)}, {"vectores", texto(registros)}}};
+    for (const auto& [nombre, valor] : indice.parametros) paso.detalles.push_back({nombre, nombre == "metrica" ? minusculas(valor) : valor});
+    paso.detalles.push_back({"archivo", indice.archivo});
+    paso.detalles.push_back({"nota", "el motor solo lo anota en el catalogo; lo construye y lo mantiene la API con FAISS"});
+    r.plan.push_back(paso);
     return r;
 }
 
@@ -2118,12 +2207,18 @@ Resultado Ejecutor::describir(const Sentencia& s) {
     r.columnas = {"columna", "tipo", "clave", "indice"};
     for (std::size_t i = 0; i < tabla.columnas.size(); ++i) {
         const Columna& c = tabla.columnas[i];
-        const Indice* indice = tabla.indice_sobre(c.nombre);
+        // una columna puede tener varios: un B+ y un SPIMI, o un IVF y un HNSW
+        std::string indices;
+        for (const Indice& indice : tabla.indices) {
+            if (minusculas(indice.columna) == minusculas(c.nombre)) {
+                indices += (indices.empty() ? "" : ", ") + indice.nombre + " (" + nombre_tipo_indice(indice) + ")";
+            }
+        }
         r.filas.push_back({Valor::de_texto(c.nombre),
                            Valor::de_texto(c.tipo == TipoColumna::VARCHAR || c.tipo == TipoColumna::VECTOR
                                                ? nombre_tipo(c.tipo) + "(" + texto(c.tam) + ")" : nombre_tipo(c.tipo)),
                            Valor::de_texto(i == tabla.pk ? "PK" : ""),
-                           Valor::de_texto(indice ? indice->nombre + " (" + nombre_tipo_indice(*indice) + ")"
+                           Valor::de_texto(!indices.empty() ? indices
                                            : i == tabla.pk && tabla.organizacion == Organizacion::BPLUS ? "PRIMARY (B+ agrupado)"
                                            : "")});
     }

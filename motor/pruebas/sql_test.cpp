@@ -772,6 +772,68 @@ void prueba_knn_vectorial() {
                  "          con heap (Seq Vector Scan) sin WHERE, con Sort si hay WHERE o DESC; rango y DELETE por distancia\n";
 }
 
+void prueba_indices_vectoriales() {
+    const std::string csv = ".build/sql_test_ivf.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,v,nombre\n";
+        for (int i = 1; i <= 120; ++i) f << i << ",\"VECTOR(" << i << ",1,0)\",p" << i << "\n";
+    }
+    {
+        Catalogo catalogo(DB);
+        Ejecutor e(catalogo);
+        e.ejecutar("CREATE TABLE fotos (id INT PRIMARY KEY, v VECTOR(3), nombre VARCHAR(8))");
+        Resultado r = e.ejecutar("CREATE INDEX fotos_hnsw ON fotos (v) USING HNSW WITH (M = 16, metrica = 'cosine')");
+        assert(r.tipo == "create_index" && r.afectadas == 0 && tiene_paso(r, "registrar_indice"));
+        assert(detalle_paso(r, "registrar_indice", "M") == "16" && detalle_paso(r, "registrar_indice", "metrica") == "coseno");
+        assert(detalle_paso(r, "registrar_indice", "ef_busqueda") == "64" && "lo que no se da toma el valor por omision");
+        assert(!std::filesystem::exists(detalle_paso(r, "registrar_indice", "archivo")) && "el motor no construye el indice");
+
+        assert(falla_ejecucion(e, "CREATE INDEX fotos_ivf ON fotos (v) USING IVF") && "el IVF necesita nlist filas para entrenar");
+        e.ejecutar("COPY fotos FROM FILE '" + csv + "'");
+        assert(e.ejecutar("SELECT COUNT(*) FROM fotos").filas[0][0].entero == 120 && "el HNSW no frena el COPY");
+        r = e.ejecutar("CREATE INDEX fotos_ivf ON fotos (v) USING IVF WITH (NLIST = 10, nprobe = 2, metrica = l2)");
+        assert(r.afectadas == 120 && detalle_paso(r, "registrar_indice", "nlist") == "10");
+        assert(detalle_paso(r, "registrar_indice", "metrica") == "euclidiana");
+
+        assert(falla_ejecucion(e, "CREATE INDEX otro ON fotos (v) USING HNSW") && "ya hay un HNSW sobre v");
+        assert(falla_ejecucion(e, "CREATE INDEX otro ON fotos (nombre) USING HNSW") && "solo sobre VECTOR");
+        assert(falla_ejecucion(e, "CREATE INDEX otro ON fotos (v) USING RTREE"));
+        e.ejecutar("CREATE TABLE fotos2 (id INT PRIMARY KEY, v VECTOR(3))");
+        assert(falla_ejecucion(e, "CREATE INDEX x ON fotos2 (v) USING HNSW WITH (nlist = 4)") && "nlist es del IVF");
+        assert(falla_ejecucion(e, "CREATE INDEX x ON fotos2 (v) USING HNSW WITH (M = 0)"));
+        assert(falla_ejecucion(e, "CREATE INDEX x ON fotos2 (v) USING HNSW WITH (M = 2.5)"));
+        assert(falla_ejecucion(e, "CREATE INDEX x ON fotos2 (v) USING HNSW WITH (M = 8, m = 9)"));
+        assert(falla_ejecucion(e, "CREATE INDEX x ON fotos2 (v) USING HNSW WITH (umbral_reconstruccion = 1.5)"));
+        assert(falla_ejecucion(e, "CREATE INDEX x ON fotos2 (v) USING HNSW WITH (metrica = haversine)"));
+        e.ejecutar("DROP TABLE fotos2");
+
+        // el motor no abre los IVF y HNSW: INSERT, DELETE y las consultas siguen como antes
+        e.ejecutar("INSERT INTO fotos VALUES (500, VECTOR(1, 2, 3), 'nueva')");
+        e.ejecutar("DELETE FROM fotos WHERE id <= 10");
+        assert(e.ejecutar("SELECT COUNT(*) FROM fotos").filas[0][0].entero == 111);
+        assert(e.ejecutar("SELECT nombre FROM fotos ORDER BY distancia(v, VECTOR(1, 2, 3)) LIMIT 1").filas[0][0].texto == "nueva");
+        e.ejecutar("CREATE INDEX fotos_nombre ON fotos (nombre) USING HASH");
+        assert(e.ejecutar("SELECT id FROM fotos WHERE nombre = 'p50'").filas[0][0].entero == 50);
+    }
+    // los parametros sobreviven a reabrir el catalogo, y DESCRIBE muestra los dos indices de v
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    const Resultado r = e.ejecutar("DESCRIBE fotos");
+    assert(r.filas[1][3].texto == "fotos_hnsw (HNSW), fotos_ivf (IVF)" && r.filas[2][3].texto == "fotos_nombre (hash extensible)");
+    const motor::sql::Indice* hnsw = catalogo.tabla("fotos").indice_vectorial("v", "HNSW");
+    assert(hnsw && hnsw->parametro("M") == "16" && hnsw->parametro("metrica") == "COSENO" && hnsw->parametro("umbral_reconstruccion") == "0.3");
+    assert(!catalogo.tabla("fotos").indice_sobre("v") && "las consultas comunes no ven los indices de FAISS");
+    const std::string archivo = hnsw->archivo;
+    {
+        std::ofstream f(archivo);  // lo que dejaría la API
+        f << "faiss";
+    }
+    e.ejecutar("DROP TABLE fotos");
+    assert(!std::filesystem::exists(archivo) && "DROP TABLE borra el archivo del indice");
+    std::cout << "IVF y HNSW: se registran con sus parametros sin construirse, DESCRIBE, reapertura y DROP TABLE\n";
+}
+
 void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -974,6 +1036,7 @@ int main() {
     prueba_float();
     prueba_vector();
     prueba_knn_vectorial();
+    prueba_indices_vectoriales();
     prueba_espacial();
     prueba_matriz_indices();
     prueba_busqueda_texto();

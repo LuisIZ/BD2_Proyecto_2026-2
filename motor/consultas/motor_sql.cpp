@@ -104,7 +104,11 @@ std::string json_catalogo(const Catalogo& catalogo) {
         for (std::size_t i = 0; i < t.indices.size(); ++i) {
             const auto& x = t.indices[i];
             s << (i ? ",{" : "{") << "\"nombre\":" << json_texto(x.nombre) << ",\"columna\":" << json_texto(x.columna)
-              << ",\"tipo\":" << json_texto(x.tipo) << ",\"archivo\":" << json_texto(x.archivo) << "}";
+              << ",\"tipo\":" << json_texto(x.tipo) << ",\"archivo\":" << json_texto(x.archivo) << ",\"parametros\":{";
+            for (std::size_t p = 0; p < x.parametros.size(); ++p) {
+                s << (p ? "," : "") << json_texto(x.parametros[p].first) << ":" << json_texto(x.parametros[p].second);
+            }
+            s << "}}";
         }
         s << "]}";
         primera = false;

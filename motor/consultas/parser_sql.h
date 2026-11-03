@@ -152,5 +152,8 @@ Sentencia parsear(const std::string& sql);
 // parte un texto en sentencias por ';' respetando comillas; descarta vacías
 std::vector<std::string> separar_sentencias(const std::string& texto);
 
+// EUCLIDIANA | PRODUCTO_PUNTO | COSENO para cualquiera de sus nombres (cosine, l2, ip...); vacío si no es una métrica
+std::string metrica_vectorial(const std::string& nombre);
+
 }  // namespace sql
 }  // namespace motor

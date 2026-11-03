@@ -286,11 +286,9 @@ private:
 
     // nombre de la metrica de vectores en el token actual (sin avanzar)
     std::string metrica_vector() const {
-        const std::string m = mayusculas(actual().texto);
-        if (m == "EUCLIDIANA" || m == "EUCLIDEAN" || m == "L2") return "EUCLIDIANA";
-        if (m == "PRODUCTO_PUNTO" || m == "INNER_PRODUCT" || m == "IP") return "PRODUCTO_PUNTO";
-        if (m == "COSENO" || m == "COSINE") return "COSENO";
-        error("metrica desconocida '" + actual().texto + "' (euclidiana, producto_punto o coseno)");
+        const std::string m = metrica_vectorial(actual().texto);
+        if (m.empty()) error("metrica desconocida '" + actual().texto + "' (euclidiana, producto_punto o coseno)");
+        return m;
     }
 
     void distancia(std::string& columna, Valor& centro, std::string& metrica) {
@@ -692,6 +690,14 @@ Sentencia parsear(const std::string& sql) {
     Lexer lexer(sql);
     Parser parser(lexer.tokens());
     return parser.sentencia();
+}
+
+std::string metrica_vectorial(const std::string& nombre) {
+    const std::string m = mayusculas(nombre);
+    if (m == "EUCLIDIANA" || m == "EUCLIDEAN" || m == "L2") return "EUCLIDIANA";
+    if (m == "PRODUCTO_PUNTO" || m == "INNER_PRODUCT" || m == "IP") return "PRODUCTO_PUNTO";
+    if (m == "COSENO" || m == "COSINE") return "COSENO";
+    return "";
 }
 
 std::vector<std::string> separar_sentencias(const std::string& texto) {

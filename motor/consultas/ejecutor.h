@@ -87,6 +87,7 @@ private:
     Resultado crear_tabla_desde_csv(const Sentencia& s);
     Resultado copiar_desde_csv(const Sentencia& s);
     Resultado crear_indice(const Sentencia& s);
+    Resultado registrar_indice_vectorial(const Sentencia& s, Tabla& tabla, const Columna& columna);
     Resultado borrar_tabla(const Sentencia& s);
     Resultado insertar(const Sentencia& s);
     Resultado eliminar(const Sentencia& s);
