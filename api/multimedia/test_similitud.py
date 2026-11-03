@@ -13,7 +13,7 @@ import unittest
 import numpy as np
 
 from motor_cli import RAIZ, MotorSQL
-from multimedia.similitud import IndicesFaiss, leer_cambios
+from multimedia.similitud import IndicesFaiss, leer_cambios, reescribir
 
 DIMENSION = 16
 N = 300
@@ -28,7 +28,9 @@ def vecinos_coseno(vectores, ids, consulta, k):
     return [int(ids[i]) for i in np.argsort(d, kind="stable")[:k]]
 
 
-class PruebaIndicesFaiss(unittest.TestCase):
+class ConMotor(unittest.TestCase):
+    """Una tabla fotos con N vectores al azar en una base temporal."""
+
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir=RAIZ / ".build")
         self.motor = MotorSQL(db=os.path.relpath(self.dir, RAIZ))
@@ -62,6 +64,8 @@ class PruebaIndicesFaiss(unittest.TestCase):
                     return indice
         raise KeyError(nombre)
 
+
+class PruebaIndicesFaiss(ConMotor):
     def test_create_index_construye_con_la_tabla(self):
         self.sql("CREATE INDEX f_hnsw ON fotos (v) USING HNSW; CREATE INDEX f_ivf ON fotos (v) USING IVF WITH (nlist = 4, nprobe = 4)")
         resumen = self.sincronizar()
@@ -138,6 +142,85 @@ class PruebaIndicesFaiss(unittest.TestCase):
         self.assertIn("incompleto", resumen["f_ivf"]["error"])
         self.assertTrue(cambios_ivf.exists(), "los cambios quedan para el proximo intento")
         self.assertEqual(resumen["f_hnsw"]["vectores"], N)
+
+
+class PruebaSimilarTo(ConMotor):
+    """La API reescribe SIMILAR_TO ... USING IVF|HNSW con los candidatos de FAISS y el motor arma la respuesta."""
+
+    def setUp(self):
+        super().setUp()
+        self.sql("CREATE INDEX f_hnsw ON fotos (v) USING HNSW; CREATE INDEX f_ivf ON fotos (v) USING IVF WITH (nlist = 4, nprobe = 4)")
+        self.sincronizar()
+        self.consulta = np.random.default_rng(9).standard_normal(DIMENSION).astype(np.float32)
+
+    def reescribir(self, sql):
+        return reescribir(sql, self.motor.catalogo(), self.indices)
+
+    def test_using_hnsw_e_ivf(self):
+        esperado = vecinos_coseno(self.vectores, self.ids, self.consulta, 5)
+        for tipo in ("HNSW", "IVF"):
+            sql, busquedas = self.reescribir(f"SELECT id, SIMILARITY_SCORE() FROM fotos WHERE SIMILAR_TO({literal(self.consulta)}, k=5) USING {tipo}")
+            self.assertIn(f"USING {tipo} CANDIDATES (", sql)
+            self.assertEqual((busquedas[0]["tipo"], busquedas[0]["candidatos"], busquedas[0]["vectores"]), (tipo, 5, N))
+            respuesta = self.sql(sql)[0]
+            self.assertEqual([fila[0] for fila in respuesta["filas"]], esperado)
+            self.assertEqual(respuesta["plan"][-1]["operacion"], "knn_vectorial_indice")
+            scores = [fila[1] for fila in respuesta["filas"]]
+            self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_lo_que_no_se_toca(self):
+        v = literal(self.consulta)
+        lote = (f"INSERT INTO fotos VALUES (5000, {v}); SELECT id FROM fotos WHERE SIMILAR_TO({v}, k=3) USING HNSW; "
+                f"SELECT id FROM fotos WHERE SIMILAR_TO(v, {v}, k=3)")
+        sql, busquedas = self.reescribir(lote)
+        partes = sql.split(";\n")
+        self.assertEqual(len(partes), 3)
+        self.assertNotIn("CANDIDATES", partes[0] + partes[2], "el INSERT y el k-NN secuencial quedan igual")
+        self.assertIn("CANDIDATES", partes[1])
+        self.assertEqual(len(busquedas), 1)
+
+        # EXPLAIN sin ANALYZE no ejecuta: el motor arma el plan sin candidatos
+        sql, _ = self.reescribir(f"EXPLAIN SELECT * FROM fotos WHERE SIMILAR_TO({v}) USING HNSW")
+        self.assertNotIn("CANDIDATES", sql)
+        plan = "\n".join(f[0] for f in self.sql(sql)[0]["filas"])
+        self.assertIn("Vector Scan using f_hnsw on fotos (HNSW, coseno, ef=64)", plan)
+        sql, _ = self.reescribir(f"EXPLAIN ANALYZE SELECT * FROM fotos WHERE SIMILAR_TO({v}) USING HNSW")
+        self.assertIn("CANDIDATES", sql)
+        self.sql(sql)
+
+        # lo que no se puede resolver llega igual al motor, que explica el error
+        for consulta, error in [
+            (f"SELECT id FROM fotos WHERE SIMILAR_TO({v}) USING HNSW WITH METRIC = euclidiana", "metrica"),
+            (f"SELECT id FROM no_existe WHERE SIMILAR_TO({v}) USING HNSW", "no_existe"),
+            ("SELECT id FROM fotos WHERE SIMILAR_TO('a;b.jpg') USING HNSW", "API"),
+        ]:
+            sql, busquedas = self.reescribir(consulta)
+            self.assertEqual((sql, busquedas), (consulta, []))
+            respuesta = self.motor.ejecutar(sql)[0]
+            self.assertFalse(respuesta["ok"])
+            self.assertIn(error, respuesta["error"])
+
+    def test_aplica_lo_pendiente_antes_de_buscar(self):
+        nuevo = -self.consulta
+        self.sql(f"INSERT INTO fotos VALUES (7000, {literal(nuevo)})")  # sin sincronizar
+        sql, busquedas = self.reescribir(f"SELECT id FROM fotos WHERE SIMILAR_TO({literal(nuevo)}, k=1) USING HNSW")
+        self.assertEqual(busquedas[0]["cambios_aplicados"], 1)
+        self.assertEqual(self.sql(sql)[0]["filas"], [[7000]])
+
+    def test_endpoint_consultas(self):
+        import sys
+        sys.path.insert(0, str(RAIZ))
+        from api import web_api
+
+        web_api.motor, web_api.indices_faiss = self.motor, self.indices
+        respuesta = web_api.consultas(web_api.Consulta(
+            sql=f"-- vecinos con HNSW\nSELECT id FROM fotos WHERE SIMILAR_TO({literal(self.consulta)}, k=4) USING HNSW; "
+                "DELETE FROM fotos WHERE id = 1"))
+        self.assertEqual([f[0] for f in respuesta["resultados"][0]["filas"]], vecinos_coseno(self.vectores, self.ids, self.consulta, 4))
+        busqueda, sincronizados = respuesta["faiss"][0], {r["indice"]: r for r in respuesta["faiss"][1:]}
+        self.assertEqual((busqueda["indice"], busqueda["candidatos"]), ("f_hnsw", 4))
+        self.assertEqual(sincronizados["f_hnsw"]["eliminados"], 1, "el DELETE del mismo lote se aplica despues")
+        self.assertEqual(sincronizados["f_ivf"]["eliminados"], 1)
 
 
 if __name__ == "__main__":

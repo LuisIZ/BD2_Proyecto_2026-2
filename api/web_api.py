@@ -18,7 +18,7 @@ from api.motor_cli import ErrorMotor, MotorSQL, RAIZ
 
 # los modulos de api/multimedia se importan como multimedia.*, igual que en sus pruebas
 sys.path.insert(0, str(RAIZ / "api"))
-from multimedia.similitud import IndicesFaiss  # noqa: E402
+from multimedia.similitud import IndicesFaiss, reescribir  # noqa: E402
 
 # Serializa las llamadas de este cliente; no implementa transacciones en el motor.
 lock = threading.Lock()
@@ -105,6 +105,16 @@ def sincronizar_faiss(respuestas):
         return [{"error": str(error)}]
 
 
+def preparar_similitud(sql):
+    """SIMILAR_TO ... USING IVF|HNSW: busca en FAISS y agrega CANDIDATES (pk, ...) al SQL."""
+    if "similar_to" not in sql.lower():
+        return sql, []
+    try:
+        return reescribir(sql, motor.catalogo(), indices_faiss)
+    except (ErrorMotor, OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(400, f"SIMILAR_TO: {error}") from error
+
+
 @app.get("/api/health")
 def health():
     return {"ok": motor is not None, "db": DB}
@@ -133,8 +143,9 @@ def consultas(consulta: Consulta):
     if not sin_comentarios(consulta.sql).strip():
         raise HTTPException(400, "Escribe una consulta SQL.")
     with lock:
-        resultados = ejecutar(consulta.sql)
-        return {"resultados": resultados, "faiss": sincronizar_faiss(resultados)}
+        sql, busquedas = preparar_similitud(sin_comentarios(consulta.sql))
+        resultados = ejecutar(sql)
+        return {"resultados": resultados, "faiss": busquedas + sincronizar_faiss(resultados)}
 
 
 @app.get("/api/datasets")
