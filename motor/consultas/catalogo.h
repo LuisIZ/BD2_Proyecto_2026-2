@@ -35,6 +35,9 @@ struct Indice {
     // los IVF y HNSW los construye y mantiene la API (FAISS); el motor solo los registra
     bool es_vectorial() const { return tipo == "IVF" || tipo == "HNSW"; }
     std::string parametro(const std::string& nombre) const;
+    // cambios confirmados que la API todavía no aplicó al índice. Registros de
+    // tamaño fijo: [uint8 'I' | 'D'][int32 pk][K float32] (ceros en 'D')
+    std::string archivo_cambios() const { return archivo + ".cambios"; }
 };
 
 struct Tabla {

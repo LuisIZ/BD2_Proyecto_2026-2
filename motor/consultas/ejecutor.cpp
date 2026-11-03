@@ -1290,6 +1290,32 @@ std::vector<std::pair<std::string, std::string>> parametros_vectoriales(
     return salida;
 }
 
+// un registro del archivo de cambios: [uint8 'I' | 'D'][int32 pk][K float32], ceros si se borra
+void escribir_cambio(std::ostream& salida, bool inserta, int pk, const std::vector<float>& v) {
+    salida.put(inserta ? 'I' : 'D');
+    salida.write(reinterpret_cast<const char*>(&pk), sizeof(pk));
+    const std::vector<float> ceros(inserta ? 0 : v.size(), 0.0f);
+    const std::vector<float>& componentes = inserta ? v : ceros;
+    salida.write(reinterpret_cast<const char*>(componentes.data()), static_cast<std::streamsize>(componentes.size() * sizeof(float)));
+}
+
+// agrega los cambios al archivo de cada indice IVF o HNSW de su tabla, abriendo cada archivo una vez
+void escribir_cambios_vectoriales(const Catalogo& catalogo, const std::vector<CambioVectorial>& cambios) {
+    std::map<std::string, std::ofstream> archivos;
+    for (const CambioVectorial& c : cambios) {
+        const Tabla& tabla = catalogo.tabla(c.tabla);
+        for (const Indice& indice : tabla.indices) {
+            if (!indice.es_vectorial()) continue;
+            std::ofstream& salida = archivos[indice.archivo_cambios()];
+            if (!salida.is_open()) {
+                salida.open(indice.archivo_cambios(), std::ios::binary | std::ios::app);
+                if (!salida) throw std::runtime_error("no se pudo escribir " + indice.archivo_cambios());
+            }
+            escribir_cambio(salida, c.inserta, clave_de(tabla, c.fila), c.fila[static_cast<std::size_t>(tabla.posicion_columna(indice.columna))].componentes);
+        }
+    }
+}
+
 }  // namespace
 
 // --- Ejecutor ---
@@ -1339,6 +1365,7 @@ Resultado Ejecutor::ejecutar(const Sentencia& s) {
             if (habia) deshacer_cambios();
             en_transaccion_ = false;
             deshacer_.clear();
+            vectores_pendientes_.clear();
             locks_->liberar_todo(txn_);
             throw std::runtime_error("deadlock: la transaccion T" + std::to_string(txn_) + " fue elegida como victima" +
                                      (habia ? " y se deshicieron sus cambios" : ""));
@@ -1360,6 +1387,7 @@ Resultado Ejecutor::iniciar_transaccion() {
     if (en_transaccion_) throw std::runtime_error("ya hay una transaccion abierta; terminala con END o ROLLBACK");
     en_transaccion_ = true;
     deshacer_.clear();
+    vectores_pendientes_.clear();
     Resultado r;
     r.tipo = "begin";
     r.mensaje = "transaccion T" + std::to_string(txn_) + " iniciada";
@@ -1373,6 +1401,10 @@ Resultado Ejecutor::terminar_transaccion(bool confirmar) {
     if (!confirmar) deshacer_cambios();
     en_transaccion_ = false;
     deshacer_.clear();
+    // FAISS solo se entera de lo confirmado: con ROLLBACK los cambios no se escriben
+    std::vector<CambioVectorial> vectores = std::move(vectores_pendientes_);
+    vectores_pendientes_.clear();
+    if (confirmar) escribir_cambios_vectoriales(catalogo_, vectores);
     locks_->liberar_todo(txn_);
     Resultado r;
     r.tipo = confirmar ? "commit" : "rollback";
@@ -1385,6 +1417,11 @@ Resultado Ejecutor::terminar_transaccion(bool confirmar) {
 void Ejecutor::deshacer_cambios() {
     std::lock_guard<std::mutex> latch(locks_->latch());
     en_transaccion_ = false;
+    deshaciendo_ = true;
+    struct Fin {
+        bool& b;
+        ~Fin() { b = false; }
+    } fin{deshaciendo_};
     for (auto it = deshacer_.rbegin(); it != deshacer_.rend(); ++it) {
         const Tabla& tabla = catalogo_.tabla(it->tabla);
         Sentencia s;
@@ -1718,18 +1755,31 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
     almacen.reiniciar_contadores();
     // con la tabla vacía se puede escribir de una vez; si ya tiene datos hay que
     // insertar fila a fila para respetar el orden y mantener los índices
+    const std::size_t total = filas.size();
     if (vacia) {
         almacen.cargar(filas);
     } else {
-        for (const Fila& fila : filas) almacen.insertar(fila);
+        std::size_t insertadas = 0;
+        try {
+            for (const Fila& fila : filas) {
+                almacen.insertar(fila);
+                ++insertadas;
+            }
+        } catch (...) {
+            // las filas que alcanzaron a entrar quedan en la tabla: FAISS tambien tiene que verlas
+            filas.resize(insertadas);
+            anotar_vectores(tabla, true, std::move(filas));
+            throw;
+        }
     }
     const double t_carga = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_carga).count();
+    const std::size_t vectores = anotar_vectores(tabla, true, std::move(filas));
 
     Resultado r;
     r.tipo = "copy";
-    r.afectadas = filas.size();
-    r.mensaje = texto(filas.size()) + " filas cargadas de " + s.archivo_csv + " en " + tabla.nombre;
-    r.plan.push_back({"leer_csv", {{"archivo", s.archivo_csv}, {"filas", texto(filas.size())}, {"columnas", texto(ncol)},
+    r.afectadas = total;
+    r.mensaje = texto(total) + " filas cargadas de " + s.archivo_csv + " en " + tabla.nombre;
+    r.plan.push_back({"leer_csv", {{"archivo", s.archivo_csv}, {"filas", texto(total)}, {"columnas", texto(ncol)},
                                    {"tiempo_ms", std::to_string(t_lectura)}}});
     r.plan.push_back({vacia ? "carga_masiva" : "insercion_una_a_una",
                       {{"estructura", nombre_organizacion(tabla.organizacion)},
@@ -1738,6 +1788,7 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
                        {"modo", vacia ? "tabla vacia: se escribe el archivo de una vez"
                                       : "la tabla ya tenia datos o indices: una insercion por fila"},
                        {"tiempo_ms", std::to_string(t_carga)}}});
+    if (vectores) r.plan.back().detalles.push_back({"vectores_para_faiss", texto(vectores)});
     return r;
 }
 
@@ -1882,11 +1933,17 @@ Resultado Ejecutor::registrar_indice_vectorial(const Sentencia& s, Tabla& tabla,
     {
         Almacen almacen(catalogo_, tabla, false);
         registros = almacen.registros();
-    }
-    // el k-means del IVF necesita al menos un vector por lista
-    if (indice.tipo == "IVF" && static_cast<long long>(registros) < std::stoll(indice.parametro("nlist"))) {
-        throw std::runtime_error("un IVF con nlist = " + indice.parametro("nlist") + " necesita al menos " + indice.parametro("nlist") +
-                                 " filas para entrenar y " + tabla.nombre + " tiene " + texto(registros));
+        // el k-means del IVF necesita al menos un vector por lista
+        if (indice.tipo == "IVF" && static_cast<long long>(registros) < std::stoll(indice.parametro("nlist"))) {
+            throw std::runtime_error("un IVF con nlist = " + indice.parametro("nlist") + " necesita al menos " + indice.parametro("nlist") +
+                                     " filas para entrenar y " + tabla.nombre + " tiene " + texto(registros));
+        }
+        // la API construye el indice con todos los vectores; se escriben directo al archivo, sin juntarlos en memoria
+        std::filesystem::remove(indice.archivo);
+        std::ofstream salida(indice.archivo_cambios(), std::ios::binary | std::ios::trunc);
+        if (!salida) throw std::runtime_error("no se pudo escribir " + indice.archivo_cambios());
+        const std::size_t col = static_cast<std::size_t>(tabla.posicion_columna(columna.nombre));
+        almacen.recorrer([&](FilaFisica&& f) { escribir_cambio(salida, true, clave_de(tabla, f.fila), f.fila[col].componentes); });
     }
     tabla.indices.push_back(indice);
     catalogo_.guardar();
@@ -1899,7 +1956,8 @@ Resultado Ejecutor::registrar_indice_vectorial(const Sentencia& s, Tabla& tabla,
     PasoPlan paso{"registrar_indice", {{"estructura", estructura_indice(indice)}, {"vectores", texto(registros)}}};
     for (const auto& [nombre, valor] : indice.parametros) paso.detalles.push_back({nombre, nombre == "metrica" ? minusculas(valor) : valor});
     paso.detalles.push_back({"archivo", indice.archivo});
-    paso.detalles.push_back({"nota", "el motor solo lo anota en el catalogo; lo construye y lo mantiene la API con FAISS"});
+    paso.detalles.push_back({"archivo_cambios", indice.archivo_cambios()});
+    paso.detalles.push_back({"nota", "el motor lo anota en el catalogo y vuelca los vectores; FAISS lo construye en la API"});
     r.plan.push_back(paso);
     return r;
 }
@@ -1907,7 +1965,10 @@ Resultado Ejecutor::registrar_indice_vectorial(const Sentencia& s, Tabla& tabla,
 Resultado Ejecutor::borrar_tabla(const Sentencia& s) {
     const Tabla tabla = catalogo_.tabla(s.tabla);
     std::filesystem::remove(tabla.archivo);
-    for (const Indice& i : tabla.indices) std::filesystem::remove_all(i.archivo);
+    for (const Indice& i : tabla.indices) {
+        std::filesystem::remove_all(i.archivo);
+        if (i.es_vectorial()) std::filesystem::remove(i.archivo_cambios());
+    }
     catalogo_.quitar(s.tabla);
     catalogo_.guardar();
     Resultado r;
@@ -1923,12 +1984,14 @@ Resultado Ejecutor::insertar(const Sentencia& s) {
     almacen.reiniciar_contadores();
     almacen.insertar(s.valores);
     if (en_transaccion_) deshacer_.push_back({tabla.nombre, true, s.valores});
+    const std::size_t vectores = anotar_vectores(tabla, true, {s.valores});
     Resultado r;
     r.tipo = "insert";
     r.afectadas = 1;
     r.mensaje = "1 fila insertada en " + tabla.nombre;
     PasoPlan paso{"insertar", {{"estructura", almacen.estructura()}, {"paginas_leidas", texto(almacen.paginas_leidas())},
                                {"paginas_escritas", texto(almacen.paginas_escritas())}, {"indices_actualizados", texto(tabla.indices.size())}}};
+    if (vectores) paso.detalles.push_back({"vectores_para_faiss", en_transaccion_ ? "1 (al confirmar)" : "1"});
     paso.nodo = "Insert";
     paso.relacion = tabla.nombre;
     paso.columna = tabla.columnas[tabla.pk].nombre;
@@ -1956,9 +2019,14 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
         if (en_transaccion_) deshacer_.push_back({tabla.nombre, false, f.fila});
     }
     r.afectadas = acceso.filas.size();
+    std::vector<Fila> borradas;
+    borradas.reserve(acceso.filas.size());
+    for (FilaFisica& f : acceso.filas) borradas.push_back(std::move(f.fila));
+    const std::size_t vectores = anotar_vectores(tabla, false, std::move(borradas));
     r.mensaje = texto(r.afectadas) + " filas eliminadas de " + tabla.nombre;
     PasoPlan paso{"eliminar", {{"estructura", almacen.estructura()}, {"filas", texto(r.afectadas)},
                                {"paginas_escritas", texto(almacen.paginas_escritas())}, {"modo", "lazy: se marcan tumbas"}}};
+    if (vectores) paso.detalles.push_back({"vectores_para_faiss", texto(vectores) + (en_transaccion_ ? " (al confirmar)" : "")});
     paso.nodo = "Delete";
     paso.relacion = tabla.nombre;
     paso.filas_reales = static_cast<long long>(r.afectadas);
@@ -1966,6 +2034,20 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
     r.plan.push_back(paso);
     ordenar_como_explain(r.plan);
     return r;
+}
+
+std::size_t Ejecutor::anotar_vectores(const Tabla& tabla, bool inserta, std::vector<Fila>&& filas) {
+    const bool tiene = std::any_of(tabla.indices.begin(), tabla.indices.end(), [](const Indice& i) { return i.es_vectorial(); });
+    if (!tiene || deshaciendo_ || filas.empty()) return 0;
+    std::vector<CambioVectorial> cambios;
+    cambios.reserve(filas.size());
+    for (Fila& fila : filas) cambios.push_back({tabla.nombre, inserta, std::move(fila)});
+    if (!en_transaccion_) {
+        escribir_cambios_vectoriales(catalogo_, cambios);
+        return cambios.size();
+    }
+    for (CambioVectorial& c : cambios) vectores_pendientes_.push_back(std::move(c));
+    return cambios.size();
 }
 
 Resultado Ejecutor::seleccionar(const Sentencia& s) {

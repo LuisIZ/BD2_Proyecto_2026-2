@@ -834,6 +834,111 @@ void prueba_indices_vectoriales() {
     std::cout << "IVF y HNSW: se registran con sus parametros sin construirse, DESCRIBE, reapertura y DROP TABLE\n";
 }
 
+struct Cambio {
+    char op;
+    int pk;
+    std::vector<float> v;
+};
+
+// lee el archivo que consume la API: registros [uint8 op][int32 pk][dim float32]
+std::vector<Cambio> leer_cambios(const std::string& ruta, std::size_t dim) {
+    std::vector<Cambio> salida;
+    std::ifstream f(ruta, std::ios::binary);
+    Cambio c;
+    while (f.get(c.op)) {
+        c.v.assign(dim, 0.0f);
+        f.read(reinterpret_cast<char*>(&c.pk), sizeof(c.pk));
+        f.read(reinterpret_cast<char*>(c.v.data()), static_cast<std::streamsize>(dim * sizeof(float)));
+        assert(f && "registro incompleto");
+        salida.push_back(c);
+    }
+    return salida;
+}
+
+std::string ops(const std::vector<Cambio>& cambios) {
+    std::string s;
+    for (const Cambio& c : cambios) s += std::string(1, c.op) + std::to_string(c.pk) + " ";
+    return s;
+}
+
+void prueba_cambios_vectoriales() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    e.ejecutar("CREATE TABLE galeria (id INT PRIMARY KEY, v VECTOR(2), nombre VARCHAR(8))");
+    e.ejecutar("INSERT INTO galeria VALUES (1, VECTOR(1, 0), 'a')");
+    e.ejecutar("INSERT INTO galeria VALUES (2, VECTOR(0, 1), 'b')");
+    e.ejecutar("INSERT INTO galeria VALUES (3, VECTOR(1, 1), 'c')");
+
+    // CREATE INDEX vuelca la tabla entera: la API construye el indice con eso
+    Resultado r = e.ejecutar("CREATE INDEX galeria_hnsw ON galeria (v) USING HNSW");
+    const std::string archivo = catalogo.tabla("galeria").indice_vectorial("v", "HNSW")->archivo_cambios();
+    std::vector<Cambio> cambios = leer_cambios(archivo, 2);
+    assert(ops(cambios) == "I1 I2 I3 " && cambios[2].v == std::vector<float>({1, 1}));
+    assert(detalle_paso(r, "registrar_indice", "archivo_cambios") == archivo);
+
+    r = e.ejecutar("INSERT INTO galeria VALUES (4, VECTOR(0.5, 2), 'd')");
+    assert(detalle_paso(r, "insertar", "vectores_para_faiss") == "1");
+    r = e.ejecutar("DELETE FROM galeria WHERE id <= 2");
+    assert(detalle_paso(r, "eliminar", "vectores_para_faiss") == "2");
+    cambios = leer_cambios(archivo, 2);
+    assert(ops(cambios) == "I1 I2 I3 I4 D1 D2 " && cambios[3].v == std::vector<float>({0.5f, 2}));
+    assert(cambios[4].v == std::vector<float>({0, 0}) && "un borrado no necesita el vector");
+
+    // en una transaccion no se escribe nada hasta el COMMIT, y con ROLLBACK nunca
+    e.ejecutar("BEGIN");
+    e.ejecutar("INSERT INTO galeria VALUES (10, VECTOR(3, 3), 'x')");
+    e.ejecutar("DELETE FROM galeria WHERE id = 3");
+    assert(leer_cambios(archivo, 2).size() == 6);
+    e.ejecutar("ROLLBACK");
+    assert(leer_cambios(archivo, 2).size() == 6 && "el ROLLBACK no deja rastro para FAISS");
+    assert(e.ejecutar("SELECT COUNT(*) FROM galeria").filas[0][0].entero == 2);
+    e.ejecutar("BEGIN");
+    r = e.ejecutar("INSERT INTO galeria VALUES (11, VECTOR(4, 4), 'y')");
+    assert(detalle_paso(r, "insertar", "vectores_para_faiss") == "1 (al confirmar)");
+    e.ejecutar("DELETE FROM galeria WHERE id = 3");
+    assert(leer_cambios(archivo, 2).size() == 6);
+    e.ejecutar("COMMIT");
+    assert(ops(leer_cambios(archivo, 2)) == "I1 I2 I3 I4 D1 D2 I11 D3 " && "se escriben en el orden de la transaccion");
+
+    // COPY anota cada fila; si falla a la mitad, anota las que alcanzaron a entrar
+    const std::string csv = ".build/sql_test_galeria.csv";
+    {
+        std::ofstream f(csv);
+        f << "id,v,nombre\n20,\"VECTOR(2,0)\",e\n21,\"VECTOR(0,2)\",f\n";
+    }
+    e.ejecutar("COPY galeria FROM FILE '" + csv + "'");
+    {
+        std::ofstream f(csv);
+        f << "id,v,nombre\n30,\"VECTOR(2,2)\",g\n4,\"VECTOR(1,2)\",repetida\n31,\"VECTOR(3,0)\",h\n";
+    }
+    assert(falla_ejecucion(e, "COPY galeria FROM FILE '" + csv + "'") && "la pk 4 ya existe");
+    assert(ops(leer_cambios(archivo, 2)) == "I1 I2 I3 I4 D1 D2 I11 D3 I20 I21 I30 ");
+    assert(e.ejecutar("SELECT COUNT(*) FROM galeria").filas[0][0].entero == 5);
+
+    // con dos indices sobre la columna, cada uno tiene su archivo; una tabla sin IVF ni HNSW no escribe nada
+    e.ejecutar("CREATE INDEX galeria_ivf ON galeria (v) USING IVF WITH (nlist = 2)");
+    const std::string archivo_ivf = catalogo.tabla("galeria").indice_vectorial("v", "IVF")->archivo_cambios();
+    std::vector<int> volcadas;  // en el orden fisico del heap, que reusa espacio de las borradas
+    for (const Cambio& c : leer_cambios(archivo_ivf, 2)) volcadas.push_back(c.op == 'I' ? c.pk : -1);
+    std::sort(volcadas.begin(), volcadas.end());
+    assert(volcadas == std::vector<int>({4, 11, 20, 21, 30}));
+    e.ejecutar("DELETE FROM galeria WHERE id = 20");
+    cambios = leer_cambios(archivo_ivf, 2);
+    assert(cambios.size() == 6 && cambios.back().op == 'D' && cambios.back().pk == 20);
+    assert(ops(leer_cambios(archivo, 2)) == "I1 I2 I3 I4 D1 D2 I11 D3 I20 I21 I30 D20 ");
+    e.ejecutar("CREATE TABLE sin_indice (id INT PRIMARY KEY, v VECTOR(2))");
+    e.ejecutar("INSERT INTO sin_indice VALUES (1, VECTOR(1, 1))");
+    for (const auto& entrada : std::filesystem::directory_iterator(DB)) {
+        assert(entrada.path().filename().string().rfind("sin_indice", 0) != 0 || entrada.path().extension() != ".cambios");
+    }
+    e.ejecutar("DROP TABLE sin_indice");
+
+    e.ejecutar("DROP TABLE galeria");
+    assert(!std::filesystem::exists(archivo) && !std::filesystem::exists(archivo_ivf) && "DROP TABLE borra los archivos de cambios");
+    std::cout << "cambios para FAISS: CREATE INDEX vuelca la tabla, INSERT, DELETE y COPY anotan;\n"
+                 "          en transaccion se escriben con COMMIT y se descartan con ROLLBACK\n";
+}
+
 void prueba_espacial() {
     Catalogo catalogo(DB);
     Ejecutor e(catalogo);
@@ -1037,6 +1142,7 @@ int main() {
     prueba_vector();
     prueba_knn_vectorial();
     prueba_indices_vectoriales();
+    prueba_cambios_vectoriales();
     prueba_espacial();
     prueba_matriz_indices();
     prueba_busqueda_texto();

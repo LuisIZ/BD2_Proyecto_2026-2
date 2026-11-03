@@ -57,6 +57,15 @@ struct Resultado {
     bool analizado = false;         // el plan trae medidas reales
 };
 
+// Una fila que entró o salió de una tabla con índices IVF o HNSW. El motor no
+// abre FAISS: anota el cambio en el archivo de cambios de cada índice y la API
+// lo aplica después.
+struct CambioVectorial {
+    std::string tabla;
+    bool inserta = false;
+    Fila fila;
+};
+
 // Ejecuta sentencias contra las tablas del catálogo. Abre los archivos de la
 // tabla al empezar cada sentencia y los cierra al terminar, así todo queda en
 // disco entre llamadas. Los errores se lanzan como std::runtime_error.
@@ -94,6 +103,8 @@ private:
     Resultado seleccionar(const Sentencia& s);
     Resultado mostrar_tablas();
     Resultado describir(const Sentencia& s);
+    // fuera de una transacción escribe enseguida; dentro, espera al COMMIT
+    std::size_t anotar_vectores(const Tabla& tabla, bool inserta, std::vector<Fila>&& filas);
 
     Catalogo& catalogo_;
     double parseo_ms_ = 0.0;
@@ -104,6 +115,8 @@ private:
     bool en_transaccion_ = false;
     int profundidad_ = 0;
     std::vector<Deshacer> deshacer_;
+    std::vector<CambioVectorial> vectores_pendientes_;  // de la transacción abierta
+    bool deshaciendo_ = false;  // el ROLLBACK no anota: sus cambios nunca se escribieron
 };
 
 }  // namespace sql
