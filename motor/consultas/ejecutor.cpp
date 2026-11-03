@@ -207,6 +207,39 @@ std::string describir_cond(const Condicion& c) {
 
 espacial::Punto punto_de(const Valor& v) { return {v.lat_e6, v.lon_e6}; }
 
+// SIMILAR_TO sin columna usa la unica columna VECTOR de la tabla
+int columna_similar(const Tabla& tabla, const Sentencia& s) {
+    if (!s.columna_similar.empty()) {
+        const int col = tabla.posicion_columna(s.columna_similar);
+        if (col < 0) throw std::runtime_error("la columna " + s.columna_similar + " no existe en " + tabla.nombre);
+        if (tabla.columnas[static_cast<std::size_t>(col)].tipo != TipoColumna::VECTOR) {
+            throw std::runtime_error("SIMILAR_TO necesita una columna VECTOR y " + s.columna_similar + " no lo es");
+        }
+        return col;
+    }
+    int encontrada = -1;
+    for (std::size_t i = 0; i < tabla.columnas.size(); ++i) {
+        if (tabla.columnas[i].tipo != TipoColumna::VECTOR) continue;
+        if (encontrada >= 0) throw std::runtime_error("la tabla " + tabla.nombre + " tiene varias columnas VECTOR: usa SIMILAR_TO(columna, ...)");
+        encontrada = static_cast<int>(i);
+    }
+    if (encontrada < 0) throw std::runtime_error("la tabla " + tabla.nombre + " no tiene columnas VECTOR");
+    return encontrada;
+}
+
+std::string describir_similar(const std::string& columna, const Sentencia& s) {
+    return "SIMILAR_TO(" + columna + ", VECTOR(" + texto(s.vector_similar.componentes.size()) + " dimensiones), k=" +
+           std::to_string(s.k_similar) + ") [" + minusculas(s.metrica_similar) + "]";
+}
+
+// SIMILARITY_SCORE(): mayor = mas parecido. Coseno: 1 - d (el coseno); producto
+// punto: -d (a . b); euclidiana: 1 / (1 + d), que va de 1 (iguales) hacia 0
+double similitud(double d, const std::string& metrica) {
+    if (metrica == "COSENO") return 1.0 - d;
+    if (metrica == "PRODUCTO_PUNTO") return -d;
+    return 1.0 / (1.0 + d);
+}
+
 struct IndiceAbierto {
     const Indice* meta = nullptr;
     std::unique_ptr<BPlusNoAgrupado> bplus;
@@ -261,12 +294,14 @@ struct IndiceAbierto {
 std::string estructura_indice(const Indice& indice) {
     if (indice.tipo == "RTREE") return "r_tree";
     if (indice.tipo == "SPIMI") return "indice_invertido_spimi";
+    if (indice.es_vectorial()) return indice.tipo == "IVF" ? "ivf_faiss" : "hnsw_faiss";
     return indice.tipo == "HASH" ? "hash_extensible" : "bplus_no_agrupado";
 }
 
 std::string nombre_tipo_indice(const Indice& indice) {
     if (indice.tipo == "RTREE") return "R-Tree";
     if (indice.tipo == "SPIMI") return "indice invertido SPIMI";
+    if (indice.es_vectorial()) return indice.tipo;
     return indice.tipo == "HASH" ? "hash extensible" : "B+ no agrupado";
 }
 
@@ -280,6 +315,7 @@ const IndiceAdmitido ADMITIDOS[] = {
     {"HASH", TipoColumna::INT},   {"HASH", TipoColumna::VARCHAR},
     {"RTREE", TipoColumna::POINT},
     {"SPIMI", TipoColumna::VARCHAR},
+    {"IVF", TipoColumna::VECTOR},  {"HNSW", TipoColumna::VECTOR},
 };
 
 void validar_indice(const std::string& indice, TipoColumna columna) {
@@ -310,6 +346,7 @@ public:
                 break;
         }
         for (const Indice& indice : tabla.indices) {
+            if (indice.es_vectorial()) continue;  // viven en la API
             IndiceAbierto abierto;
             abierto.meta = &indice;
             if (indice.tipo == "RTREE") abierto.rtree = std::make_unique<RTree>(indice.archivo, false);
@@ -428,6 +465,26 @@ public:
     }
 
     bool sabe_rango_pk() const { return seq_ != nullptr || arbol_ != nullptr; }
+
+    // filas de varias claves primarias (los candidatos de FAISS); las que ya no existen se saltan
+    std::vector<FilaFisica> buscar_claves(const std::vector<long long>& claves) {
+        std::vector<FilaFisica> salida;
+        const Indice* ipk = tabla_.indice_sobre(tabla_.columnas[tabla_.pk].nombre);
+        if (heap_ && !ipk) {
+            // el heap sin indice sobre la clave no sabe buscar: una sola pasada para todas
+            std::unordered_set<long long> buscadas(claves.begin(), claves.end());
+            recorrer([&](FilaFisica&& f) {
+                if (buscadas.count(f.fila[tabla_.pk].entero)) salida.push_back(std::move(f));
+            });
+            return salida;
+        }
+        for (long long clave : claves) {
+            if (clave < INT_MIN || clave > INT_MAX) continue;
+            std::vector<FilaFisica> filas = heap_ ? leer_posiciones(indice(ipk)->buscar(static_cast<int>(clave))) : buscar_pk(clave);
+            for (FilaFisica& f : filas) salida.push_back(std::move(f));
+        }
+        return salida;
+    }
 
     IndiceAbierto* indice(const Indice* i) {
         for (IndiceAbierto& abierto : indices_) if (abierto.meta == i) return &abierto;
@@ -707,7 +764,8 @@ private:
 // EXPLAIN a secas puede mostrar el mismo plan que correrá EXPLAIN ANALYZE sin
 // tocar una sola página de datos, como hace PostgreSQL.
 
-enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, INDICE_ORDEN, ESPACIAL_RANGO, ESPACIAL_KNN, ESPACIAL_CAJA, TEXTO, VECTORIAL };
+enum class Via { SCAN, PK_IGUAL, PK_RANGO, INDICE_IGUAL, INDICE_RANGO, INDICE_ORDEN, ESPACIAL_RANGO, ESPACIAL_KNN, ESPACIAL_CAJA, TEXTO, VECTORIAL,
+                 VECTORIAL_INDICE };
 
 struct Plan {
     Via via = Via::SCAN;
@@ -726,6 +784,7 @@ struct Plan {
     std::string metrica;
     Valor caja_min;
     Valor caja_max;
+    bool recorre_tabla = false;  // VECTORIAL_INDICE en un heap sin indice sobre la clave
 };
 
 std::string nombre_nodo(Via via, const Tabla& tabla) {
@@ -742,6 +801,7 @@ std::string nombre_nodo(Via via, const Tabla& tabla) {
         case Via::INDICE_RANGO: return "Index Range Scan";
         case Via::TEXTO: return "Text Scan";
         case Via::VECTORIAL: return "Seq Vector Scan";
+        case Via::VECTORIAL_INDICE: return "Vector Scan";
         case Via::SCAN: break;
     }
     return "Seq Scan";
@@ -759,13 +819,14 @@ std::string id_operacion(Via via) {
         case Via::ESPACIAL_CAJA: return "poligono_espacial";
         case Via::TEXTO: return "busqueda_texto";
         case Via::VECTORIAL: return "knn_vectorial";
+        case Via::VECTORIAL_INDICE: return "knn_vectorial_indice";
         case Via::SCAN: break;
     }
     return "scan_completo";
 }
 
 bool ordena_por_score(const Sentencia& s) {
-    return s.busqueda_texto && std::any_of(s.items.begin(), s.items.end(), [&](const ItemSelect& item) {
+    return (s.busqueda_texto || s.busqueda_similar) && std::any_of(s.items.begin(), s.items.end(), [&](const ItemSelect& item) {
         return item.score && minusculas(item.etiqueta()) == minusculas(s.order_by);
     });
 }
@@ -921,8 +982,63 @@ Plan planificar(const Tabla& tabla, const std::vector<Condicion>& condiciones, b
             plan.condicion = describir_orden(*s);
         }
     }
+    if (s && s->busqueda_similar) {
+        const Columna& columna = tabla.columnas[static_cast<std::size_t>(columna_similar(tabla, *s))];
+        if (!s->vector_similar.es_vector) {
+            throw std::runtime_error("SIMILAR_TO('" + s->archivo_similar + "') lo resuelve la API, que extrae el vector de la imagen; el motor necesita SIMILAR_TO(" +
+                                     columna.nombre + ", VECTOR(...))");
+        }
+        validar_distancia(columna, s->vector_similar);
+        // con WHERE y sin indice, el WHERE elige su via y despues se quedan los k mas cercanos (Top-k)
+        if (s->indice_similar.empty() && !condiciones.empty()) return plan;
+        Plan similar;
+        similar.via = Via::VECTORIAL;
+        similar.columna = columna.nombre;
+        similar.centro = s->vector_similar;
+        similar.k = s->k_similar;
+        similar.metrica = s->metrica_similar;
+        similar.condicion = describir_similar(columna.nombre, *s);
+        if (!s->indice_similar.empty()) {
+            const Indice* indice = tabla.indice_vectorial(columna.nombre, s->indice_similar);
+            if (!indice) {
+                throw std::runtime_error("no hay un indice " + s->indice_similar + " sobre " + tabla.nombre + "." + columna.nombre + ": CREATE INDEX idx ON " +
+                                         tabla.nombre + " (" + columna.nombre + ") USING " + s->indice_similar);
+            }
+            if (indice->parametro("metrica") != s->metrica_similar) {
+                throw std::runtime_error("el indice " + indice->nombre + " usa la metrica " + minusculas(indice->parametro("metrica")) +
+                                         " y la consulta pide " + minusculas(s->metrica_similar) + ": usa WITH METRIC = " +
+                                         minusculas(indice->parametro("metrica")) + " o crea otro indice");
+            }
+            similar.via = Via::VECTORIAL_INDICE;
+            similar.indice = indice;
+            similar.restantes = condiciones;  // post-filtro: FAISS no conoce el resto del WHERE
+            similar.recorre_tabla = tabla.organizacion == Organizacion::HEAP && !tabla.indice_sobre(tabla.columnas[tabla.pk].nombre);
+        }
+        return similar;
+    }
     if (s && s->busqueda_texto) return planificar_texto(tabla, condiciones, *s);
     return plan;
+}
+
+// lo que va entre parentesis en EXPLAIN: "HNSW, coseno, ef=64", "IVF, coseno, nprobe=8" o solo la metrica
+std::string resumen_vectorial(const Plan& plan) {
+    if (plan.via == Via::VECTORIAL) return minusculas(plan.metrica);
+    if (plan.via != Via::VECTORIAL_INDICE) return "";
+    const bool hnsw = plan.indice->tipo == "HNSW";
+    return plan.indice->tipo + ", " + minusculas(plan.metrica) + ", " +
+           (hnsw ? "ef=" + plan.indice->parametro("ef_busqueda") : "nprobe=" + plan.indice->parametro("nprobe"));
+}
+
+// de menor a mayor distancia; con empate, el orden en que llegaron
+void ordenar_por_distancia(std::vector<FilaFisica>& filas, int col, const Valor& centro, const std::string& metrica) {
+    std::vector<std::pair<double, std::size_t>> orden;
+    for (std::size_t i = 0; i < filas.size(); ++i) {
+        orden.push_back({distancia_valores(filas[i].fila[static_cast<std::size_t>(col)], centro, metrica), i});
+    }
+    std::sort(orden.begin(), orden.end());
+    std::vector<FilaFisica> salida;
+    for (const auto& [d, i] : orden) salida.push_back(std::move(filas[i]));
+    filas = std::move(salida);
 }
 
 // Filas que se esperan del acceso. Asume claves densas y repartidas parejo: es
@@ -947,7 +1063,8 @@ long long filas_estimadas(const Plan& plan, std::size_t registros) {
         case Via::ESPACIAL_KNN: return std::min(n, plan.k);
         case Via::ESPACIAL_CAJA: return std::max<long long>(1, n / 10);
         case Via::TEXTO: return plan.k > 0 ? std::min(n, plan.k) : std::max<long long>(1, n / 10);
-        case Via::VECTORIAL: return std::min(n, plan.k);
+        case Via::VECTORIAL:
+        case Via::VECTORIAL_INDICE: return std::min(n, plan.k);
         case Via::INDICE_ORDEN:
         case Via::SCAN: break;
     }
@@ -974,6 +1091,8 @@ double costo_estimado(const Plan& plan, std::size_t paginas, std::size_t registr
         case Via::ESPACIAL_KNN:
         case Via::TEXTO:
         case Via::ESPACIAL_CAJA: return alto + static_cast<double>(filas);
+        case Via::VECTORIAL_INDICE:  // FAISS no lee paginas del motor; el motor lee una por candidato
+            return plan.recorre_tabla ? total : alto + static_cast<double>(filas);
         case Via::VECTORIAL:  // sin indice: lee toda la tabla, igual que el Seq Scan
         case Via::SCAN: break;
     }
@@ -985,7 +1104,8 @@ struct Acceso {
     std::vector<Condicion> restantes;
     PasoPlan paso;
     bool orden_por_indice = false;
-    std::unordered_map<long long, double> scores;  // MATCH: score por clave primaria
+    bool top_k_hecho = false;  // SIMILAR_TO: la via ya dejo los k mas cercanos, en orden
+    std::unordered_map<long long, double> scores;  // MATCH y SIMILAR_TO: score por clave primaria
 };
 
 // ejecuta la vía que eligió el planificador y mide lo que costó de verdad
@@ -1023,7 +1143,20 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
             break;
         case Via::VECTORIAL:
             acceso.filas = almacen.knn_secuencial(tabla.posicion_columna(plan.columna), plan.centro, plan.k, plan.metrica, calculadas);
-            acceso.orden_por_indice = true;  // el heap ya las entrega de menor a mayor distancia: no hace falta Sort
+            // el heap ya las entrega de menor a mayor distancia: ORDER BY distancia no necesita Sort.
+            // SIMILAR_TO si puede ordenar despues por otra columna
+            acceso.orden_por_indice = !s->busqueda_similar;
+            acceso.top_k_hecho = true;
+            break;
+        case Via::VECTORIAL_INDICE:
+            if (!s->hay_candidatos) {
+                throw std::runtime_error("USING " + s->indice_similar + " lo resuelve la API con FAISS; sin la API, quita USING para usar el k-NN secuencial");
+            }
+            // FAISS eligio los candidatos; el motor los lee y recalcula la distancia exacta
+            acceso.filas = almacen.buscar_claves(s->candidatos);
+            ordenar_por_distancia(acceso.filas, tabla.posicion_columna(plan.columna), plan.centro, plan.metrica);
+            calculadas = static_cast<long>(acceso.filas.size());
+            acceso.top_k_hecho = true;
             break;
         case Via::SCAN: acceso.filas = almacen.escanear(); break;
     }
@@ -1049,6 +1182,13 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
                          {"condicion", plan.condicion}, {"paginas_indice", texto(p_indice)},
                          {"paginas_heap", texto(p_datos)}, {"filas", texto(acceso.filas.size())}};
         if (visitados >= 0) paso.detalles.push_back({"nodos_visitados", texto(static_cast<std::size_t>(visitados))});
+        if (plan.via == Via::VECTORIAL_INDICE) {
+            paso.detalles.push_back({"resumen", resumen_vectorial(plan)});
+            paso.detalles.push_back({"metrica", minusculas(plan.metrica)});
+            paso.detalles.push_back({"k", texto(static_cast<std::size_t>(plan.k))});
+            paso.detalles.push_back({"candidatos", texto(s->candidatos.size())});
+            paso.detalles.push_back({"distancias_calculadas", texto(static_cast<std::size_t>(calculadas))});
+        }
         if (plan.via == Via::TEXTO) {
             paso.detalles.push_back({"ranking", plan.ranking});
             paso.detalles.push_back({"postings_leidos", texto(static_cast<std::size_t>(almacen.postings_leidos(plan.indice)))});
@@ -1064,6 +1204,7 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
         paso.detalles.push_back({"paginas_leidas", texto(almacen.paginas_leidas())});
         paso.detalles.push_back({"filas", texto(acceso.filas.size())});
         if (plan.via == Via::VECTORIAL) {
+            paso.detalles.push_back({"resumen", resumen_vectorial(plan)});
             paso.detalles.push_back({"metrica", minusculas(plan.metrica)});
             paso.detalles.push_back({"k", texto(static_cast<std::size_t>(plan.k))});
             paso.detalles.push_back({"distancias_calculadas", texto(static_cast<std::size_t>(calculadas))});
@@ -1075,6 +1216,34 @@ Acceso acceder(Almacen& almacen, const Tabla& tabla, const std::vector<Condicion
         }
     }
     return acceso;
+}
+
+// SIMILAR_TO: deja las k filas mas cercanas (si la via no lo hizo) y calcula el score de cada una
+void similares(Acceso& acceso, const Tabla& tabla, const Sentencia& s, std::vector<PasoPlan>& plan) {
+    const int col = columna_similar(tabla, s);
+    const std::size_t k = static_cast<std::size_t>(s.k_similar);
+    if (!acceso.top_k_hecho) {
+        const auto inicio = Reloj::now();
+        const std::size_t entrada = acceso.filas.size();
+        ordenar_por_distancia(acceso.filas, col, s.vector_similar, s.metrica_similar);
+        if (acceso.filas.size() > k) acceso.filas.resize(k);
+        PasoPlan paso;
+        paso.operacion = "top_k_vectorial";
+        paso.nodo = "Top-k";
+        paso.relacion = tabla.nombre;
+        paso.condicion = describir_similar(tabla.columnas[static_cast<std::size_t>(col)].nombre, s);
+        paso.filas_reales = static_cast<long long>(acceso.filas.size());
+        paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+        paso.detalles = {{"metrica", minusculas(s.metrica_similar)}, {"k", texto(k)}, {"entrada", texto(entrada)},
+                         {"distancias_calculadas", texto(entrada)}};
+        plan.push_back(paso);
+    } else if (acceso.filas.size() > k) {
+        acceso.filas.resize(k);  // CANDIDATES con mas de k pk
+    }
+    for (const FilaFisica& f : acceso.filas) {
+        const double d = distancia_valores(f.fila[static_cast<std::size_t>(col)], s.vector_similar, s.metrica_similar);
+        acceso.scores[clave_de(tabla, f.fila)] = similitud(d, s.metrica_similar);
+    }
 }
 
 void filtrar(Acceso& acceso, const Tabla& tabla, std::vector<PasoPlan>& plan) {
@@ -1140,7 +1309,10 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
     s += p.nodo.empty() ? p.operacion : p.nodo;
     if (!p.indice.empty()) s += " using " + p.indice;
     if (!p.relacion.empty()) s += " on " + p.relacion;
-    if (!p.indice.empty() && !p.columna.empty()) s += " (" + p.columna + ")";
+    std::string resumen;
+    for (const auto& [k, v] : p.detalles) if (k == "resumen") resumen = v;
+    if (!p.indice.empty() && !p.columna.empty()) s += " (" + (resumen.empty() ? p.columna : resumen) + ")";
+    else if (!resumen.empty()) s += " (" + resumen + ")";
     if (p.costo >= 0) s += "  (cost=" + con_decimales(p.costo, 2) + " rows=" + std::to_string(std::max<long long>(0, p.filas_estimadas)) + ")";
     else if (p.filas_estimadas >= 0) s += "  (rows=" + std::to_string(p.filas_estimadas) + ")";
     if (analizado && p.filas_reales >= 0) {
@@ -1154,9 +1326,9 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
     const std::string sangria = std::string(static_cast<std::size_t>(p.nivel) * 2 + (p.nivel > 0 ? 3 : 0), ' ');
     if (!p.condicion.empty()) {
         const char* etiqueta = "Filter: ";
-        if (!p.indice.empty()) etiqueta = "Index Cond: ";
+        if (p.operacion.find("vectorial") != std::string::npos) etiqueta = "Order By: ";
+        else if (!p.indice.empty()) etiqueta = "Index Cond: ";
         else if (p.operacion == "ordenamiento") etiqueta = "Sort Key: ";
-        else if (p.operacion == "knn_vectorial") etiqueta = "Order By: ";
         else if (p.operacion.rfind("busqueda", 0) == 0 || p.operacion.rfind("rango", 0) == 0) etiqueta = "Key Cond: ";
         s += "\n" + sangria + etiqueta + p.condicion;
     }
@@ -1240,6 +1412,78 @@ bool vector_de_texto(std::string s, Valor& salida) {
     return true;
 }
 
+// parámetros de FAISS que admite cada índice y su valor por omisión. Son los de
+// api/multimedia/indices.py, salvo ef_busqueda = 64, el que recomienda
+// docs/comparacion_vectorial para SIMILAR_TO
+struct ParametroVectorial {
+    const char* indice;
+    const char* nombre;
+    const char* omision;
+};
+
+const ParametroVectorial PARAMETROS_VECTORIALES[] = {
+    {"IVF", "metrica", "COSENO"},  {"IVF", "nlist", "100"},           {"IVF", "nprobe", "8"},
+    {"HNSW", "metrica", "COSENO"}, {"HNSW", "M", "32"},               {"HNSW", "ef_construccion", "40"},
+    {"HNSW", "ef_busqueda", "64"}, {"HNSW", "umbral_reconstruccion", "0.3"},
+};
+
+// valida WITH (...) y completa lo que falta con los valores por omisión, en un orden fijo
+std::vector<std::pair<std::string, std::string>> parametros_vectoriales(
+    const std::string& tipo, const std::vector<std::pair<std::string, std::string>>& dados) {
+    std::vector<std::pair<std::string, std::string>> salida;
+    std::string admitidos;
+    for (const ParametroVectorial& p : PARAMETROS_VECTORIALES) {
+        if (tipo != p.indice) continue;
+        salida.push_back({p.nombre, p.omision});
+        admitidos += (admitidos.empty() ? "" : ", ") + std::string(p.nombre);
+    }
+    std::set<std::string> vistos;
+    for (const auto& [nombre, valor] : dados) {
+        auto it = std::find_if(salida.begin(), salida.end(), [&](const auto& p) { return minusculas(p.first) == minusculas(nombre); });
+        if (it == salida.end()) throw std::runtime_error("un indice " + tipo + " no tiene el parametro " + nombre + " (" + admitidos + ")");
+        if (!vistos.insert(it->first).second) throw std::runtime_error("el parametro " + it->first + " esta repetido");
+        if (it->first == "metrica") {
+            it->second = metrica_vectorial(valor);
+            if (it->second.empty()) throw std::runtime_error("metrica desconocida '" + valor + "' (euclidiana, producto_punto o coseno)");
+        } else if (it->first == "umbral_reconstruccion") {
+            float v;
+            if (!es_decimal(valor, v) || v <= 0 || v > 1) throw std::runtime_error("umbral_reconstruccion debe estar entre 0 y 1");
+            it->second = texto_float(v);
+        } else {
+            long long v;
+            if (!es_entero(valor, v) || v <= 0 || v > 1000000) throw std::runtime_error(it->first + " debe ser un entero mayor que cero");
+            it->second = std::to_string(v);
+        }
+    }
+    return salida;
+}
+
+// un registro del archivo de cambios: [uint8 'I' | 'D'][int32 pk][K float32], ceros si se borra
+void escribir_cambio(std::ostream& salida, bool inserta, int pk, const std::vector<float>& v) {
+    salida.put(inserta ? 'I' : 'D');
+    salida.write(reinterpret_cast<const char*>(&pk), sizeof(pk));
+    const std::vector<float> ceros(inserta ? 0 : v.size(), 0.0f);
+    const std::vector<float>& componentes = inserta ? v : ceros;
+    salida.write(reinterpret_cast<const char*>(componentes.data()), static_cast<std::streamsize>(componentes.size() * sizeof(float)));
+}
+
+// agrega los cambios al archivo de cada indice IVF o HNSW de su tabla, abriendo cada archivo una vez
+void escribir_cambios_vectoriales(const Catalogo& catalogo, const std::vector<CambioVectorial>& cambios) {
+    std::map<std::string, std::ofstream> archivos;
+    for (const CambioVectorial& c : cambios) {
+        const Tabla& tabla = catalogo.tabla(c.tabla);
+        for (const Indice& indice : tabla.indices) {
+            if (!indice.es_vectorial()) continue;
+            std::ofstream& salida = archivos[indice.archivo_cambios()];
+            if (!salida.is_open()) {
+                salida.open(indice.archivo_cambios(), std::ios::binary | std::ios::app);
+                if (!salida) throw std::runtime_error("no se pudo escribir " + indice.archivo_cambios());
+            }
+            escribir_cambio(salida, c.inserta, clave_de(tabla, c.fila), c.fila[static_cast<std::size_t>(tabla.posicion_columna(indice.columna))].componentes);
+        }
+    }
+}
+
 }  // namespace
 
 // --- Ejecutor ---
@@ -1289,6 +1533,7 @@ Resultado Ejecutor::ejecutar(const Sentencia& s) {
             if (habia) deshacer_cambios();
             en_transaccion_ = false;
             deshacer_.clear();
+            vectores_pendientes_.clear();
             locks_->liberar_todo(txn_);
             throw std::runtime_error("deadlock: la transaccion T" + std::to_string(txn_) + " fue elegida como victima" +
                                      (habia ? " y se deshicieron sus cambios" : ""));
@@ -1310,6 +1555,7 @@ Resultado Ejecutor::iniciar_transaccion() {
     if (en_transaccion_) throw std::runtime_error("ya hay una transaccion abierta; terminala con END o ROLLBACK");
     en_transaccion_ = true;
     deshacer_.clear();
+    vectores_pendientes_.clear();
     Resultado r;
     r.tipo = "begin";
     r.mensaje = "transaccion T" + std::to_string(txn_) + " iniciada";
@@ -1323,6 +1569,10 @@ Resultado Ejecutor::terminar_transaccion(bool confirmar) {
     if (!confirmar) deshacer_cambios();
     en_transaccion_ = false;
     deshacer_.clear();
+    // FAISS solo se entera de lo confirmado: con ROLLBACK los cambios no se escriben
+    std::vector<CambioVectorial> vectores = std::move(vectores_pendientes_);
+    vectores_pendientes_.clear();
+    if (confirmar) escribir_cambios_vectoriales(catalogo_, vectores);
     locks_->liberar_todo(txn_);
     Resultado r;
     r.tipo = confirmar ? "commit" : "rollback";
@@ -1335,6 +1585,11 @@ Resultado Ejecutor::terminar_transaccion(bool confirmar) {
 void Ejecutor::deshacer_cambios() {
     std::lock_guard<std::mutex> latch(locks_->latch());
     en_transaccion_ = false;
+    deshaciendo_ = true;
+    struct Fin {
+        bool& b;
+        ~Fin() { b = false; }
+    } fin{deshaciendo_};
     for (auto it = deshacer_.rbegin(); it != deshacer_.rend(); ++it) {
         const Tabla& tabla = catalogo_.tabla(it->tabla);
         Sentencia s;
@@ -1436,14 +1691,18 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
             paso.indice = plan.indice->nombre;
             paso.detalles.insert(paso.detalles.begin(), {"indice", plan.indice->nombre});
             paso.detalles.push_back({"columna", plan.columna});
+            if (plan.via == Via::VECTORIAL_INDICE) paso.detalles.push_back({"resumen", resumen_vectorial(plan)});
             paso.detalles.push_back({"nota", plan.via == Via::TEXTO
                                                  ? "rankea con el indice invertido y busca cada fila encontrada en la tabla"
+                                             : plan.via == Via::VECTORIAL_INDICE
+                                                 ? "FAISS busca los k candidatos en la API; el motor los lee por clave, recalcula la distancia y aplica el resto del WHERE"
                                              : tabla.organizacion == Organizacion::HEAP
                                                  ? "el indice no agrupado lee una pagina de datos por fila encontrada"
                                                  : "el indice guarda la clave primaria: cada fila encontrada se busca por clave"});
         } else if (!plan.columna.empty()) {
             paso.detalles.push_back({"columna", plan.columna});
             if (plan.via == Via::VECTORIAL) {
+                paso.detalles.push_back({"resumen", resumen_vectorial(plan)});
                 paso.detalles.push_back({"nota", "sin indice: calcula la distancia de cada fila y guarda las k mejores en un heap"});
             }
         } else if (!interna.condiciones.empty()) {
@@ -1471,6 +1730,18 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
             f.costo = paso.costo;
             f.detalles = {{"condicion", descripcion}, {"nota", "estimacion: 10% de las filas pasa el filtro"}};
             r.plan.push_back(f);
+        }
+        if (interna.busqueda_similar && plan.via != Via::VECTORIAL && plan.via != Via::VECTORIAL_INDICE) {
+            PasoPlan k;
+            k.operacion = "top_k_vectorial";
+            k.nodo = "Top-k";
+            k.relacion = tabla.nombre;
+            k.condicion = describir_similar(tabla.columnas[static_cast<std::size_t>(columna_similar(tabla, interna))].nombre, interna);
+            k.filas_estimadas = std::min(filas, interna.k_similar);
+            k.costo = paso.costo;
+            k.detalles = {{"nota", "calcula la distancia de las filas que pasan el WHERE y se queda con las k mas cercanas"}};
+            r.plan.push_back(k);
+            filas = k.filas_estimadas;
         }
         if (interna.tipo == TipoSentencia::SELECT) {
             if (!interna.group_by.empty() || std::any_of(interna.items.begin(), interna.items.end(),
@@ -1663,22 +1934,36 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
 
     const auto inicio_carga = Reloj::now();
     Almacen almacen(catalogo_, tabla, false);
-    const bool vacia = almacen.registros() == 0 && tabla.indices.empty();
+    const bool vacia = almacen.registros() == 0 &&
+                       std::all_of(tabla.indices.begin(), tabla.indices.end(), [](const Indice& i) { return i.es_vectorial(); });
     almacen.reiniciar_contadores();
     // con la tabla vacía se puede escribir de una vez; si ya tiene datos hay que
     // insertar fila a fila para respetar el orden y mantener los índices
+    const std::size_t total = filas.size();
     if (vacia) {
         almacen.cargar(filas);
     } else {
-        for (const Fila& fila : filas) almacen.insertar(fila);
+        std::size_t insertadas = 0;
+        try {
+            for (const Fila& fila : filas) {
+                almacen.insertar(fila);
+                ++insertadas;
+            }
+        } catch (...) {
+            // las filas que alcanzaron a entrar quedan en la tabla: FAISS tambien tiene que verlas
+            filas.resize(insertadas);
+            anotar_vectores(tabla, true, std::move(filas));
+            throw;
+        }
     }
     const double t_carga = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_carga).count();
+    const std::size_t vectores = anotar_vectores(tabla, true, std::move(filas));
 
     Resultado r;
     r.tipo = "copy";
-    r.afectadas = filas.size();
-    r.mensaje = texto(filas.size()) + " filas cargadas de " + s.archivo_csv + " en " + tabla.nombre;
-    r.plan.push_back({"leer_csv", {{"archivo", s.archivo_csv}, {"filas", texto(filas.size())}, {"columnas", texto(ncol)},
+    r.afectadas = total;
+    r.mensaje = texto(total) + " filas cargadas de " + s.archivo_csv + " en " + tabla.nombre;
+    r.plan.push_back({"leer_csv", {{"archivo", s.archivo_csv}, {"filas", texto(total)}, {"columnas", texto(ncol)},
                                    {"tiempo_ms", std::to_string(t_lectura)}}});
     r.plan.push_back({vacia ? "carga_masiva" : "insercion_una_a_una",
                       {{"estructura", nombre_organizacion(tabla.organizacion)},
@@ -1687,6 +1972,7 @@ Resultado Ejecutor::copiar_desde_csv(const Sentencia& s) {
                        {"modo", vacia ? "tabla vacia: se escribe el archivo de una vez"
                                       : "la tabla ya tenia datos o indices: una insercion por fila"},
                        {"tiempo_ms", std::to_string(t_carga)}}});
+    if (vectores) r.plan.back().detalles.push_back({"vectores_para_faiss", texto(vectores)});
     return r;
 }
 
@@ -1780,16 +2066,22 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     const bool es_rtree = s.indice_tipo == "RTREE";
     validar_indice(s.indice_tipo, tabla.columnas[col].tipo);
     const bool es_spimi = s.indice_tipo == "SPIMI";
-    if (es_spimi ? tabla.indice_texto(s.indice_columna) : tabla.indice_sobre(s.indice_columna)) {
-        throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice");
+    const bool es_vectorial = s.indice_tipo == "IVF" || s.indice_tipo == "HNSW";
+    // una columna VECTOR puede tener un IVF y un HNSW a la vez, para compararlos
+    const Indice* existente = es_spimi ? tabla.indice_texto(s.indice_columna)
+                            : es_vectorial ? tabla.indice_vectorial(s.indice_columna, s.indice_tipo)
+                                           : tabla.indice_sobre(s.indice_columna);
+    if (existente) {
+        throw std::runtime_error("la columna " + s.indice_columna + " ya tiene indice" + (es_vectorial ? " " + s.indice_tipo : ""));
     }
     for (const Indice& i : tabla.indices) if (minusculas(i.nombre) == minusculas(s.indice_nombre)) throw std::runtime_error("el indice " + s.indice_nombre + " ya existe");
+    if (es_vectorial) return registrar_indice_vectorial(s, tabla, tabla.columnas[col]);
 
     const bool es_hash = s.indice_tipo == "HASH";
     const std::string tipo = es_rtree ? "RTREE" : es_hash ? "HASH" : es_spimi ? "SPIMI" : "BPLUS";
     const std::string extension = es_rtree ? ".rtree" : es_hash ? ".hash" : es_spimi ? ".spimi" : ".bplus";
     Indice indice{s.indice_nombre, tabla.columnas[col].nombre, tipo,
-                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), extension)};
+                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), extension), {}};
     long entradas = 0;
     long disco = 0;
     {
@@ -1815,10 +2107,52 @@ Resultado Ejecutor::crear_indice(const Sentencia& s) {
     return r;
 }
 
+// IVF y HNSW: el motor valida y anota el indice en el catalogo; el archivo lo
+// construye la API con FAISS, que vive en otro proceso
+Resultado Ejecutor::registrar_indice_vectorial(const Sentencia& s, Tabla& tabla, const Columna& columna) {
+    Indice indice{s.indice_nombre, columna.nombre, s.indice_tipo,
+                  catalogo_.ruta_datos(tabla.nombre + "__" + minusculas(s.indice_nombre), ".faiss"),
+                  parametros_vectoriales(s.indice_tipo, s.indice_parametros)};
+    std::size_t registros = 0;
+    {
+        Almacen almacen(catalogo_, tabla, false);
+        registros = almacen.registros();
+        // el k-means del IVF necesita al menos un vector por lista
+        if (indice.tipo == "IVF" && static_cast<long long>(registros) < std::stoll(indice.parametro("nlist"))) {
+            throw std::runtime_error("un IVF con nlist = " + indice.parametro("nlist") + " necesita al menos " + indice.parametro("nlist") +
+                                     " filas para entrenar y " + tabla.nombre + " tiene " + texto(registros));
+        }
+        // la API construye el indice con todos los vectores; se escriben directo al archivo, sin juntarlos en memoria
+        std::filesystem::remove(indice.archivo);
+        std::ofstream salida(indice.archivo_cambios(), std::ios::binary | std::ios::trunc);
+        if (!salida) throw std::runtime_error("no se pudo escribir " + indice.archivo_cambios());
+        const std::size_t col = static_cast<std::size_t>(tabla.posicion_columna(columna.nombre));
+        almacen.recorrer([&](FilaFisica&& f) { escribir_cambio(salida, true, clave_de(tabla, f.fila), f.fila[col].componentes); });
+    }
+    tabla.indices.push_back(indice);
+    catalogo_.guardar();
+
+    Resultado r;
+    r.tipo = "create_index";
+    r.afectadas = registros;
+    r.mensaje = "indice " + indice.nombre + " (" + indice.tipo + ") registrado sobre " + tabla.nombre + "." + indice.columna +
+                "; FAISS lo construye en la API con " + texto(registros) + " vectores";
+    PasoPlan paso{"registrar_indice", {{"estructura", estructura_indice(indice)}, {"vectores", texto(registros)}}};
+    for (const auto& [nombre, valor] : indice.parametros) paso.detalles.push_back({nombre, nombre == "metrica" ? minusculas(valor) : valor});
+    paso.detalles.push_back({"archivo", indice.archivo});
+    paso.detalles.push_back({"archivo_cambios", indice.archivo_cambios()});
+    paso.detalles.push_back({"nota", "el motor lo anota en el catalogo y vuelca los vectores; FAISS lo construye en la API"});
+    r.plan.push_back(paso);
+    return r;
+}
+
 Resultado Ejecutor::borrar_tabla(const Sentencia& s) {
     const Tabla tabla = catalogo_.tabla(s.tabla);
     std::filesystem::remove(tabla.archivo);
-    for (const Indice& i : tabla.indices) std::filesystem::remove_all(i.archivo);
+    for (const Indice& i : tabla.indices) {
+        std::filesystem::remove_all(i.archivo);
+        if (i.es_vectorial()) std::filesystem::remove(i.archivo_cambios());
+    }
     catalogo_.quitar(s.tabla);
     catalogo_.guardar();
     Resultado r;
@@ -1834,12 +2168,14 @@ Resultado Ejecutor::insertar(const Sentencia& s) {
     almacen.reiniciar_contadores();
     almacen.insertar(s.valores);
     if (en_transaccion_) deshacer_.push_back({tabla.nombre, true, s.valores});
+    const std::size_t vectores = anotar_vectores(tabla, true, {s.valores});
     Resultado r;
     r.tipo = "insert";
     r.afectadas = 1;
     r.mensaje = "1 fila insertada en " + tabla.nombre;
     PasoPlan paso{"insertar", {{"estructura", almacen.estructura()}, {"paginas_leidas", texto(almacen.paginas_leidas())},
                                {"paginas_escritas", texto(almacen.paginas_escritas())}, {"indices_actualizados", texto(tabla.indices.size())}}};
+    if (vectores) paso.detalles.push_back({"vectores_para_faiss", en_transaccion_ ? "1 (al confirmar)" : "1"});
     paso.nodo = "Insert";
     paso.relacion = tabla.nombre;
     paso.columna = tabla.columnas[tabla.pk].nombre;
@@ -1852,6 +2188,7 @@ Resultado Ejecutor::insertar(const Sentencia& s) {
 
 Resultado Ejecutor::eliminar(const Sentencia& s) {
     if (s.busqueda_texto) throw std::runtime_error("DELETE no admite MATCH");
+    if (s.busqueda_similar) throw std::runtime_error("DELETE no admite SIMILAR_TO");
     Tabla& tabla = catalogo_.tabla(s.tabla);
     Almacen almacen(catalogo_, tabla, false);
     Resultado r;
@@ -1867,9 +2204,14 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
         if (en_transaccion_) deshacer_.push_back({tabla.nombre, false, f.fila});
     }
     r.afectadas = acceso.filas.size();
+    std::vector<Fila> borradas;
+    borradas.reserve(acceso.filas.size());
+    for (FilaFisica& f : acceso.filas) borradas.push_back(std::move(f.fila));
+    const std::size_t vectores = anotar_vectores(tabla, false, std::move(borradas));
     r.mensaje = texto(r.afectadas) + " filas eliminadas de " + tabla.nombre;
     PasoPlan paso{"eliminar", {{"estructura", almacen.estructura()}, {"filas", texto(r.afectadas)},
                                {"paginas_escritas", texto(almacen.paginas_escritas())}, {"modo", "lazy: se marcan tumbas"}}};
+    if (vectores) paso.detalles.push_back({"vectores_para_faiss", texto(vectores) + (en_transaccion_ ? " (al confirmar)" : "")});
     paso.nodo = "Delete";
     paso.relacion = tabla.nombre;
     paso.filas_reales = static_cast<long long>(r.afectadas);
@@ -1877,6 +2219,20 @@ Resultado Ejecutor::eliminar(const Sentencia& s) {
     r.plan.push_back(paso);
     ordenar_como_explain(r.plan);
     return r;
+}
+
+std::size_t Ejecutor::anotar_vectores(const Tabla& tabla, bool inserta, std::vector<Fila>&& filas) {
+    const bool tiene = std::any_of(tabla.indices.begin(), tabla.indices.end(), [](const Indice& i) { return i.es_vectorial(); });
+    if (!tiene || deshaciendo_ || filas.empty()) return 0;
+    std::vector<CambioVectorial> cambios;
+    cambios.reserve(filas.size());
+    for (Fila& fila : filas) cambios.push_back({tabla.nombre, inserta, std::move(fila)});
+    if (!en_transaccion_) {
+        escribir_cambios_vectoriales(catalogo_, cambios);
+        return cambios.size();
+    }
+    for (CambioVectorial& c : cambios) vectores_pendientes_.push_back(std::move(c));
+    return cambios.size();
 }
 
 Resultado Ejecutor::seleccionar(const Sentencia& s) {
@@ -1888,6 +2244,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     Acceso acceso = acceder(almacen, tabla, s.condiciones, &s);
     r.plan.push_back(acceso.paso);
     filtrar(acceso, tabla, r.plan);
+    if (s.busqueda_similar) similares(acceso, tabla, s, r.plan);
 
     std::vector<Fila> filas;
     filas.reserve(acceso.filas.size());
@@ -1907,7 +2264,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     bool hay_agregados = false;
     for (const ItemSelect& item : items) {
         if (!item.agregado.empty()) hay_agregados = true;
-        if (item.score && !s.busqueda_texto) throw std::runtime_error("SCORE() solo se usa con MATCH");
+        if (item.score && !s.busqueda_texto && !s.busqueda_similar) throw std::runtime_error("SCORE() solo se usa con MATCH");
         if (!item.score && !item.columna.empty() && tabla.posicion_columna(item.columna) < 0)
             throw std::runtime_error("la columna " + item.columna + " no existe en " + tabla.nombre);
     }
@@ -2118,12 +2475,18 @@ Resultado Ejecutor::describir(const Sentencia& s) {
     r.columnas = {"columna", "tipo", "clave", "indice"};
     for (std::size_t i = 0; i < tabla.columnas.size(); ++i) {
         const Columna& c = tabla.columnas[i];
-        const Indice* indice = tabla.indice_sobre(c.nombre);
+        // una columna puede tener varios: un B+ y un SPIMI, o un IVF y un HNSW
+        std::string indices;
+        for (const Indice& indice : tabla.indices) {
+            if (minusculas(indice.columna) == minusculas(c.nombre)) {
+                indices += (indices.empty() ? "" : ", ") + indice.nombre + " (" + nombre_tipo_indice(indice) + ")";
+            }
+        }
         r.filas.push_back({Valor::de_texto(c.nombre),
                            Valor::de_texto(c.tipo == TipoColumna::VARCHAR || c.tipo == TipoColumna::VECTOR
                                                ? nombre_tipo(c.tipo) + "(" + texto(c.tam) + ")" : nombre_tipo(c.tipo)),
                            Valor::de_texto(i == tabla.pk ? "PK" : ""),
-                           Valor::de_texto(indice ? indice->nombre + " (" + nombre_tipo_indice(*indice) + ")"
+                           Valor::de_texto(!indices.empty() ? indices
                                            : i == tabla.pk && tabla.organizacion == Organizacion::BPLUS ? "PRIMARY (B+ agrupado)"
                                            : "")});
     }

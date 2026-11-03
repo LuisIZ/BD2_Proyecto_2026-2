@@ -11,6 +11,7 @@
 | `motor/consultas/motor_sql.cpp` | CLI: recibe SQL, responde JSON. |
 | `motor/pruebas/sql_test.cpp` | Parser + ejecutor end-to-end con las tres organizaciones e índice secundario. |
 | `api/motor_cli.py` | Envuelve el binario desde Python (compila si hace falta). Base para la API REST. |
+| `api/multimedia/similitud.py` | `SIMILAR_TO ... USING IVF \| HNSW`: busca en FAISS y mantiene sus índices (ver [sql_multimedia.md](sql_multimedia.md)). |
 | `api/ui_sql.py` | Cliente Tkinter con los 4 paneles: tablas, consulta, resultados, plan. |
 
 ## 2. Cómo correr
@@ -45,6 +46,7 @@ CREATE TABLE t (col INT [PRIMARY KEY], col FLOAT, col VARCHAR(n), col POINT, col
 CREATE TABLE t FROM FILE 'ruta.csv' [USING ...] [PRIMARY KEY col] [INDEX (col, ...)]
 COPY t FROM FILE 'ruta.csv'
 CREATE INDEX nombre ON t (col) [USING BPLUS | HASH | RTREE | SPIMI]
+CREATE INDEX nombre ON t (col) USING IVF | HNSW [WITH (parametro = valor, ...)]
 DROP TABLE t
 INSERT INTO t VALUES (v1, v2, ...)
 DELETE FROM t [WHERE cond]
@@ -54,6 +56,10 @@ SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
 SELECT * | col, SCORE() [AS alias] FROM t
   WHERE MATCH(columna_texto, 'consulta') [AND cond]
   USING TF_IDF|BM25 [ORDER BY alias [ASC|DESC]] [LIMIT n]
+SELECT * | col, SIMILARITY_SCORE() [AS alias] FROM t
+  WHERE SIMILAR_TO([col,] 'archivo' | VECTOR(x1, ..., xk) [, k = n]) [AND cond]
+  [USING IVF|HNSW [CANDIDATES (pk, ...)]] [WITH METRIC = euclidiana|producto_punto|coseno]
+  [ORDER BY ...] [LIMIT n]
 SHOW TABLES
 DESCRIBE t
 EXPLAIN [ANALYZE] <sentencia>
@@ -73,6 +79,13 @@ valor := entero | decimal | 'texto' | POINT(lat, lon) | VECTOR(x1, ..., xk)
 por él, y `MATCH` se combina con otras condiciones con `AND`. `DELETE` no admite `MATCH`.
 Un `INSERT` o `DELETE` invalida el índice SPIMI y se reconstruye en el siguiente `MATCH`.
 
+`SIMILAR_TO` devuelve los k vecinos más parecidos (k = 10 y coseno por omisión) y
+`SIMILARITY_SCORE()` su score (mayor = más parecido). Sin `USING` lo resuelve el motor con un
+k-NN secuencial. Con `USING IVF` o `USING HNSW` busca FAISS en la API, que le pasa al motor las
+pk encontradas en `CANDIDATES (...)`; el usuario no escribe esa cláusula. El motor solo admite
+el vector: `SIMILAR_TO('foto.jpg')` lo convierte la API. Todo el diseño, con el catálogo, el
+mantenimiento de los índices y las transacciones, está en [sql_multimedia.md](sql_multimedia.md).
+
 Tipos: `INT` (int32), `FLOAT` (float32, alias `REAL`), `VARCHAR(n)`, `POINT` (latitud y
 longitud; ver [sql_espacial.md](sql_espacial.md)) y `VECTOR(k)` (k float32, hasta 512; ver
 [vectores.md](vectores.md)). Los números aceptan notación científica (`1.25e-06`). La clave primaria debe ser `INT` y puede ser
@@ -87,8 +100,8 @@ construye un B+ no agrupado por columna cuando la carga termina, y equivale a la
 
 `COPY t FROM FILE 'ruta.csv'` carga datos en una tabla que **ya existe**, y así separa la
 definición del esquema de la carga. Los encabezados del CSV deben coincidir en nombre y
-orden con las columnas de la tabla. Si la tabla está vacía y no tiene índices se usa carga
-masiva; si ya tiene datos, una inserción por fila para mantener el orden y los índices.
+orden con las columnas de la tabla. Si la tabla está vacía y no tiene índices (o solo IVF o
+HNSW, que mantiene la API) se usa carga masiva; si ya tiene datos, una inserción por fila para mantener el orden y los índices.
 `CREATE TABLE ... FROM FILE` es el atajo que hace las dos cosas de una vez infiriendo el
 esquema, y sigue disponible.
 
@@ -125,6 +138,9 @@ resolverse con una estructura y el resto se filtra en memoria:
 | clave primaria, rango | `scan_completo` | `rango_por_clave` | `rango_por_clave` |
 | cualquier otra | `scan_completo` + `filtro` | `scan_completo` + `filtro` | `scan_completo` + `filtro` |
 | sin `WHERE`, `ORDER BY distancia(col VECTOR, ...) LIMIT k` | `knn_vectorial` (max-heap con los k mejores, sin `ordenamiento`) | igual | igual |
+| `SIMILAR_TO(...)` sin otras condiciones ni `USING` | `knn_vectorial` | igual | igual |
+| `SIMILAR_TO(...) AND cond`, sin `USING` | la vía de `cond` + `top_k_vectorial` (los k más cercanos de las que pasan) | igual | igual |
+| `SIMILAR_TO(...) USING IVF \| HNSW CANDIDATES (...)` | `knn_vectorial_indice`: una pasada para leer los candidatos (con índice sobre la clave, uno por uno) + `filtro` del resto | `knn_vectorial_indice` por clave | igual |
 
 Después: `agrupacion` (`ExternalHashAggregate`), `ordenamiento` (`ExternalMergeSort`
 k-way, reporta `initial_runs` y `merge_passes`), `proyeccion` y `limite`.
@@ -219,8 +235,9 @@ columnas e índices para el panel de archivos.
 
 - Sin `UPDATE`, sin `JOIN`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
 - Agregados solo sobre columnas `INT` o `FLOAT`; `AVG` devuelve texto con dos decimales.
-- `VECTOR` no tiene índice en el motor: IVF y HNSW son los de FAISS en la API (#60, #61). Sin
-  ellos, el k-NN es secuencial (ver [vectores.md](vectores.md)).
+- `VECTOR` no tiene índice propio en el motor: `CREATE INDEX ... USING IVF | HNSW` solo lo
+  anota en el catálogo y FAISS lo construye y lo mantiene en la API (ver
+  [sql_multimedia.md](sql_multimedia.md)). Sin `USING`, el k-NN es secuencial (ver [vectores.md](vectores.md)).
 - `CREATE INDEX ... USING HASH` crea un hash extensible paginado en disco
   (`motor/indices/hash_extensible_disco.h`, archivo `<tabla>__<indice>.hash`): directorio y
   buckets en páginas de 4 KB, 255 entradas por bucket y cadenas de desborde cuando muchas

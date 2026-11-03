@@ -50,10 +50,23 @@ int Tabla::posicion_columna(const std::string& buscada) const {
     return -1;
 }
 
+std::string Indice::parametro(const std::string& buscado) const {
+    for (const auto& [nombre, valor] : parametros) if (nombre == buscado) return valor;
+    return "";
+}
+
 const Indice* Tabla::indice_sobre(const std::string& columna) const {
     const std::string c = minusculas(columna);
     for (const Indice& indice : indices) {
-        if (indice.tipo != "SPIMI" && minusculas(indice.columna) == c) return &indice;
+        if (indice.tipo != "SPIMI" && !indice.es_vectorial() && minusculas(indice.columna) == c) return &indice;
+    }
+    return nullptr;
+}
+
+const Indice* Tabla::indice_vectorial(const std::string& columna, const std::string& tipo) const {
+    const std::string c = minusculas(columna);
+    for (const Indice& indice : indices) {
+        if (indice.tipo == tipo && indice.es_vectorial() && minusculas(indice.columna) == c) return &indice;
     }
     return nullptr;
 }
@@ -337,7 +350,15 @@ void Catalogo::guardar() const {
             salida << "COL|" << c.nombre << '|' << nombre_tipo(c.tipo) << '|' << c.tam << '\n';
         }
         for (const Indice& i : t.indices) {
-            salida << "IDX|" << i.nombre << '|' << i.columna << '|' << i.tipo << '|' << i.archivo << '\n';
+            salida << "IDX|" << i.nombre << '|' << i.columna << '|' << i.tipo << '|' << i.archivo;
+            // IVF y HNSW: un sexto campo con los parametros, "metrica=COSENO,M=32,..."
+            if (i.es_vectorial()) {
+                salida << '|';
+                for (std::size_t p = 0; p < i.parametros.size(); ++p) {
+                    salida << (p ? "," : "") << i.parametros[p].first << '=' << i.parametros[p].second;
+                }
+            }
+            salida << '\n';
         }
         salida << "FIN\n";
     }
@@ -368,8 +389,16 @@ void Catalogo::cargar() {
             c.tipo = tipo_desde(campos[2]);
             c.tam = static_cast<std::uint16_t>(std::stoul(campos[3]));
             actual.columnas.push_back(c);
-        } else if (campos[0] == "IDX" && campos.size() == 5 && abierta) {
-            actual.indices.push_back({campos[1], campos[2], campos[3], campos[4]});
+        } else if (campos[0] == "IDX" && (campos.size() == 5 || campos.size() == 6) && abierta) {
+            Indice indice{campos[1], campos[2], campos[3], campos[4], {}};
+            if (campos.size() == 6 && !campos[5].empty()) {
+                for (const std::string& par : partir(campos[5], ',')) {
+                    const std::size_t igual = par.find('=');
+                    if (igual == std::string::npos) throw std::runtime_error("catalogo corrupto: " + linea);
+                    indice.parametros.push_back({par.substr(0, igual), par.substr(igual + 1)});
+                }
+            }
+            actual.indices.push_back(indice);
         } else if (campos[0] == "FIN" && abierta) {
             tablas_[clave_mapa(actual.nombre)] = actual;
             abierta = false;

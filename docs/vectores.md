@@ -138,7 +138,7 @@ EXPLAIN ANALYZE SELECT id FROM img ORDER BY distancia(v, VECTOR(...), 'coseno') 
 
 Projection on img (actual rows=10)
 Output: id
-  -> Seq Vector Scan on img  (cost=6667.00 rows=10) (actual time=77.502 rows=10 pages=6667)
+  -> Seq Vector Scan on img (coseno)  (cost=6667.00 rows=10) (actual time=77.502 rows=10 pages=6667)
      Order By: distancia(v, VECTOR(256 dimensiones)) [coseno] ASC LIMIT 10
 ```
 
@@ -164,9 +164,10 @@ de 1 ms con un Recall@10 de entre 0,89 y 0,98
   primarias.
 - Este k-NN secuencial es el resultado exacto: el Recall@10 de IVF y HNSW se mide contra él (o
   contra `IndexFlat` de FAISS, que también recorre todos los vectores y da los mismos vecinos).
-- `SIMILAR_TO('foto.jpg', k=10)` (#62) se traduce a esta misma consulta: la API extrae el vector
-  de la imagen, lo escribe como literal `VECTOR(...)` y, sin `USING IVF | HNSW`, el motor lo
-  resuelve con el Seq Vector Scan.
+- `SIMILAR_TO('foto.jpg', k=10)` usa este mismo recorrido: la API extrae el vector de la imagen,
+  lo escribe como literal `VECTOR(...)` y, sin `USING IVF | HNSW`, el motor lo resuelve con el
+  Seq Vector Scan (con `WHERE`, filtra primero y después se queda con los k más cercanos). Ver
+  [sql_multimedia.md](sql_multimedia.md).
 
 ## 7. Pruebas
 

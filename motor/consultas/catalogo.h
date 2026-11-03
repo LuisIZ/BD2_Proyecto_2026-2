@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace motor {
@@ -26,8 +27,17 @@ struct Columna {
 struct Indice {
     std::string nombre;
     std::string columna;
-    std::string tipo;  // BPLUS
+    std::string tipo;  // BPLUS | HASH | RTREE | SPIMI | IVF | HNSW
     std::string archivo;
+    // IVF y HNSW: metrica y parametros de FAISS, en el orden de catalogo.txt
+    std::vector<std::pair<std::string, std::string>> parametros;
+
+    // los IVF y HNSW los construye y mantiene la API (FAISS); el motor solo los registra
+    bool es_vectorial() const { return tipo == "IVF" || tipo == "HNSW"; }
+    std::string parametro(const std::string& nombre) const;
+    // cambios confirmados que la API todavía no aplicó al índice. Registros de
+    // tamaño fijo: [uint8 'I' | 'D'][int32 pk][K float32] (ceros en 'D')
+    std::string archivo_cambios() const { return archivo + ".cambios"; }
 };
 
 struct Tabla {
@@ -40,9 +50,11 @@ struct Tabla {
 
     // -1 si no existe; ignora mayúsculas
     int posicion_columna(const std::string& nombre) const;
-    // indice_sobre ignora los SPIMI: esos solo los usa MATCH, via indice_texto
+    // indice_sobre ignora los SPIMI (solo los usa MATCH, via indice_texto) y los IVF y HNSW
+    // (solo los usa SIMILAR_TO, via indice_vectorial)
     const Indice* indice_sobre(const std::string& columna) const;
     const Indice* indice_texto(const std::string& columna) const;
+    const Indice* indice_vectorial(const std::string& columna, const std::string& tipo) const;
     // bytes de un registro de tamaño fijo (B+ agrupado): pk primero, luego el resto
     std::uint16_t tam_registro_fijo() const;
 };
