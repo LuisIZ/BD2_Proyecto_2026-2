@@ -21,7 +21,7 @@ from api.motor_cli import ErrorMotor, MotorSQL, RAIZ
 
 # los modulos de api/multimedia se importan como multimedia.*, igual que en sus pruebas
 sys.path.insert(0, str(RAIZ / "api"))
-from multimedia.similitud import IndicesFaiss, reescribir  # noqa: E402
+from multimedia.similitud import IndicesFaiss, partir_lote, reescribir  # noqa: E402
 
 # Serializa las llamadas de este cliente; no implementa transacciones en el motor.
 lock = threading.Lock()
@@ -145,10 +145,15 @@ def catalogo():
 def consultas(consulta: Consulta):
     if not sin_comentarios(consulta.sql).strip():
         raise HTTPException(400, "Escribe una consulta SQL.")
+    resultados, faiss = [], []
     with lock:
-        sql, busquedas = preparar_similitud(sin_comentarios(consulta.sql))
-        resultados = ejecutar(sql)
-        return {"resultados": resultados, "faiss": busquedas + sincronizar_faiss(resultados)}
+        # cada SIMILAR_TO ... USING busca en FAISS despues de que el motor corrio lo anterior
+        for parte in partir_lote(sin_comentarios(consulta.sql)):
+            sql, busquedas = preparar_similitud(parte)
+            respuestas = ejecutar(sql)
+            resultados += respuestas
+            faiss += busquedas + sincronizar_faiss(respuestas)
+    return {"resultados": resultados, "faiss": faiss}
 
 
 @app.get("/api/datasets")

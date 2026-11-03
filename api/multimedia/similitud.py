@@ -1,9 +1,11 @@
 """Indices IVF y HNSW de las tablas del motor, construidos y mantenidos con FAISS.
 
-    from multimedia.similitud import IndicesFaiss, reescribir
+    from multimedia.similitud import IndicesFaiss, partir_lote, reescribir
     indices = IndicesFaiss()
-    sql, busquedas = reescribir(sql, motor.catalogo(), indices)   # antes de mandar el lote
-    indices.sincronizar(motor.catalogo())                         # despues de cada lote que escribe
+    for parte in partir_lote(sql):
+        parte, busquedas = reescribir(parte, motor.catalogo(), indices)   # antes de mandarla
+        respuestas = motor.ejecutar(parte)
+        indices.sincronizar(motor.catalogo())                            # si la parte escribio
 
 El motor no enlaza FAISS. Con CREATE INDEX ... USING IVF|HNSW anota el indice en
 su catalogo y vuelca la tabla en <indice>.faiss.cambios; despues, cada INSERT,
@@ -14,8 +16,8 @@ proxima vez (insertar es idempotente porque primero quita la pk).
 
 Para SIMILAR_TO(...) USING IVF|HNSW, la API busca en FAISS y agrega a la
 consulta CANDIDATES (pk, ...): el motor lee esas filas, recalcula la distancia y
-arma la respuesta. Las busquedas se hacen antes de mandar el lote, asi que ven el
-indice como estaba al empezar.
+arma la respuesta. El lote se parte antes de cada una de esas consultas
+(partir_lote), para que la busqueda vea lo que hicieron las sentencias anteriores.
 """
 
 import os
@@ -266,6 +268,31 @@ def analizar(sql):
             nombre = sig(j + 3)[1].strip("'\"").upper()
             consulta["metrica"] = METRICAS.get(nombre, nombre)
     return consulta
+
+
+def partir_lote(sql):
+    """Parte el lote antes de cada SIMILAR_TO ... USING que este fuera de una transaccion.
+
+    La API busca en FAISS antes de mandar cada parte al motor; asi la busqueda ve lo que las
+    sentencias anteriores del mismo lote crearon, insertaron o borraron. Dentro de una
+    transaccion no se parte, porque el motor deshace la transaccion abierta al terminar cada
+    lote: ahi la busqueda ve lo confirmado antes del BEGIN, igual que FAISS solo ve lo confirmado."""
+    partes, actual, en_transaccion = [], [], False
+    for sentencia in separar_sentencias(sql):
+        consulta = analizar(sentencia)
+        if actual and not en_transaccion and consulta and consulta["indice"] and not consulta["candidatos"]:
+            partes.append(actual)
+            actual = []
+        actual.append(sentencia)
+        t = tokens(sentencia)
+        primera = t[0][1].upper() if t else ""
+        if primera in ("BEGIN", "START"):
+            en_transaccion = True
+        elif primera in ("COMMIT", "END", "ROLLBACK"):
+            en_transaccion = False
+    if actual:
+        partes.append(actual)
+    return [";\n".join(parte) for parte in partes]
 
 
 def _columna_vector(tabla, columna):

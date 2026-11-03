@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from motor_cli import RAIZ, MotorSQL
-from multimedia.similitud import IndicesFaiss, leer_cambios, reescribir
+from multimedia.similitud import IndicesFaiss, leer_cambios, partir_lote, reescribir
 
 DIMENSION = 16
 N = 300
@@ -222,6 +222,38 @@ class PruebaSimilarTo(ConMotor):
         self.assertEqual((busqueda["indice"], busqueda["candidatos"]), ("f_hnsw", 4))
         self.assertEqual(sincronizados["f_hnsw"]["eliminados"], 1, "el DELETE del mismo lote se aplica despues")
         self.assertEqual(sincronizados["f_ivf"]["eliminados"], 1)
+
+    def test_el_lote_se_parte_antes_de_buscar(self):
+        v = literal(self.consulta)
+        partes = partir_lote(f"INSERT INTO fotos VALUES (1, {v}); SELECT id FROM fotos WHERE SIMILAR_TO({v}) USING HNSW; "
+                             f"SELECT id FROM fotos WHERE SIMILAR_TO({v}); DELETE FROM fotos WHERE id = 1; "
+                             f"BEGIN; DELETE FROM fotos WHERE id = 2; SELECT id FROM fotos WHERE SIMILAR_TO({v}) USING IVF; COMMIT")
+        self.assertEqual(len(partes), 2, "se parte antes del USING; ni el k-NN secuencial ni el de la transaccion parten")
+        self.assertTrue(partes[1].startswith("SELECT id FROM fotos WHERE SIMILAR_TO") and partes[1].endswith("COMMIT"))
+
+    def test_la_busqueda_ve_lo_anterior_del_lote(self):
+        import sys
+        sys.path.insert(0, str(RAIZ))
+        from api import web_api
+
+        web_api.motor, web_api.indices_faiss = self.motor, self.indices
+        consultar = lambda sql: web_api.consultas(web_api.Consulta(sql=sql))["resultados"]  # noqa: E731
+        nuevo = literal(-self.consulta)
+        buscar = f"SELECT id FROM fotos WHERE SIMILAR_TO({nuevo}, k=2) USING HNSW"
+        r = consultar(f"INSERT INTO fotos VALUES (7000, {nuevo}); {buscar}")
+        self.assertEqual(r[1]["filas"][0][0], 7000, "ve el INSERT de la sentencia anterior")
+        r = consultar(f"DELETE FROM fotos WHERE id = 7000; {buscar}")
+        self.assertEqual(len(r[1]["filas"]), 2, "no queda un candidato ya borrado")
+        self.assertNotEqual(r[1]["filas"][0][0], 7000)
+        # tabla, indice y busqueda en un solo lote
+        r = consultar(f"CREATE TABLE nuevas (id INT PRIMARY KEY, v VECTOR({DIMENSION})); INSERT INTO nuevas VALUES (1, {nuevo}); "
+                      f"CREATE INDEX nuevas_hnsw ON nuevas (v) USING HNSW; SELECT id FROM nuevas WHERE SIMILAR_TO({nuevo}) USING HNSW")
+        self.assertTrue(all(x["ok"] for x in r))
+        self.assertEqual(r[-1]["filas"], [[1]])
+        # dentro de una transaccion la busqueda ve lo confirmado antes del BEGIN
+        r = consultar(f"BEGIN; INSERT INTO fotos VALUES (8000, {nuevo}); {buscar}; COMMIT")
+        self.assertNotIn([8000], r[2]["filas"])
+        self.assertEqual(consultar(buscar)[0]["filas"][0][0], 8000, "y despues del COMMIT, si")
 
 
 def imagen_patron(semilla):
