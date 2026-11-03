@@ -1,0 +1,52 @@
+# Extracción de características de audio
+
+Uso el mismo pipeline de imágenes ([extraccion_caracteristicas.md](extraccion_caracteristicas.md)), pero con MFCC en lugar de SIFT. El código está en `api/multimedia/extraer_audio.py` y uso `entrenar_vocabulario`, `calcular_vectores` y `guardar_vectores` de `extraer.py`.
+
+1. `librosa` carga el audio en mono a 22 050 Hz (máximo 30 s) y calcula 13 coeficientes MFCC por cada ventana de 2048 muestras, con un salto de 512. Un audio de 30 s da unas 1 290 ventanas, y cada ventana es un descriptor de 13 dimensiones.
+2. FAISS K-Means aprende K "palabras acústicas" con una muestra de hasta 1 000 000 de ventanas.
+3. Cada ventana se asigna a su palabra más cercana y el audio queda como un histograma de K frecuencias.
+4. Se aplica TF-IDF y norma L2, igual que en imágenes. El vector del audio tiene dimensión K.
+
+`extract_features_audio(ruta)` devuelve el vector de un audio ya usando el vocabulario y el IDF guardados. K es 256.
+
+## Colección
+
+Usamos GTZAN (Kaggle, "GTZAN Dataset - Music Genre Classification"): 1000 clips de 30 s, 100 por cada uno de 10 géneros. Quitamos `jazz.00054.wav` porque está dañado y no se abre, así que son 999 audios. Los audios no se subieron al repositorio.
+
+```powershell
+# 1. CSV id,audio,genero
+python tools/dataset/preparar_audio.py "C:\ruta\a\genres_original"
+
+# 2. vectores (K=256 por defecto)
+cd api
+..\.venv\Scripts\python.exe -m multimedia.extraer_audio `
+  --csv ..\datos\audios_1k.csv --audios "C:\ruta\a\genres_original"
+```
+
+Quedan en `datos/audio/`: `vocabulario_audio_256.npy`, `idf_audio_256.npy`, `vectores_audio_999.npy` y `vectores_audio_999.csv` (`id,vector`). Esa carpeta no se versiona. Con `--mfcc 20` se usan 20 coeficientes.
+
+## Cargar en el motor
+
+```sql
+CREATE TABLE canciones (id INT PRIMARY KEY, vector VECTOR(256));
+COPY canciones FROM FILE 'datos/audio/vectores_audio_999.csv';
+SELECT id FROM canciones ORDER BY distancia(vector, VECTOR(...), 'euclidiana') LIMIT 5;
+```
+
+El `id` es el mismo de `datos/audios_1k.csv`, que dice qué audio y qué género es cada uno.
+
+## Resultados
+
+Para cada audio pedimos sus 5 vecinos más cercanos (euclidiana, sin contarse a sí mismo) y contamos cuántos son de su mismo género. Al azar sería 10 %.
+
+| K | mismo género | tiempo |
+|---|---|---|
+| 64 | 47 % | 64 s |
+| 128 | 52 % | 56 s |
+| 256 | 54 % | 93 s |
+
+Nos quedamos con K=256, que es el valor por defecto y el mismo que usamos para las imágenes. Con K=256, clásica acierta 86 % y rock 25 %.
+
+## Limitación
+
+El histograma solo cuenta cuántas veces aparece cada palabra acústica, no cuándo. Se pierde el orden temporal de los sonidos, y con él el ritmo y la forma de la melodía. Géneros con instrumentos parecidos (rock, disco, country) se confunden más que los que suenan muy distinto, como clásica.
