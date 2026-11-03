@@ -90,6 +90,11 @@ cualquier `SELECT`. El usuario nunca escribe `CANDIDATES`; lo agrega la API
   candidatos. `EXPLAIN ANALYZE` sí busca.
 - Lo que la API no puede resolver (tabla, columna o índice inexistente, o una métrica distinta
   de la del índice) se manda igual al motor, que responde con su propio error.
+- La API busca en FAISS justo antes de mandar la consulta. Si el lote trae sentencias antes
+  (`INSERT ...; SELECT ... USING HNSW`, o `CREATE TABLE`, `CREATE INDEX` y la búsqueda), lo parte
+  ahí (`partir_lote`): primero corre y sincroniza lo anterior, y después busca. Así la búsqueda
+  ve esos cambios y no recibe candidatos que una sentencia anterior ya borró. Dentro de una
+  transacción no se parte, porque el motor deshace la transacción abierta al terminar cada lote.
 
 ## 3. SIMILARITY_SCORE()
 
@@ -255,9 +260,9 @@ con los de la tabla. Por eso hacen falta `datos/productos/vocabulario_256.npy` e
 
 ## 10. Límites conocidos
 
-- Las búsquedas con `USING` se hacen antes de mandar el lote: en
-  `INSERT ...; SELECT ... USING HNSW` del mismo lote, el `SELECT` no ve ese `INSERT`. En lotes
-  separados sí lo ve.
+- Dentro de una transacción, una búsqueda con `USING` no ve los cambios de la misma transacción:
+  ve lo confirmado antes del `BEGIN`, igual que FAISS solo conoce lo confirmado. Sin `USING`, el
+  k-NN secuencial del motor sí los ve.
 - La métrica de la consulta tiene que ser la del índice, y una columna admite un solo IVF y un
   solo HNSW (no hay `DROP INDEX`). Sin `USING`, el k-NN secuencial acepta cualquier métrica.
 - Los índices de FAISS viven en la memoria de la API. Con 100 000 vectores de 256 dimensiones,
