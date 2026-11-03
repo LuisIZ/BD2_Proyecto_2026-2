@@ -3,6 +3,7 @@
 import csv
 import os
 import re
+import sys
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,10 +16,18 @@ from pydantic import BaseModel, Field
 
 from api.motor_cli import ErrorMotor, MotorSQL, RAIZ
 
+# los modulos de api/multimedia se importan como multimedia.*, igual que en sus pruebas
+sys.path.insert(0, str(RAIZ / "api"))
+from multimedia.similitud import IndicesFaiss  # noqa: E402
+
 # Serializa las llamadas de este cliente; no implementa transacciones en el motor.
 lock = threading.Lock()
 motor: MotorSQL | None = None
 DB = os.environ.get("BD2_DB", "datos/db")
+# IVF y HNSW de FAISS: el motor solo los registra y anota los cambios
+indices_faiss = IndicesFaiss()
+# respuestas del motor despues de las cuales puede haber cambios para FAISS
+ESCRIBEN = {"insert", "delete", "copy", "create_index", "commit"}
 
 
 @asynccontextmanager
@@ -86,6 +95,16 @@ def ejecutar(sql):
         raise HTTPException(500, str(error)) from error
 
 
+def sincronizar_faiss(respuestas):
+    """Aplica a FAISS lo que el lote cambio en tablas con IVF o HNSW; una escritura por indice."""
+    if not any(r.get("ok") and r.get("tipo") in ESCRIBEN for r in respuestas):
+        return []
+    try:
+        return indices_faiss.sincronizar(motor.catalogo())
+    except (ErrorMotor, OSError) as error:
+        return [{"error": str(error)}]
+
+
 @app.get("/api/health")
 def health():
     return {"ok": motor is not None, "db": DB}
@@ -114,7 +133,8 @@ def consultas(consulta: Consulta):
     if not sin_comentarios(consulta.sql).strip():
         raise HTTPException(400, "Escribe una consulta SQL.")
     with lock:
-        return {"resultados": ejecutar(consulta.sql)}
+        resultados = ejecutar(consulta.sql)
+        return {"resultados": resultados, "faiss": sincronizar_faiss(resultados)}
 
 
 @app.get("/api/datasets")
