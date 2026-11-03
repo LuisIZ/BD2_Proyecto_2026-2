@@ -102,6 +102,11 @@ ven. Subir `ef_busqueda` explora más y recupera esos casos.
 | `ef_busqueda` | 16 | candidatos en la capa 0 al consultar | más recall y más tiempo; se pasa en cada consulta (`SearchParametersHNSW`) |
 | `umbral_reconstruccion` | 0,30 | fracción de posiciones borradas que dispara la reconstrucción (propio del adaptador) | menos reconstrucciones, más nodos muertos en el grafo |
 
+Desde SQL: `CREATE INDEX idx ON t (v) USING HNSW WITH (M = 32, ef_busqueda = 64)` y
+`SELECT ... WHERE SIMILAR_TO('foto.jpg', k=10) USING HNSW`. En SQL, `ef_busqueda` vale 64 por
+omisión, lo que recomienda la [comparación](comparacion_vectorial/README.md); ver
+[sql_multimedia.md](sql_multimedia.md).
+
 ## Métricas
 
 Las mismas que el IVF y que `motor/vectorial/vector.h`: menor distancia es más parecido. El

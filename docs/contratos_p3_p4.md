@@ -126,11 +126,15 @@ flowchart LR
     NPY --> IDX["indices.py<br/>IVF y HNSW con FAISS (#60, #61)"]
     MOTOR --> SQL["SIMILAR_TO ... USING (#62)"]
     IDX --> SQL
+    MOTOR -. "archivo de cambios" .-> IDX
     MOTOR --> CMP["comparación (#63)"]
     IDX --> CMP
 ```
 
 - Sin `USING`, la consulta `SIMILAR_TO` la resuelve el motor con un k-NN secuencial.
-- Con `USING IVF` o `USING HNSW`, la API busca en el índice de FAISS y el motor devuelve las
-  filas de esos id.
-- El motor no enlaza FAISS: comparten `vectores.npy` y los mismos id.
+- Con `USING IVF` o `USING HNSW`, la API busca en el índice de FAISS y agrega a la consulta
+  `CANDIDATES (pk, ...)`; el motor lee esas filas, recalcula la distancia y arma la respuesta.
+- El motor no enlaza FAISS. Los índices se declaran con `CREATE INDEX ... USING IVF | HNSW` en el
+  catálogo del motor; el motor vuelca la tabla y anota los `INSERT`, `DELETE` y `COPY`
+  confirmados en un archivo de cambios por índice, y la API los aplica a FAISS. Los ids de FAISS
+  son las pk de la tabla. Detalle en [sql_multimedia.md](sql_multimedia.md).

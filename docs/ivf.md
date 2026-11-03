@@ -98,6 +98,10 @@ k-means también agrupa por dirección y no por magnitud.
 Regla práctica: `nlist` entre √n y 4√n, y `nprobe` lo más chico que dé el recall que se
 necesite (se elige midiendo, como abajo).
 
+Desde SQL: `CREATE INDEX idx ON t (v) USING IVF WITH (nlist = 316, nprobe = 8)` y
+`SELECT ... WHERE SIMILAR_TO('foto.jpg', k=10) USING IVF`. La tabla necesita al menos `nlist`
+filas para entrenar el k-means; ver [sql_multimedia.md](sql_multimedia.md).
+
 ## Almacenamiento
 
 `guardar` usa `faiss.write_index`: una cabecera (dimensión, métrica, `nlist`), los
