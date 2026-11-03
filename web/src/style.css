@@ -500,6 +500,13 @@ td.score-cell {
   border-radius: 8px;
   background: var(--surface);
 }
+.gallery-item audio {
+  width: 100%;
+  margin-top: 28px;
+}
+.gallery-item audio::-webkit-media-controls-volume-control-container {
+  display: none;
+}
 .gallery-item img,
 .gallery-missing {
   width: 100%;
