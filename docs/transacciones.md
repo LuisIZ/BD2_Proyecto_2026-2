@@ -74,7 +74,8 @@ Las páginas se escriben en disco en el momento, así que el rollback es un **un
 cada `INSERT` y cada `DELETE` dentro de la transacción se anota, y `ROLLBACK` aplica las
 operaciones inversas en orden contrario (un `INSERT` se deshace borrando por clave primaria
 y un `DELETE` reinsertando la fila). Funciona igual en las tres organizaciones y mantiene los
-índices secundarios, porque usa el mismo camino que un `INSERT` o `DELETE` normal.
+índices secundarios, porque usa el mismo camino que un `INSERT` o `DELETE` normal. Los índices
+de FAISS solo reciben lo confirmado (ver [sql_multimedia.md](sql_multimedia.md), sección 7).
 
 ```
 BEGIN; INSERT ... (1 fila); DELETE ... (10 filas); SELECT COUNT(*)  -> 291

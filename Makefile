@@ -5,6 +5,10 @@
 #   make test      compila y corre todas las pruebas
 #   make bench     benchmarks de heap, secuencial y B+ agrupado (1k / 10k / 100k)
 #   make bench-indices  comparacion B+ agrupado / no agrupado / hash con graficas
+#   make bench-texto    TF-IDF vs BM25 con el indice SPIMI
+#   make bench-ivf      IVF de FAISS vs fuerza bruta
+#   make bench-hnsw     HNSW de FAISS: barrido de ef_busqueda y borrado logico
+#   make bench-vectorial  IVF vs HNSW vs Flat vs k-NN secuencial del motor
 #   make clean
 #
 # En Windows: mingw32-make gui (g++ de MinGW en el PATH).

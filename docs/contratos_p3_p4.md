@@ -11,10 +11,12 @@ del benchmark está en [busqueda_texto.md](busqueda_texto.md),
 | `motor/texto/preprocesamiento.h` | `tokenizar(texto)`, stopwords inglés y Porter |
 | `motor/texto/indice_invertido.h` | `IndiceInvertido` con bloques SPIMI y merge a disco |
 | `motor/texto/ranking.h` | `buscar(indice, consulta, k, ranking)` con TF-IDF y BM25 |
-| `motor/consultas/parser_sql.{h,cpp}` | `MATCH`, `USING TF_IDF\|BM25` y `SCORE()` |
+| `motor/consultas/parser_sql.{h,cpp}` | `MATCH`, `USING TF_IDF\|BM25`, `SCORE()`, `SIMILAR_TO`, `SIMILARITY_SCORE()` y `WITH METRIC` |
 | `motor/vectorial/vector.h` | `Vector`, `MetricaVec` y `distancia` |
 | `api/multimedia/extraer.py` | SIFT, cuantización FAISS, histogramas TF-IDF y cache |
+| `api/multimedia/extraer_audio.py` | MFCC, cuantización e histogramas TF-IDF de audio |
 | `api/multimedia/indices.py` | Adaptadores IVF/HNSW con FAISS |
+| `api/multimedia/similitud.py` | Resuelve `SIMILAR_TO ... USING` y aplica el archivo de cambios a FAISS |
 | `api/multimedia/bench_vectorial.py` | Ground truth Flat, IVF/HNSW, CSV, SVG y galería opcional |
 | `motor/pruebas/texto_test.cpp` | aceptación SPIMI/ranking; incluido en `make test` |
 | `motor/pruebas/vectorial_test.cpp` | pruebas de las tres métricas; incluido en `make test` |
@@ -115,6 +117,10 @@ vectores normalizados con `faiss.normalize_L2`, que equivale a `normalizar` en C
 El IVF borra de verdad (`remove_ids`). El HNSW no puede: marca la posición interna del vector
 como borrada, la búsqueda la salta, y al pasar el 30 % de borrados se reconstruye solo con los
 vivos (detalle en `docs/hnsw.md`). En los dos, los ids son las pk de la tabla y deben ser únicos.
+
+La tabla muestra los valores del adaptador. Desde SQL, `CREATE INDEX ... USING HNSW` usa
+`ef_busqueda` = 64, el que recomienda la comparación; los demás son iguales (ver
+[sql_multimedia.md](sql_multimedia.md), sección 5).
 
 ## 4. Flujo
 

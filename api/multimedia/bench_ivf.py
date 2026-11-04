@@ -9,7 +9,7 @@ varios nprobe para ver el compromiso entre recall y tiempo. Tambien cuenta los
 vectores comparados por consulta (los de las listas revisadas, mas los nlist
 centroides), que es lo que el IVF se ahorra frente a la fuerza bruta.
 
-Mientras no este vectores.npy (#57) se usan vectores sinteticos de dimension 256
+Si no se pasa --vectores se usan vectores sinteticos de dimension 256
 agrupados alrededor de 100 centros con semilla fija, porque los histogramas de
 palabras visuales de imagenes parecidas tambien forman grupos.
 

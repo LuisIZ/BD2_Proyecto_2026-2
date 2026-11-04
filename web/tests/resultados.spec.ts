@@ -2,7 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import type { Result } from "../src/types";
 
 // Respuestas de ejemplo del motor para las Partes 3 y 4: así la interfaz se
-// prueba aunque MATCH (#55) y SIMILAR_TO (#62) todavía no estén en el motor.
+// prueba sin levantar la API ni cargar los datos.
 async function answer(page: Page, result: Result) {
   await page.route("**/api/consultas", (route) =>
     route.fulfill({ json: { resultados: [result] } }),
