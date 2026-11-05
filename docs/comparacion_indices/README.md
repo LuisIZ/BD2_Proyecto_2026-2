@@ -17,7 +17,7 @@ tabla completa en [`resultados.md`](resultados.md); código en
 | | B+ agrupado | B+ no agrupado | Hash extensible |
 |---|---|---|---|
 | Dónde están los datos | en las hojas del árbol | en un heap file; el índice guarda `(Index, RID)` | en un heap file; el índice guarda `(Index, RID)` |
-| Dónde vive el índice | disco, páginas de 4 KB, buffer pool de 64 marcos | disco, páginas de 4 KB, buffer pool de 64 marcos | **RAM** (`extendible_hash.h`; la versión en disco está pendiente) |
+| Dónde vive el índice | disco, páginas de 4 KB, buffer pool de 64 marcos | disco, páginas de 4 KB, buffer pool de 64 marcos | **RAM** (`extendible_hash.h`; la versión en disco, `hash_extensible_disco.h`, es la que usa el motor SQL y no se midió aquí) |
 | Entrada por registro | 180 B (la fila) | 16 B | ~16 B + estructuras de la STL |
 | Registros por página | 22 | 205 | bucket de 64 (en memoria) |
 
@@ -44,7 +44,7 @@ El no agrupado es el más rápido de construir (34 ms para 100k) porque cada ent
 
 ![igualdad](graficas/02_igualdad.png)
 
-Las tres responden en 6–12 µs. En páginas, el agrupado lee 3 (raíz → interno → hoja, y la fila ya está ahí); el no agrupado 3 + 1 del heap; el hash solo 1 del heap porque su directorio está en RAM. Con el hash en disco serían 2 + 1: directorio, bucket, heap. **Es la única operación donde el hash gana**, y lo hace por poco.
+Las tres responden en 6–12 µs. En páginas, el agrupado lee 3 (raíz → interno → hoja, y la fila ya está ahí); el no agrupado 3 + 1 del heap; el hash solo 1 del heap porque su directorio está en RAM. Con el hash en disco son 2 + 1: directorio, bucket, heap. **Es la única operación donde el hash gana**, y lo hace por poco.
 
 ### Rango
 
@@ -68,7 +68,7 @@ El hash es el más compacto (1.3 MB en RAM), luego el no agrupado (4 MB en disco
 
 ![inserción y eliminación](graficas/06_insercion_eliminacion.png)
 
-Insertar en el agrupado cuesta 1.8 µs por registro: una sola estructura y el buffer pool absorbe las escrituras. El no agrupado y el hash pagan dos escrituras (heap + índice): 8–11 µs. Al eliminar, el agrupado y el no agrupado se mantienen en 19–20 µs con 100k; el hash sube a 655 µs porque la fusión de buckets de la versión en RAM recorre todo el directorio (2 048 entradas) en cada borrado, un defecto de esa implementación que la versión en disco debe evitar.
+Insertar en el agrupado cuesta 1.8 µs por registro: una sola estructura y el buffer pool absorbe las escrituras. El no agrupado y el hash pagan dos escrituras (heap + índice): 8–11 µs. Al eliminar, el agrupado y el no agrupado se mantienen en 19–20 µs con 100k; el hash sube a 655 µs porque la fusión de buckets de la versión en RAM recorre todo el directorio (2 048 entradas) en cada borrado, un defecto de esa implementación que la versión en disco evita porque no fusiona buckets.
 
 ## 3. Tabla resumen
 
@@ -88,7 +88,7 @@ Insertar en el agrupado cuesta 1.8 µs por registro: una sola estructura y el bu
 
 - **B+ agrupado** para la clave primaria de una tabla que se consulta por rango, se lista ordenada o se recorre completa: rango y ordenamiento son 5–8× más baratos que con cualquier otra estructura porque los datos ya están en el orden del índice. Solo puede haber uno por tabla. Cargar con `cargar_masivo`, nunca insertando en orden ascendente.
 - **B+ no agrupado** para índices secundarios sobre columnas que no definen el orden físico (`Founded`, `Number_of_employees`): admite repetidos, es barato de construir y de mantener, y sirve tanto igualdad como rango. Su costo oculto es el salto al heap por cada fila devuelta: con baja selectividad (`Founded = 2019` devuelve el 2 % de la tabla) un scan del heap puede ganarle.
-- **Hash extensible** solo cuando la carga de trabajo es igualdad pura sobre una clave única (buscar por ID, verificar existencia de una clave primaria antes de un `INSERT`): ahorra una lectura frente al B+ y es el más compacto. Cualquier `BETWEEN`, `ORDER BY` o `<` lo saca de juego. Las cifras de este informe son de la versión en RAM; hay que repetirlas cuando esté en disco, donde cada búsqueda costará una página de directorio más una de bucket.
+- **Hash extensible** solo cuando la carga de trabajo es igualdad pura sobre una clave única (buscar por ID, verificar existencia de una clave primaria antes de un `INSERT`): ahorra una lectura frente al B+ y es el más compacto. Cualquier `BETWEEN`, `ORDER BY` o `<` lo saca de juego. Las cifras de este informe son de la versión en RAM. La versión en disco no se volvió a medir; en ella cada búsqueda cuesta una página de directorio más una de bucket.
 
 ## 5. Cómo reproducir
 

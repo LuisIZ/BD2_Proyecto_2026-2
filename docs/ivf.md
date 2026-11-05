@@ -117,10 +117,10 @@ ahorra espacio, ahorra comparaciones.
 
 `make bench-ivf` (o `python api/multimedia/bench_ivf.py`) escribe
 `datos/resultados/ivf_bench.csv`: 100 consultas con k = 10, métrica coseno, un hilo.
-La fuerza bruta es un recorrido completo con NumPy. Mientras no estén los vectores de #57
-se usan vectores sintéticos de dimensión 256 agrupados alrededor de 100 centros; con los
-reales se corre `--vectores vectores.npy` y el recall será menor, porque las imágenes no
-forman grupos tan separados.
+La fuerza bruta es un recorrido completo con NumPy. Si no se pasa `--vectores`, se usan
+vectores sintéticos de dimensión 256 agrupados alrededor de 100 centros; con los reales
+(`--vectores vectores.npy`) el recall será menor, porque las imágenes no forman grupos tan
+separados.
 
 | n | nlist | Construcción | Fuerza bruta | nprobe | IVF | Recall@10 | Comparados |
 |---:|---:|---:|---:|---:|---:|---:|---:|
