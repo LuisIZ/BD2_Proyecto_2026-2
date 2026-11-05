@@ -32,7 +32,10 @@ FUENTES = [
     "motor/indices/gestor_paginas.cpp",
 ]
 
-CABECERAS = ["motor/consultas", "motor/archivos", "motor/indices", "motor/comun"]
+CABECERAS = [
+    "motor/consultas", "motor/archivos", "motor/indices", "motor/comun",
+    "motor/texto", "motor/vectorial", "motor/espacial", "motor/transacciones",
+]
 
 
 class ErrorMotor(Exception):
