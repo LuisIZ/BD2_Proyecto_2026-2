@@ -124,14 +124,41 @@ Lee los CSV de `datos/resultados/` generados por `make bench` (o `mingw32-make b
 
 En **Consultas**, selecciona una tabla que tenga una columna `POINT`. El panel **Mapa espacial** carga sus ubicaciones; los resultados se resaltan y al seleccionar una fila el mapa centra esa ubicación. Las consultas `distancia(columna, POINT(lat, lon)) < radio` dibujan el círculo de búsqueda en metros. Leaflet usa mosaicos de OpenStreetMap, por lo que el fondo del mapa requiere conexión a internet.
 
-## 9. Problemas frecuentes
+## 9. Búsqueda de texto
+
+Crea el índice y consulta con `MATCH`:
+
+```sql
+CREATE TABLE productos FROM FILE 'datos/productos_1k.csv';
+CREATE INDEX productos_desc ON productos (descripcion) USING SPIMI;
+SELECT id, nombre, SCORE() AS relevancia FROM productos
+WHERE MATCH(descripcion, 'wooden door photo') USING BM25 ORDER BY relevancia DESC LIMIT 5;
+```
+
+Resultados agrega una barra con el score de cada fila y resalta los términos de la consulta. El plan muestra `Text Scan using productos_desc`. La lista **Ejemplos SQL** trae una consulta de texto lista para ejecutar.
+
+## 10. Búsqueda por similitud
+
+`SIMILAR_TO` busca los k vectores más parecidos. Sin `USING` lo resuelve el motor recorriendo la tabla; con `USING HNSW` o `USING IVF` busca FAISS en la API.
+
+```sql
+SELECT id, nombre, SIMILARITY_SCORE() FROM productos
+WHERE SIMILAR_TO('ab/abdc8684.jpg', k=10) USING HNSW WITH METRIC=cosine ORDER BY score DESC;
+```
+
+Si el resultado trae la columna `id`, Resultados muestra una **Galería** con la imagen de cada producto y su score, y se puede cambiar a **Tabla**. Si la tabla es `canciones`, cada resultado trae un reproductor de audio en lugar de la imagen.
+
+Las imágenes y los audios no están en el repositorio. La galería necesita `C:\datos_bd2\imagenes` y el reproductor `C:\datos_bd2\audio\genres_original`, y las consultas con un archivo de imagen necesitan `datos/productos/vocabulario_256.npy` e `idf_256.npy` (ver el [README](../README.md#datos-que-no-están-en-el-repositorio)). La interfaz todavía no permite subir una imagen; la consulta usa una imagen del dataset o el literal `VECTOR(...)`. Un archivo de audio tampoco se acepta en `SIMILAR_TO`: el audio se busca con `VECTOR(...)`.
+
+## 11. Problemas frecuentes
 
 | Problema | Solución |
 |---|---|
 | PowerShell bloquea `npm.ps1` | Usa `npm.cmd`. |
 | No se encuentra `g++` | Agrega el `bin` de MinGW/MSYS2 al PATH y abre otra terminal. |
 | Faltan FastAPI o Uvicorn | `python -m pip install -r api/requirements.txt` desde la raíz. |
-| Arriba dice «sin conexión con la API» | Revisa la terminal y espera a que termine de compilar. |
+| Arriba dice «sin conexión con la API» | Revisa la terminal y espera a que termine de compilar. Si sigue igual, inicia desde PowerShell y no desde Git Bash, que carga otro `libstdc++-6.dll` y el motor no arranca. |
+| `no existe el vocabulario visual` | Falta `datos/productos/vocabulario_256.npy`. |
 | Puerto 5173 u 8000 ocupado | Cierra la instancia anterior de `npm.cmd run dev`. |
 | Tabla o índice ya existe | Usa otro nombre o `DROP TABLE`. |
 | SQL no soportado | Revisa la pestaña Sintaxis. `gramar.md` incluye sintaxis que aún no está implementada. |
@@ -139,7 +166,7 @@ En **Consultas**, selecciona una tabla que tenga una columna `POINT`. El panel *
 
 Un lote de sentencias no es una transacción: si una falla, las anteriores no se deshacen.
 
-## 10. Pruebas y archivos
+## 12. Pruebas y archivos
 
 Con la interfaz detenida, desde `web`:
 
@@ -149,11 +176,13 @@ npx.cmd playwright install chromium
 npm.cmd test
 ```
 
-Las pruebas usan una base aparte en `.build/web-test-*`. Cubren carga de CSV, consultas, índices, INSERT y DELETE, errores, la comparación de las cuatro estructuras, la demo guiada completa (31 pasos con 1k), la ejecución de la sentencia bajo el cursor y la vista móvil.
+Las pruebas usan una base aparte en `.build/web-test-*`. Cubren carga de CSV, consultas, índices, INSERT y DELETE, errores, la comparación de las cuatro estructuras, la demo guiada completa (31 pasos con 1k), la ejecución de la sentencia bajo el cursor, la vista móvil, los resultados de texto y la galería.
 
 ```text
 web/src/App.tsx          barra superior, archivos y editor
 web/src/Results.tsx      resultados y plan
+web/src/Gallery.tsx      galería de imágenes y audios
+web/src/textSearch.ts    score y términos resaltados de MATCH
 web/src/Demo.tsx         pestaña demo guiada
 web/src/demo.ts          guion de la demo (escala con 1k / 10k / 100k)
 web/src/sql.ts           separar sentencias, quitar comentarios, sentencia bajo el cursor
