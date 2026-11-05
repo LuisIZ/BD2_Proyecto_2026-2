@@ -5,6 +5,7 @@
 \usepackage[spanish,es-tabla]{babel}
 \usepackage{lmodern}
 \usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{float}
@@ -28,6 +29,9 @@
   literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {ñ}{{\~n}}1
 }
 
+% marca lo que falta escribir; no debe quedar ninguna en la version final
+\newcommand{\pendiente}[1]{\par\noindent\fcolorbox{red}{red!5}{\parbox{0.96\textwidth}{\small Pendiente: #1}}\par}
+
 \setlength{\parskip}{0.5em}
 \setlength{\parindent}{0pt}
 
@@ -42,17 +46,17 @@
   \vspace{3cm}
   {\LARGE Minigestor de base de datos multimodal\par}
   \vspace{0.5cm}
-  {\Large Informe del proyecto: Parte 1 (base de datos relacional) y Parte 2 (base de datos espacial)\par}
+  {\Large Informe del proyecto: Partes 1 a 4 (relacional, espacial, texto y multimedia)\par}
   \vspace{3cm}
   {\large Integrantes\par}
   \vspace{0.3cm}
   Luis Izaguirre\par
   Dayane Rojas\par
   Noe Paredes\par
-  Jimena Huamani\par
-  Omar Chavarria\par
+  \vspace{0.3cm}
+  Participaron en avances anteriores: Jimena Huamani y Omar Chavarria\par
   \vfill
-  {\large Lima, 4 de octubre de 2026\par}
+  {\large Lima, 6 de noviembre de 2026\par}
   \vspace{0.3cm}
   Repositorio: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}\par
 \end{titlepage}
@@ -63,7 +67,7 @@
 %-------------------------------------------------------------------------------
 \section{Introducción}
 
-El proyecto consiste en construir desde cero un gestor de bases de datos que soporte varios tipos de datos. Este informe cubre las dos primeras partes del enunciado. La Parte 1 corresponde a una base de datos relacional con tablas y SQL: organización de archivos en disco, índices, algoritmos externos, procesamiento de consultas, transacciones y una interfaz gráfica. La Parte 2 extiende el motor con datos espaciales: coordenadas geográficas, métricas de distancia y consultas por radio y por cercanía.
+El proyecto consiste en construir desde cero un gestor de bases de datos que soporte varios tipos de datos. Este informe cubre las cuatro primeras partes del enunciado. La Parte 1 corresponde a una base de datos relacional con tablas y SQL: organización de archivos en disco, índices, algoritmos externos, procesamiento de consultas, transacciones y una interfaz gráfica. La Parte 2 extiende el motor con datos espaciales: coordenadas geográficas, métricas de distancia y consultas por radio y por cercanía. La Parte 3 agrega búsqueda de texto con un índice invertido y ranking por relevancia. La Parte 4 agrega búsqueda por similitud de imágenes y audio sobre vectores de características.
 
 El objetivo del curso no es competir con un motor comercial, sino entender cómo funciona por dentro. Por eso el equipo escribió cada estructura sobre páginas de 4 KB y midió cuántas páginas lee y escribe cada operación. Esa medida, más que el tiempo, es la que permite explicar por qué una técnica conviene más que otra.
 
@@ -79,19 +83,20 @@ El sistema está dividido en capas. Cada capa solo conoce a la que tiene debajo,
 \begin{tikzpicture}[
   capa/.style={draw, rounded corners=2pt, minimum width=11cm, minimum height=0.9cm, align=center, fill=gray!8},
   flecha/.style={-{Stealth[length=2mm]}, thick}]
-\node[capa] (web) {Interfaz web (React + TypeScript): archivos, consultas, resultados, plan y comparación};
-\node[capa, below=0.35cm of web] (api) {API (Python + FastAPI): recibe el SQL y llama al binario \texttt{motor\_sql}};
+\node[capa] (web) {Interfaz web (React + TypeScript): archivos, consultas, resultados, plan, mapa y galería};
+\node[capa, below=0.35cm of web] (api) {API (Python + FastAPI): SQL, extracción SIFT y MFCC, índices IVF y HNSW de FAISS};
 \node[capa, below=0.35cm of api] (sql) {Consultas (C++): parser, planificador, ejecutor, EXPLAIN, transacciones};
 \node[capa, below=0.35cm of sql] (alg) {Algoritmos externos: merge sort k-way y external hashing};
-\node[capa, below=0.35cm of alg] (idx) {Índices: B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco};
+\node[capa, below=0.35cm of alg] (txt) {Texto y vectores: SPIMI, TF-IDF, BM25, tipo VECTOR y k-NN secuencial};
+\node[capa, below=0.35cm of txt] (idx) {Índices: B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco};
 \node[capa, below=0.35cm of idx] (arc) {Archivos: Heap File con páginas slotted y archivo secuencial paginado};
 \node[capa, below=0.35cm of arc] (pag) {Páginas de 4 KB en disco, gestor de páginas y buffer pool de 64 marcos};
-\foreach \a/\b in {web/api, api/sql, sql/alg, alg/idx, idx/arc, arc/pag} \draw[flecha] (\a) -- (\b);
+\foreach \a/\b in {web/api, api/sql, sql/alg, alg/txt, txt/idx, idx/arc, arc/pag} \draw[flecha] (\a) -- (\b);
 \end{tikzpicture}
 \caption{Capas del minigestor.}
 \end{figure}
 
-El motor está escrito en C++17 y se compila con un \texttt{Makefile}. Su punto de entrada es el binario \texttt{motor\_sql}, que recibe un lote de sentencias SQL y responde en JSON con las filas, el plan de ejecución y las páginas leídas. La API en Python solo traduce peticiones HTTP a llamadas a ese binario, y la interfaz web dibuja las respuestas. Así, todo lo que toca el disco está en C++ y puede probarse sin la interfaz.
+El motor está escrito en C++17 y se compila con un \texttt{Makefile}. Su punto de entrada es el binario \texttt{motor\_sql}, que recibe un lote de sentencias SQL y responde en JSON con las filas, el plan de ejecución y las páginas leídas. La API en Python traduce peticiones HTTP a llamadas a ese binario, y la interfaz web dibuja las respuestas. Así, todo lo que toca el disco está en C++ y puede probarse sin la interfaz. La excepción son los índices IVF y HNSW de la Parte 4, que son los de FAISS y viven en la API, como se explica en esa sección.
 
 \subsection{Organización del código}
 
@@ -103,15 +108,18 @@ motor/
                   rtree, gestor_paginas, buffer_pool
   consultas/      parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
   espacial/       distancia.h (métricas euclidiana y haversine)
+  texto/          preprocesamiento, indice_invertido (SPIMI) y ranking
+  vectorial/      vector.h (tipo Vector y las tres métricas)
   transacciones/  gestor_locks.h (2PL estricto y deadlocks)
   pruebas/        una prueba por estructura y los benchmarks
 api/              API en Python que llama al motor
+  multimedia/     extraer, extraer_audio, indices (FAISS), similitud y benchmarks
 web/              interfaz React
 datos/            datasets CSV y resultados de los experimentos
 docs/             documentación técnica de cada módulo y este informe
 \end{lstlisting}
 
-Cada módulo tiene su prueba en \texttt{motor/pruebas/}, y \texttt{make test} las ejecuta todas. Al momento de entregar, los diez programas de prueba terminan sin errores.
+Cada módulo tiene su prueba en \texttt{motor/pruebas/}, y \texttt{make test} las ejecuta todas. Al momento de entregar, los trece programas de prueba terminan sin errores. La parte en Python tiene sus propias pruebas, que usan el motor real sobre una base temporal, y \texttt{docs/pruebas\_partes\_3\_4.sql} recorre las Partes 3 y 4 a través de la API, con el resultado esperado de cada bloque.
 
 %-------------------------------------------------------------------------------
 \section{Dominio de datos}
@@ -122,14 +130,18 @@ El conjunto principal es \texttt{organizations}, un CSV público con datos de em
 
 Para la Parte 2 se usan puntos de Lima (centro, San Isidro, Miraflores, Barranco y Callao) en las pruebas de distancia, y un archivo pequeño de alumnos sirve para probar tablas creadas a mano.
 
+Las Partes 3 y 4 usan Amazon Berkeley Objects (ABO), un catálogo de productos de Amazon con texto e imágenes, publicado bajo la licencia CC BY 4.0. Sus 147\,702 registros son publicaciones por país, así que se dejó un registro por producto, con su texto en inglés y su imagen principal. De los 121\,549 productos que cumplen esas condiciones se tomaron 100\,000, en tres archivos anidados de 1\,000, 10\,000 y 100\,000 filas. Como el texto y la imagen comparten el \texttt{id}, una misma fila sirve para las dos búsquedas. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales.
+
 \subsection{Tipos de datos}
 
-El motor maneja tres tipos de columna:
+El motor maneja cinco tipos de columna:
 
 \begin{itemize}
   \item \texttt{INT}: entero de 32 bits.
   \item \texttt{VARCHAR(n)}: texto de hasta $n$ bytes.
   \item \texttt{POINT}: coordenada geográfica (latitud, longitud). Se guarda como dos enteros de 32 bits en microgrados, es decir, grados multiplicados por un millón. Ocupa 8 bytes y tiene una precisión de unos 11 cm.
+  \item \texttt{FLOAT}: número decimal de 32 bits.
+  \item \texttt{VECTOR(k)}: $k$ números decimales de 32 bits, con $k$ de hasta 512.
 \end{itemize}
 
 La clave primaria debe ser \texttt{INT} y puede estar en cualquier columna. Los decimales de las coordenadas se convierten a microgrados leyendo las cifras como texto, sin pasar por números de punto flotante, para que \texttt{POINT(-12.0464, -77.0428)} se guarde exactamente como \texttt{-12046400} y \texttt{-77042800}.
@@ -265,7 +277,7 @@ Las consultas usan las métricas del módulo de distancias:
   \item k vecinos: búsqueda \emph{best-first} con una cola de prioridad ordenada por la distancia mínima del punto a cada MBR. Como esa distancia nunca supera la de un punto dentro del rectángulo, los puntos salen de la cola ya ordenados del más cercano al más lejano.
 \end{itemize}
 
-Desde SQL, \texttt{CREATE INDEX idx\_geo ON tiendas (ubicacion) USING RTREE} construye el índice sobre una columna \texttt{POINT} de una tabla \texttt{HEAP} y el motor lo mantiene en cada \texttt{INSERT} y \texttt{DELETE}. El planificador lo usa para \texttt{distancia(...) < r} y para \texttt{ORDER BY distancia(...) LIMIT k}, y el plan lo muestra así:
+Desde SQL, \texttt{CREATE INDEX idx\_geo ON tiendas (ubicacion) USING RTREE} construye el índice sobre una columna \texttt{POINT} y el motor lo mantiene en cada \texttt{INSERT} y \texttt{DELETE}. El planificador lo usa para \texttt{distancia(...) < r} y para \texttt{ORDER BY distancia(...) LIMIT k}, y el plan lo muestra así:
 
 \begin{lstlisting}
 -> Index Scan using idx_geo on tiendas (ubicacion)  (cost=4.00 rows=1) (actual time=0.041 rows=2 pages=3)
@@ -286,6 +298,162 @@ La pertenencia se decide con \emph{ray casting}: desde el punto se traza un rayo
 \subsection{Estado de la Parte 2}
 
 Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST. La interfaz incluye además un panel de mapa con Leaflet que dibuja los puntos de la tabla sobre OpenStreetMap, resalta las filas que devolvió la consulta y traza el círculo de búsqueda o el polígono usado en el \texttt{WHERE}. Los límites se detallan en la sección \ref{sec:pendiente}.
+
+%-------------------------------------------------------------------------------
+\section{Parte 3: búsqueda de texto}
+
+\subsection{Preprocesamiento e índice invertido SPIMI}
+
+\pendiente{Noé. Preprocesamiento, bloques SPIMI, merge k-way y diccionario en memoria. Fuente: \texttt{docs/busqueda\_texto.md}.}
+
+\subsection{Ranking: TF-IDF con coseno y BM25}
+
+\pendiente{Noé. Fórmulas lnc.ltc y BM25, con el ejemplo calculado a mano. Fuente: \texttt{docs/ranking\_texto.md}.}
+
+\subsection{Extensión SQL}
+
+\pendiente{Noé. \texttt{CREATE INDEX ... USING SPIMI}, \texttt{MATCH}, \texttt{SCORE()}, invalidación con \texttt{INSERT} y \texttt{DELETE}, y \texttt{Text Scan} en el plan. Fuente: \texttt{docs/busqueda\_texto.md}.}
+
+%-------------------------------------------------------------------------------
+\section{Parte 4: búsqueda multimedia}
+
+La Parte 4 busca objetos parecidos a una imagen o a un audio. Para eso cada objeto se convierte en un vector numérico y la búsqueda pasa a ser un problema de vecinos más cercanos entre vectores. El profesor autorizó usar los índices de la biblioteca FAISS en lugar de implementarlos, con la condición de explicar cómo funcionan por dentro y qué significa cada parámetro. Por eso el trabajo quedó repartido entre dos procesos. El motor en C++ guarda los vectores, resuelve el k-NN exacto y arma las respuestas. La API en Python extrae las características y mantiene los índices IVF y HNSW de FAISS.
+
+\subsection{Extracción de características de imágenes}
+
+La función \texttt{extract\_features} de \texttt{api/multimedia/extraer.py} sigue el modelo de bolsa de palabras visuales:
+
+\begin{enumerate}
+  \item SIFT (Lowe, 2004) detecta en la imagen, en escala de grises, hasta 500 puntos clave y describe cada uno con un vector de 128 dimensiones. Estos descriptores no cambian con la escala ni con la rotación.
+  \item K-Means de FAISS agrupa una muestra de hasta 1\,000\,000 de descriptores en $K = 256$ centroides, que son las palabras visuales. Este vocabulario se entrena una sola vez.
+  \item Cada descriptor de una imagen se asigna a su centroide más cercano, y la imagen queda como un histograma de $K$ frecuencias.
+  \item Al histograma se le aplica TF-IDF, con $\mathrm{tf} = 1 + \ln(f)$ e $\mathrm{idf} = \ln\frac{N + 1}{\mathrm{df} + 1} + 1$, y se normaliza a norma 1.
+\end{enumerate}
+
+Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 minutos. Una imagen sin puntos clave produce un histograma de ceros, como los 252 que hay entre los 100\,000 vectores. La distancia coseno de un vector cero a cualquier otro se toma como 1, es decir, ni parecido ni opuesto.
+
+\subsection{Extracción de características de audio}
+
+\pendiente{Noé. MFCC, palabras acústicas, colección GTZAN y resultados por género. Fuente: \texttt{docs/extraccion\_audio.md}.}
+
+\subsection{Tipos FLOAT y VECTOR}
+
+El motor ganó dos tipos de columna, disponibles en las tres organizaciones de archivo. \texttt{FLOAT} guarda un \texttt{float32} y admite comparaciones, \texttt{ORDER BY} y agregados. \texttt{VECTOR(k)} guarda $k$ valores \texttt{float32} seguidos, sin cabecera, porque la dimensión ya está en el catálogo. Con $k = 256$ cada vector ocupa 1 KB.
+
+Se eligió \texttt{float32} y no \texttt{double} porque es lo que producen la extracción y FAISS, de modo que los dos procesos leen los mismos números sin conversión. La dimensión máxima es 512 para que un registro quepa en una página de 4 KB. El B+ agrupado tiene un límite más estricto, porque usa registros de tamaño fijo de hasta 2\,040 bytes: \texttt{VECTOR(256)} cabe, pero \texttt{VECTOR(512)} da un error al crear la tabla. Un vector no se compara con \texttt{=} ni se ordena directamente; solo se usa a través de \texttt{distancia} o \texttt{SIMILAR\_TO}.
+
+\subsection{Métricas de similitud}
+
+Las tres métricas están en \texttt{motor/vectorial/vector.h}. El producto punto y el coseno son similitudes, donde mayor es mejor, así que se transforman para que en las tres un valor menor signifique más parecido. Con una sola convención, el mismo código de k-NN sirve para las tres, y el adaptador de FAISS convierte sus resultados a esa escala para que el Recall@10 compare lo mismo que el motor.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+Métrica & Distancia & Rango \\
+\midrule
+Euclidiana & $\lVert a - b \rVert$ & $[0, \infty)$ \\
+Producto punto & $-(a \cdot b)$ & $(-\infty, \infty)$ \\
+Coseno & $1 - \dfrac{a \cdot b}{\lVert a \rVert\,\lVert b \rVert}$ & $[0, 2]$ \\
+\bottomrule
+\end{tabular}
+\caption{Métricas de vectores. En las tres, menor es más parecido.}
+\end{table}
+
+Si los vectores tienen norma 1, como los histogramas de \texttt{extract\_features}, se cumple $\lVert a - b \rVert^2 = 2 - 2\,(a \cdot b)$ y las tres métricas ordenan los vecinos igual. Aun así se usa el coseno por omisión, porque compara la proporción de palabras visuales y no su cantidad, y sigue siendo correcto si un vector llega sin normalizar.
+
+\subsection{k-NN secuencial}
+
+Sin índice, la respuesta exacta exige medir la distancia a todas las filas. Lo que sí se puede elegir es cuánta memoria cuesta. El nodo \texttt{Seq Vector Scan} recorre la tabla fila por fila y mantiene un heap de máximos con las $k$ mejores filas vistas: si una fila está más cerca que la peor del heap, la reemplaza. Al terminar, el heap se ordena y no hace falta un nodo \texttt{Sort}. Con $N$ filas de dimensión $d$ el costo es $O(N d + N \log k)$, con solo $k$ filas en memoria. Las páginas leídas son las de toda la tabla, y eso es justamente lo que IVF y HNSW evitan.
+
+\begin{lstlisting}
+Projection on img (actual rows=10)
+Output: id
+  -> Seq Vector Scan on img (coseno)  (cost=6667.00 rows=10) (actual time=77.502 rows=10 pages=6667)
+     Order By: distancia(v, VECTOR(256 dimensiones)) [coseno] ASC LIMIT 10
+\end{lstlisting}
+
+Este resultado exacto es la base contra la que se mide el recall de los índices aproximados.
+
+\subsection{Índice IVF}
+
+\pendiente{Dayane. Celdas de Voronoi, entrenamiento con k-means, listas invertidas, búsqueda, \texttt{nlist} y \texttt{nprobe}. Fuente: \texttt{docs/ivf.md}.}
+
+\subsection{Índice HNSW}
+
+HNSW (Malkov y Yashunin, 2018) no se vio en clase, así que el equipo lo estudió del artículo original y del código de FAISS. Se usa \texttt{IndexHNSWFlat}, envuelto en \texttt{api/multimedia/indices.py}.
+
+La idea parte de un grafo de proximidad, donde cada vector está unido a algunos de sus vecinos. Para buscar se salta siempre al vecino más cercano a la consulta hasta que ninguno mejora. En un grafo plano esto es lento, porque desde un punto lejano hacen falta muchos saltos cortos. HNSW lo resuelve con capas, igual que una \emph{skip list} (Pugh, 1990): la capa 0 tiene todos los vectores y cada capa superior tiene una fracción cada vez menor. Las capas altas tienen enlaces largos, que cruzan el espacio en pocos saltos, y las bajas tienen enlaces cortos, que afinan el resultado.
+
+\paragraph{Construcción.} Los vectores se insertan de uno en uno. Cada vector recibe un nivel aleatorio $l = \lfloor -\ln(U) \cdot m_L \rfloor$, con $U$ uniforme en $(0, 1)$ y $m_L = 1 / \ln M$, de modo que la probabilidad de llegar a la capa 1 es $1/M$, a la capa 2 es $1/M^2$, y así sucesivamente. Con $M = 32$ y 100\,000 vectores, FAISS dejó 96\,812 nodos solo en la capa 0, 3\,093 hasta la capa 1, 92 hasta la capa 2 y 3 en la capa 3. Luego se baja desde el punto de entrada hasta la capa $l$ y, desde ahí hasta la capa 0, se buscan \texttt{ef\_construccion} candidatos y se eligen hasta $M$ vecinos ($2M$ en la capa 0). Un candidato entra solo si está más cerca del nodo nuevo que de los vecinos ya elegidos. Así los enlaces apuntan en direcciones distintas y el grafo no se parte en grupos aislados.
+
+\paragraph{Búsqueda.} En las capas altas se avanza con un solo candidato. En la capa 0 se explora con una lista de los \texttt{ef\_busqueda} mejores nodos vistos, y la búsqueda termina cuando el candidato más cercano por visitar ya es peor que el peor de la lista. Se pierde recall cuando el camino entra a una zona del grafo y los vecinos verdaderos están en otra que no se alcanza con esos candidatos. Por eso subir \texttt{ef\_busqueda} recupera esos casos a cambio de tiempo.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{3.6cm}p{1.2cm}p{9.4cm}}
+\toprule
+Parámetro & Valor & Qué controla \\
+\midrule
+\texttt{M} & 32 & vecinos por nodo; más recall y caminos más cortos, pero más memoria y construcción más lenta \\
+\texttt{ef\_construccion} & 40 & candidatos al conectar un nodo; mejor grafo y construcción más lenta, sin cambiar el tamaño \\
+\texttt{ef\_busqueda} & 64 & candidatos al consultar; más recall y más tiempo \\
+\texttt{umbral\_reconstruccion} & 0,30 & fracción de borrados que dispara la reconstrucción; es propio del adaptador \\
+\bottomrule
+\end{tabular}
+\caption{Parámetros del HNSW en SQL, con sus valores por omisión.}
+\end{table}
+
+\paragraph{Borrado lógico.} FAISS no implementa el borrado para este índice, y hay una razón de fondo: quitar un nodo deja a sus vecinos con menos enlaces y corta los caminos que pasaban por él, y repararlo cuesta casi lo mismo que reinsertarlos. Por eso el adaptador marca y no borra, como las tumbas del archivo secuencial. FAISS numera los vectores por orden de llegada, y el adaptador guarda la clave primaria y una marca de borrado por cada posición. La búsqueda recibe un \texttt{IDSelector} con las posiciones borradas: esos nodos se siguen recorriendo, de modo que el grafo queda conectado, pero no entran al resultado.
+
+Se marca por posición y no por clave primaria porque una clave puede volver a insertarse con otro vector. En un primer diseño, con \texttt{IndexIDMap2}, FAISS veía la clave directamente y el filtro habría tenido que excluir y aceptar el mismo identificador a la vez. Cuando la fracción de posiciones borradas pasa de 30\,\%, el mismo umbral de la reorganización del archivo secuencial, el grafo se reconstruye solo con los vectores vivos.
+
+\paragraph{Almacenamiento.} El índice no usa páginas de 4 KB: FAISS lo carga entero en memoria. Se guarda en un solo archivo, con el índice serializado, las claves y las marcas. Con 100\,000 vectores de dimensión 256 ocupa 130,5 MB, un 27\,\% más que los vectores solos, y casi todo ese aumento son los 64 vecinos de cada nodo en la capa 0.
+
+\subsection{Extensión SQL}
+
+La sintaxis cubre los dos ejemplos del enunciado:
+
+\begin{lstlisting}[language=SQL]
+CREATE INDEX productos_hnsw ON productos (v) USING HNSW WITH (M = 32, ef_busqueda = 64);
+
+SELECT id, nombre, SIMILARITY_SCORE() FROM productos
+WHERE SIMILAR_TO('foto.jpg', k=10) USING HNSW WITH METRIC=cosine
+ORDER BY score DESC;
+\end{lstlisting}
+
+\texttt{SIMILAR\_TO} acepta un archivo o un literal \texttt{VECTOR(...)}. Por omisión $k$ vale 10 y la métrica es el coseno. Primero se eligen los $k$ vecinos y después se aplican \texttt{ORDER BY}, \texttt{GROUP BY} y \texttt{LIMIT} sobre ellos. \texttt{SIMILARITY\_SCORE()} invierte la distancia para que \texttt{ORDER BY score DESC} dé primero lo más parecido: con coseno vale $1 - d$, con producto punto $-d$ y con euclidiana $1 / (1 + d)$.
+
+\paragraph{Reparto entre la API y el motor.} El motor no enlaza FAISS, y FAISS solo devuelve claves y distancias, no las filas. Alguien tiene que leer esas filas y armar la respuesta con su \texttt{SELECT}, \texttt{ORDER BY}, \texttt{LIMIT} y plan, y eso ya lo hace el motor para cualquier consulta. Por eso la API no repite ese trabajo en Python: busca en FAISS y le dice al motor qué filas eligió, agregando una cláusula interna que el usuario nunca escribe:
+
+\begin{lstlisting}[language=SQL]
+SELECT id, nombre, SIMILARITY_SCORE() FROM productos
+WHERE SIMILAR_TO(VECTOR(0.01, ...), k=3) USING HNSW CANDIDATES (812, 45, 3301)
+\end{lstlisting}
+
+El motor lee esas filas, recalcula la distancia exacta y responde, de modo que una misma fila tiene el mismo score con o sin índice. Lo que la API no puede resolver, como una tabla inexistente o una métrica distinta de la del índice, se envía igual al motor para que responda con su propio error. El plan muestra qué se usó, aunque el tiempo de FAISS no entra en \texttt{Execution Time}, porque la búsqueda ocurre antes de llamar al motor; la API lo devuelve aparte.
+
+\begin{lstlisting}
+Projection on img (actual rows=2)
+Output: id, nombre, score
+  -> Vector Scan using img_hnsw on img (HNSW, coseno, ef=64)  (cost=1.00 rows=2) (actual time=0.019 rows=2 pages=1)
+     Order By: SIMILAR_TO(v, VECTOR(3 dimensiones), k=2) [coseno]
+\end{lstlisting}
+
+\paragraph{Mantenimiento con un archivo de cambios.} El catálogo del motor sigue siendo la única fuente de verdad: \texttt{CREATE INDEX} valida la columna y los parámetros y anota el índice sin construirlo. El motor no puede llamar a FAISS, pero sí sabe qué filas entran y salen, así que escribe un archivo \texttt{<indice>.faiss.cambios}. \texttt{CREATE INDEX} vuelca ahí la tabla entera, y \texttt{INSERT}, \texttt{DELETE} y \texttt{COPY} agregan sus filas. Cada registro es binario y de tamaño fijo, \texttt{[uint8 I|D][int32 pk][k float32]}; en JSON, un volcado de 100\,000 vectores pesaría unos 280 MB contra 100 MB, y además habría que interpretarlo número por número.
+
+Después de cada lote que escribe, y antes de cada búsqueda, la API aplica los cambios a FAISS, guarda el índice y recién entonces vacía el archivo, como un log. Si la API se cae entre esos dos pasos, los cambios se vuelven a aplicar sin daño, porque insertar primero quita la clave y eliminar una clave ausente no hace nada. El índice se guarda una vez por lote y no por fila, porque FAISS reescribe el archivo entero, unos 0,24 s con 100\,000 vectores: un \texttt{COPY} de 10\,000 filas guardado fila por fila tardaría unos 40 minutos.
+
+\paragraph{Transacciones.} Si FAISS marcara como borrada una fila que luego un \texttt{ROLLBACK} restaura, esa fila existiría pero nunca saldría en las búsquedas. Por eso el motor solo escribe en el archivo lo confirmado. Dentro de una transacción, los cambios esperan en memoria hasta el \texttt{COMMIT}, y se descartan con un \texttt{ROLLBACK}, con un deadlock o con el \texttt{ROLLBACK} automático de un lote que termina con la transacción abierta. Lo decide el motor porque es el único que sabe cómo terminó cada transacción.
+
+\paragraph{Filtros adicionales.} En una consulta como \texttt{SIMILAR\_TO('zapato.jpg', k=10) AND precio < 50 USING HNSW}, FAISS no conoce el precio: devuelve los 10 más parecidos y el motor filtra después. Si solo 4 cumplen la condición, la respuesta tiene 4 filas, aunque existan otros productos baratos un poco menos parecidos. Sin \texttt{USING} esto no ocurre, porque el motor filtra primero y elige los $k$ entre los que pasan. pgvector tiene el mismo comportamiento con sus índices, y se decidió dejarlo así y documentarlo: para un resultado exacto con filtros basta con quitar \texttt{USING}.
+
+\paragraph{Imagen de consulta.} En \texttt{SIMILAR\_TO('foto.jpg')}, la API busca el archivo entre las imágenes subidas y las del dataset, sin salir de esas carpetas, y le aplica \texttt{extract\_features} con el mismo vocabulario e IDF de los productos. Así el vector de consulta es comparable con los de la tabla. El archivo se reemplaza por el literal \texttt{VECTOR(...)} antes de llegar al motor.
+
+\subsection{Estado de la Parte 4}
+
+Están terminados la extracción de imágenes y de audio, los tipos \texttt{FLOAT} y \texttt{VECTOR}, las tres métricas, el k-NN secuencial, los índices IVF y HNSW con inserción y borrado, y la extensión SQL. Quedan dos límites. \texttt{SIMILAR\_TO} acepta archivos de imagen pero todavía no de audio, así que el audio se consulta con el literal \texttt{VECTOR(...)}. Además, la API ya recibe imágenes subidas, pero la interfaz aún no ofrece esa opción.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
@@ -467,6 +635,60 @@ La búsqueda secuencial cuesta lo mismo con cualquier radio, porque siempre lee 
 
 GiST resultó unas 10 veces más rápido que el R-Tree del motor en todas las consultas, aunque su índice ocupa casi el doble. Parte de esa diferencia no viene de la estructura: cada consulta del motor abre los archivos y lee el catálogo, mientras que PostgreSQL trabaja con la tabla ya en memoria compartida. Por eso la comparación más justa es la forma en que crece cada técnica, y en eso el R-Tree y GiST se comportan igual. La construcción del R-Tree es más lenta porque inserta punto por punto leyendo cada fila del heap. El detalle completo está en \texttt{docs/comparacion\_espacial/README.md}.
 
+\subsection{Parte 3: TF-IDF, BM25 y GIN}
+
+\pendiente{Dayane. Construcción, espacio, tiempo de consulta, Precision@10 y Recall@10, con las gráficas y la tabla de ventajas. Fuente: \texttt{docs/comparacion\_texto/README.md}.}
+
+\subsection{Parte 4: comportamiento del HNSW}
+
+Antes de comparar los índices entre sí, se midió el HNSW por separado con \texttt{make bench-hnsw}. Se usaron vectores sintéticos de dimensión 256, agrupados alrededor de 100 centros, 100 consultas con $k = 10$, métrica coseno, un solo hilo, $M = 32$ y \texttt{ef\_construccion} = 100. La referencia es una fuerza bruta con NumPy.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrrrr}
+\toprule
+$n$ & Construcción & Fuerza bruta & \texttt{ef\_busqueda} & HNSW & Recall@10 & Comparados \\
+\midrule
+1\,000 & 0,19 s & 1,7 ms & 64 & 0,220 ms & 1,00 & 679 \\
+10\,000 & 3,4 s & 13,3 ms & 64 & 0,338 ms & 1,00 & 483 \\
+100\,000 & 43,2 s & 124,1 ms & 10 & 0,298 ms & 0,94 & 438 \\
+ & & & 32 & 0,481 ms & 0,99 & 757 \\
+ & & & 64 & 0,525 ms & 1,00 & 949 \\
+ & & & 256 & 1,050 ms & 1,00 & 1\,190 \\
+\bottomrule
+\end{tabular}
+\caption{HNSW frente a la fuerza bruta con vectores sintéticos.}
+\end{table}
+
+De 1\,000 a 100\,000 vectores, la fuerza bruta crece 73 veces y el HNSW con \texttt{ef\_busqueda} = 64 solo 2,4 veces. Los vectores comparados pasan de 679 a 949 mientras $n$ crece 100 veces, que es el comportamiento logarítmico que promete el artículo. \texttt{ef\_busqueda} cambia recall por tiempo: con 100\,000 vectores hacen falta 32 candidatos para llegar a 0,99. El costo está en la construcción, 43 s con un hilo, porque cada inserción es una búsqueda en el grafo.
+
+Para el borrado lógico se partió de 10\,000 vectores con \texttt{ef\_busqueda} = 64 y se borraron claves al azar hasta cada fracción. El recall se mide contra la fuerza bruta sobre los vectores vivos.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{Sin reconstruir} & \multicolumn{3}{c}{Con umbral de 30\,\%} \\
+Borrado & Recall & Comparados & Tamaño & Recall & Comparados & Tamaño \\
+\midrule
+0\,\% & 1,00 & 483 & 13,0 MB & 1,00 & 483 & 13,0 MB \\
+30\,\% & 1,00 & 483 & 13,0 MB & 1,00 & 483 & 13,0 MB \\
+50\,\% & 1,00 & 483 & 13,0 MB & 1,00 & 668 & 6,5 MB \\
+70\,\% & 1,00 & 483 & 13,0 MB & 1,00 & 808 & 3,9 MB \\
+90\,\% & 0,96 & 483 & 13,0 MB & 1,00 & 679 & 1,3 MB \\
+\bottomrule
+\end{tabular}
+\caption{Efecto del borrado lógico en el HNSW.}
+\end{table}
+
+Sin reconstruir, el borrado no ahorra nada: se calculan las mismas 483 distancias y el índice pesa lo mismo, porque el grafo se recorre igual y los nodos muertos solo se saltan al armar el resultado. Con muchos borrados el recall cae, ya que esos nodos ocupan lugares de la lista de candidatos. Con el umbral, el índice vuelve a su tamaño real y el recall se mantiene. Marcar 1\,000 claves cuesta 1,4 ms y reconstruir cuesta lo que construir con los vivos, entre 0,15 y 1,36 s en estas pruebas.
+
+\subsection{Parte 4: IVF, HNSW y k-NN secuencial}
+
+\pendiente{Noé y Dayane. Comparación con los vectores reales de 100\,000 productos: tiempo, Recall@10, construcción, memoria, euclidiana frente a coseno, galería de éxitos y errores y recomendaciones. Fuente: \texttt{docs/comparacion\_vectorial/README.md}.}
+
 \subsection{Cuándo usar cada técnica}
 
 \begin{table}[H]
@@ -482,10 +704,13 @@ B+ agrupado & se consulta por rango o se lista ordenado por la clave primaria & 
 B+ no agrupado & se necesita un índice secundario con repetidos, por igualdad o rango & una lectura del heap por cada fila devuelta \\
 Hash extensible & solo hay búsquedas por igualdad & no sirve para rangos ni para ordenar \\
 R-Tree & se busca por distancia a un punto o dentro de un polígono, con pocas filas en el resultado & radios que devuelven gran parte de la tabla \\
+HNSW & búsqueda interactiva por similitud sobre vectores que caben en memoria & construcción lenta; más memoria; no borra de verdad \\
 \bottomrule
 \end{tabular}
 \caption{Resumen de ventajas y desventajas.}
 \end{table}
+
+\pendiente{Agregar a la tabla SPIMI con TF-IDF y BM25, IVF y k-NN secuencial cuando estén sus comparaciones.}
 
 %-------------------------------------------------------------------------------
 \section{Conclusiones y límites conocidos}
@@ -493,9 +718,13 @@ R-Tree & se busca por distancia a un punto o dentro de un polígono, con pocas f
 
 El proyecto permitió comprobar en la práctica varias ideas que en clase se ven de forma teórica. La más clara es que el número de páginas leídas explica casi todas las diferencias de rendimiento: el secuencial gana en búsquedas porque lee 35 páginas en lugar de 1\,598, y el B+ agrupado gana en rangos porque sus filas están contiguas. También quedó claro que medir bien es parte del trabajo, porque dos de las observaciones del primer avance se explicaban por qué se estaba midiendo y no por un error en las estructuras.
 
-La Parte 1 está completa, con dos límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro.
+La Parte 1 está completa, con tres límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. El merge sort y el hashing externos modelan el presupuesto de memoria, pero sus corridas y particiones todavía viven en memoria y no en archivos temporales. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro. Estos pendientes quedan para la Entrega Final.
 
 De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. El repositorio ya incluye \texttt{postgis\_bench.sql}, que repite la comparación con PostGIS sobre \texttt{geography} y distancia geodésica; como trabajo futuro queda ejecutarlo y comparar esos tiempos con la métrica haversine del motor.
+
+\pendiente{Noé y Dayane. Conclusión de la búsqueda de texto y de la comparación con GIN.}
+
+De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el trabajo más delicado no fue el índice, sino mantenerlo coherente con una tabla que vive en otro proceso. El archivo de cambios y la cláusula \texttt{CANDIDATES} permitieron que el motor siga siendo la única fuente de verdad, que FAISS solo vea lo confirmado y que cada proceso haga lo que ya sabe hacer. El HNSW también mostró un costo que no aparece en la teoría de la búsqueda: un grafo no se puede borrar de forma directa, y el borrado lógico solo es sano si después se reconstruye. Como límites conocidos, \texttt{SIMILAR\_TO} todavía no acepta archivos de audio, la interfaz no permite subir la imagen de consulta, una búsqueda con \texttt{USING} y filtros puede devolver menos de $k$ filas, y dentro de una transacción esa búsqueda no ve los cambios de la propia transacción.
 
 \section*{Referencias}
 \begin{enumerate}
@@ -504,6 +733,11 @@ De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de dis
   \item Fagin, R., Nievergelt, J., Pippenger, N. y Strong, H. R. Extendible hashing: a fast access method for dynamic files. \emph{ACM Transactions on Database Systems}, 4(3), 1979.
   \item Guttman, A. R-trees: a dynamic index structure for spatial searching. \emph{Proceedings of ACM SIGMOD}, 1984.
   \item PostgreSQL Global Development Group. Documentación de \texttt{EXPLAIN}.\\ \url{https://www.postgresql.org/docs/current/sql-explain.html}
+  \item Lowe, D. G. Distinctive image features from scale-invariant keypoints. \emph{International Journal of Computer Vision}, 60(2), 2004.
+  \item Malkov, Y. A. y Yashunin, D. A. Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs. \emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 42(4), 2020.
+  \item Pugh, W. Skip lists: a probabilistic alternative to balanced trees. \emph{Communications of the ACM}, 33(6), 1990.
+  \item Sivic, J. y Zisserman, A. Video Google: a text retrieval approach to object matching in videos. \emph{Proceedings of ICCV}, 2003.
+  \item Wiki de FAISS. \url{https://github.com/facebookresearch/faiss/wiki}
 \end{enumerate}
 
 \end{document}
