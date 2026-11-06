@@ -29,9 +29,6 @@
   literate={á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1 {ñ}{{\~n}}1
 }
 
-% marca lo que falta escribir; no debe quedar ninguna en la version final
-\newcommand{\pendiente}[1]{\par\noindent\fcolorbox{red}{red!5}{\parbox{0.96\textwidth}{\small Pendiente: #1}}\par}
-
 \setlength{\parskip}{0.5em}
 \setlength{\parindent}{0pt}
 
@@ -130,7 +127,7 @@ El conjunto principal es \texttt{organizations}, un CSV público con datos de em
 
 Para la Parte 2 se usan puntos de Lima (centro, San Isidro, Miraflores, Barranco y Callao) en las pruebas de distancia, y un archivo pequeño de alumnos sirve para probar tablas creadas a mano.
 
-Las Partes 3 y 4 usan Amazon Berkeley Objects (ABO), un catálogo de productos de Amazon con texto e imágenes, publicado bajo la licencia CC BY 4.0. Sus 147\,702 registros son publicaciones por país, así que se dejó un registro por producto, con su texto en inglés y su imagen principal. De los 121\,549 productos que cumplen esas condiciones se tomaron 100\,000, en tres archivos anidados de 1\,000, 10\,000 y 100\,000 filas. Como el texto y la imagen comparten el \texttt{id}, una misma fila sirve para las dos búsquedas. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales.
+Los datos de las Partes 3 y 4 se describen en la subsección \ref{sec:productos}. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales.
 
 \subsection{Tipos de datos}
 
@@ -149,6 +146,24 @@ La clave primaria debe ser \texttt{INT} y puede estar en cualquier columna. Los 
 \subsection{Formato de registro y de página}
 
 Todas las estructuras trabajan sobre páginas de 4\,096 bytes. En el Heap File y en el archivo secuencial, un registro es \texttt{[int32 clave][uint32 largo][valor]}, donde el valor empaqueta el resto de columnas: los enteros en 4 bytes y los textos con su largo en 2 bytes seguido de los caracteres. El B+ agrupado usa registros de tamaño fijo, con la clave primero y cada texto rellenado hasta su largo máximo, para poder ubicarlos por posición dentro de la hoja.
+
+\subsection{Dataset de productos para las Partes 3 y 4}
+\label{sec:productos}
+
+Las Partes 3 y 4 usan un mismo dataset: \emph{Amazon Berkeley Objects} (ABO), publicado por Amazon bajo la licencia CC BY 4.0. Cada producto tiene texto (nombre, viñetas y descripción) y una foto de catálogo, y como el texto y la imagen comparten el mismo \texttt{id}, una consulta puede combinar la búsqueda de texto con la de imágenes.
+
+ABO trae 147\,702 \emph{listings}, porque el mismo producto aparece una vez por cada marketplace de Amazon. El script \texttt{tools/dataset/preparar.py} se queda con un registro por producto, solo con texto en inglés, quita el HTML y los saltos de línea, y recorta la descripción a 1\,000 bytes. Quedan 121\,549 productos con imagen y nombre en inglés, de los que se toman tres subconjuntos anidados de 1\,000, 10\,000 y 100\,000 filas con la semilla 2026. Los primeros 1\,000 productos de cualquiera de los tres archivos son los mismos, así que un resultado sobre 1k se puede repetir sobre 10k.
+
+\begin{lstlisting}[language=SQL]
+CREATE TABLE productos (id INT PRIMARY KEY, item_id VARCHAR(20), nombre VARCHAR(200),
+  tipo VARCHAR(50), categoria VARCHAR(200), marca VARCHAR(80), color VARCHAR(40),
+  descripcion VARCHAR(1000), imagen VARCHAR(80));
+COPY productos FROM FILE 'datos/productos_10k.csv';
+\end{lstlisting}
+
+La columna \texttt{descripcion} es la que se indexa en la Parte 3, e \texttt{imagen} es la ruta de la foto principal (lado mayor de 256 px) que se usa en la Parte 4. Las columnas \texttt{tipo} y \texttt{categoria} no se indexan y sirven como juicio de relevancia en los experimentos. Los textos se recortan en bytes UTF-8 sin partir caracteres, porque el motor mide el largo en bytes, y así un registro ocupa como mucho unos 1,7 KB y cabe en una página. El \texttt{COPY} de los 100\,000 productos tarda alrededor de un segundo.
+
+El dataset está muy cargado hacia un tipo: 53\,355 de los 100\,000 productos son fundas de celular (\texttt{CELLULAR\_PHONE\_CASE}), seguidas de zapatos (8\,027) y abarrotes (5\,044). Además, 15\,571 productos comparten la foto principal con otro, lo que produce vectores idénticos y empates en la búsqueda por similitud. Los detalles de la limpieza están en \texttt{docs/dataset.md}.
 
 %-------------------------------------------------------------------------------
 \section{Parte 1: técnicas implementadas}
@@ -304,15 +319,49 @@ Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, 
 
 \subsection{Preprocesamiento e índice invertido SPIMI}
 
-\pendiente{Noé. Preprocesamiento, bloques SPIMI, merge k-way y diccionario en memoria. Fuente: \texttt{docs/busqueda\_texto.md}.}
+El sistema busca en la columna \texttt{descripcion} de los productos de ABO, que está en inglés. Antes de indexar, \texttt{tokenizar} (\texttt{motor/texto/preprocesamiento.h}) pasa el texto a minúsculas, translitera las vocales acentuadas, usa los signos como separadores, quita las palabras de \texttt{datos/stopwords\_en.txt} y aplica el stemming de Porter (1980). Por ejemplo, \emph{The CARS are running, fast!} produce \texttt{car run fast}. La misma función se aplica a los documentos y a las consultas, para que los términos coincidan.
+
+El índice invertido se construye con SPIMI, como se vio en clase. Cada bloque tiene su propio diccionario hash de término a lista de postings $(\mathit{doc\_id}, \mathit{tf})$, sin asignar identificadores globales de término, y usa como máximo 4 MB. Cuando un bloque llega a ese límite, se ordenan sus términos y se escribe a un archivo temporal. Como los documentos llegan en orden creciente, cada lista ya queda ordenada por \texttt{doc\_id}. Al final, un merge k-way con cola de prioridad toma el menor término de todos los bloques, junta sus listas y las escribe en \texttt{indice\_spimi.bin}. En memoria solo hay una entrada por bloque, no los bloques enteros, y los temporales se borran al terminar.
+
+El diseño inicial proponía guardar el diccionario final en páginas ordenadas o en un B+ con claves \texttt{VARCHAR}. Se decidió mantenerlo en memoria: \texttt{indice\_meta.bin} guarda término, posición en el archivo y frecuencia de documento, y se carga una vez al abrir el índice. Ubicar un término cuesta entonces $O(1)$ y ninguna lectura de disco, y una consulta solo lee las listas de sus términos. El costo es memoria proporcional al vocabulario, que crece mucho más lento que la colección: los 10\,000 productos tienen 8\,108 términos, unos 0,2 MB. Si no cupiera en memoria, la alternativa sería la de clase, con búsqueda binaria sobre páginas de 4 KB.
 
 \subsection{Ranking: TF-IDF con coseno y BM25}
 
-\pendiente{Noé. Fórmulas lnc.ltc y BM25, con el ejemplo calculado a mano. Fuente: \texttt{docs/ranking\_texto.md}.}
+La función \texttt{buscar} de \texttt{motor/texto/ranking.h} solo recorre los postings de los términos de la consulta, acumula el score de cada documento y conserva los $k$ mejores con un heap de tamaño $k$. Devuelve solo documentos con score positivo.
+
+\paragraph{TF-IDF con coseno.} Se usa el esquema lnc.ltc de la clase. El documento pesa $w_d = 1 + \log_{10}(\mathrm{tf})$ y la consulta $w_q = (1 + \log_{10}(\mathrm{tf})) \cdot \log_{10}(N / \mathrm{df})$, y el score es el coseno entre ambos:
+\[
+  \mathrm{score}(d, q) = \frac{\sum_{t} w_d(t)\, w_q(t)}{\lVert d \rVert\, \lVert q \rVert}
+\]
+Las normas de los documentos se calculan al construir el índice, porque de otro modo el coseno tendría que recorrer todos los términos del documento en cada consulta. Con el ejemplo de clase, \emph{seguro de carro}, da 0,80.
+
+\paragraph{BM25.} Se usa $k_1 = 1{,}2$ y $b = 0{,}75$. El parámetro $k_1$ satura el aporte de la frecuencia y $b$ controla cuánto se penaliza un documento largo:
+\[
+  \mathrm{score}(d, q) = \sum_{t \in q} \ln\!\left(\frac{N - \mathrm{df} + 0{,}5}{\mathrm{df} + 0{,}5} + 1\right) \cdot \frac{\mathrm{tf}\,(k_1 + 1)}{\mathrm{tf} + k_1 \left(1 - b + b\, \frac{|d|}{\mathrm{avgdl}}\right)}
+\]
+
+Como prueba se calculó a mano un corpus de tres documentos: 0 = \emph{cat dog}, 1 = \emph{cat cat bird} y 2 = \emph{dog bird fish}, con la consulta \emph{cat fish}. El documento 2 obtiene 0,541639 con TF-IDF y 0,933113 con BM25, los mismos valores que devuelve \texttt{buscar}.
 
 \subsection{Extensión SQL}
 
-\pendiente{Noé. \texttt{CREATE INDEX ... USING SPIMI}, \texttt{MATCH}, \texttt{SCORE()}, invalidación con \texttt{INSERT} y \texttt{DELETE}, y \texttt{Text Scan} en el plan. Fuente: \texttt{docs/busqueda\_texto.md}.}
+La sintaxis cubre los ejemplos del enunciado:
+
+\begin{lstlisting}[language=SQL]
+CREATE INDEX idx_desc ON productos (descripcion) USING SPIMI;
+
+SELECT id, nombre, SCORE() AS relevancia FROM productos
+WHERE MATCH(descripcion, 'wooden door photo') USING BM25
+ORDER BY relevancia DESC LIMIT 5;
+\end{lstlisting}
+
+\texttt{CREATE INDEX ... USING SPIMI} construye el índice sobre una columna \texttt{VARCHAR} y lo guarda en un directorio propio, de modo que se puede reabrir sin reconstruirlo. \texttt{MATCH} exige \texttt{USING TF\_IDF} o \texttt{USING BM25} y un índice sobre la columna; si falta, el motor responde con un error que indica cómo crearlo. El planificador usa el nodo \texttt{Text Scan}, que rankea con \texttt{buscar} y luego lee cada fila por su posición. Las demás condiciones del \texttt{WHERE} se aplican como filtro sobre las filas rankeadas. Con \texttt{LIMIT}, sin otros filtros y ordenando por score, el ranking solo pide los $k$ mejores.
+
+\begin{lstlisting}
+Text Scan using idx_desc on productos (descripcion)
+  Index Cond: MATCH(descripcion, 'wooden door photo') USING BM25
+\end{lstlisting}
+
+El índice no se actualiza fila a fila. Un \texttt{INSERT} o un \texttt{DELETE} lo invalida y se reconstruye en la siguiente búsqueda con \texttt{MATCH}, así que varias inserciones seguidas cuestan una sola reconstrucción. Es un límite frente a GIN, que se actualiza de forma incremental.
 
 %-------------------------------------------------------------------------------
 \section{Parte 4: búsqueda multimedia}
@@ -334,7 +383,9 @@ Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 m
 
 \subsection{Extracción de características de audio}
 
-\pendiente{Noé. MFCC, palabras acústicas, colección GTZAN y resultados por género. Fuente: \texttt{docs/extraccion\_audio.md}.}
+La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\_audio.py} usa el mismo pipeline que las imágenes, con MFCC en lugar de SIFT. \texttt{librosa} carga el audio en mono a 22\,050 Hz, hasta 30 segundos, y calcula 13 coeficientes MFCC por cada ventana de 2\,048 muestras con un salto de 512. Un clip de 30 segundos da unas 1\,290 ventanas, y cada ventana es un descriptor. K-Means aprende $K = 256$ palabras acústicas, cada ventana se asigna a su palabra más cercana y el audio queda como un histograma con TF-IDF y norma 1.
+
+La colección es GTZAN, con 100 clips de cada uno de 10 géneros. Se quitó \texttt{jazz.00054.wav} porque está dañado, así que son 999 audios. Para evaluar, se pidieron los 5 vecinos más cercanos de cada audio y se contó cuántos eran de su mismo género, cuando al azar sería un 10\,\%. Con $K$ = 64, 128 y 256 se obtuvo 47, 52 y 54\,\%. Clásica acierta un 86\,\% y rock un 25\,\%. El histograma cuenta cuántas veces aparece cada palabra acústica, pero no cuándo, así que se pierden el ritmo y la melodía, y los géneros con instrumentos parecidos se confunden más. Aun así, en una prueba con un fragmento de 10 segundos de un clip en formato mp3, la canción original salió en primer lugar.
 
 \subsection{Tipos FLOAT y VECTOR}
 
@@ -377,7 +428,32 @@ Este resultado exacto es la base contra la que se mide el recall de los índices
 
 \subsection{Índice IVF}
 
-\pendiente{Dayane. Celdas de Voronoi, entrenamiento con k-means, listas invertidas, búsqueda, \texttt{nlist} y \texttt{nprobe}. Fuente: \texttt{docs/ivf.md}.}
+El índice IVF (\emph{Inverted File Index}) busca los $k$ vectores más parecidos sin compararlos todos. Aplica a los vectores la misma idea del índice invertido de texto. En texto, cada término apunta a la lista de documentos que lo contienen y una consulta solo recorre las listas de sus términos. En el IVF, el espacio se divide en \texttt{nlist} regiones (celdas de Voronoi), cada una con su centroide y con la lista de los vectores que caen en ella. Una consulta solo recorre las listas de las \texttt{nprobe} regiones más cercanas. Sivic y Zisserman aplicaron el archivo invertido a imágenes, y Jégou, Douze y Schmid lo usaron como cuantizador grueso delante de una búsqueda exacta.
+
+El profesor aprobó usar el \texttt{IndexIVFFlat} de FAISS en lugar de implementarlo. El adaptador \texttt{api/multimedia/indices.py} lo envuelve con la misma interfaz que el HNSW (\texttt{construir}, \texttt{knn}, \texttt{insertar}, \texttt{eliminar}, \texttt{guardar} y \texttt{cargar}) y usa como id la clave primaria de la tabla, no la posición del vector.
+
+\paragraph{Construcción.} Se entrena un k-means de Lloyd con \texttt{nlist} centroides durante 10 iteraciones, con semilla fija para que el índice salga igual en cada corrida. Los centroides se guardan en un índice plano que decide a qué lista va cada vector, y luego cada vector se agrega a la lista de su centroide más cercano. Insertar después es ese mismo último paso, sin reentrenar. Si se insertan muchos vectores de una zona nueva, las listas se desbalancean y conviene reconstruir.
+
+\paragraph{Búsqueda.} La consulta se compara con los \texttt{nlist} centroides, se eligen los \texttt{nprobe} más cercanos y se calcula la distancia exacta solo contra los vectores de esas listas, con un heap de tamaño $k$. Cada consulta compara unos $\texttt{nlist} + \texttt{nprobe} \cdot n / \texttt{nlist}$ vectores en lugar de $n$. El precio es el recall: si el vecino verdadero cae en una celda que no se revisó, por ejemplo porque la consulta está cerca del borde entre dos celdas, el IVF no lo encuentra. Con $\texttt{nprobe} = \texttt{nlist}$ se revisan todas las listas y el resultado es el mismo que el de la fuerza bruta, y así lo comprueban las pruebas del adaptador.
+
+\paragraph{Métricas.} Las tres métricas del motor se mantienen con la convención de que menor distancia significa más parecido. FAISS devuelve otras escalas y el adaptador las convierte:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{llll}
+\toprule
+Métrica & Índice de FAISS & FAISS devuelve & El adaptador devuelve \\
+\midrule
+Euclidiana & \texttt{METRIC\_L2} & $\| a-b\|^2$ & $\| a-b\|$ \\
+Producto punto & \texttt{METRIC\_INNER\_PRODUCT} & $a \cdot b$ & $-a \cdot b$ \\
+Coseno & \texttt{METRIC\_INNER\_PRODUCT}, normalizados & $\cos(a,b)$ & $1-\cos(a,b)$ \\
+\bottomrule
+\end{tabular}
+\caption{Conversión de las distancias de FAISS.}
+\end{table}
+
+\paragraph{Parámetros y espacio.} Se usa $\texttt{nlist} \approx \sqrt{n}$ (25, 100 y 316 listas para 1k, 10k y 100k vectores) y \texttt{nprobe} se elige midiendo el recall que se necesita. Desde SQL se crea con \texttt{CREATE INDEX idx ON productos (v) USING IVF WITH (nlist = 316, nprobe = 8)} y se usa con \texttt{SIMILAR\_TO(...) USING IVF}. El índice guarda los vectores completos, sin comprimir, más los ids y los centroides: con 100\,000 vectores de 256 dimensiones ocupa 98,7 MB, apenas un 1\,\% más que los vectores solos. El IVF no ahorra espacio, ahorra comparaciones.
 
 \subsection{Índice HNSW}
 
@@ -454,6 +530,21 @@ Después de cada lote que escribe, y antes de cada búsqueda, la API aplica los 
 \subsection{Estado de la Parte 4}
 
 Están terminados la extracción de imágenes y de audio, los tipos \texttt{FLOAT} y \texttt{VECTOR}, las tres métricas, el k-NN secuencial, los índices IVF y HNSW con inserción y borrado, y la extensión SQL, que acepta archivos de imagen y de audio, subidos desde la interfaz o tomados del dataset.
+
+%-------------------------------------------------------------------------------
+\section{Interfaz para las Partes 3 y 4}
+
+El panel de resultados se adaptó para que cada tipo de consulta se muestre de la forma más fácil de leer. La interfaz reconoce el tipo de consulta a partir del SQL ejecutado y del plan que devuelve el motor, sin cambiar el formato de la respuesta.
+
+\begin{itemize}
+  \item \emph{Texto.} En una consulta con \texttt{MATCH(texto, '...')}, la columna del score se muestra con una barra proporcional al mejor resultado, y los términos de la consulta se resaltan en el texto de cada fila. Para resaltar, la interfaz reduce cada palabra a una raíz aproximada (quita los plurales como el paso 1a de Porter y los sufijos \emph{-ing}, \emph{-ed} y \emph{-ly}), de modo que buscar \emph{cars} resalta también \emph{car}. Las palabras vacías (\emph{stopwords}) no se resaltan.
+  \item \emph{Imágenes.} En una consulta por similitud (\texttt{SIMILAR\_TO}, o un k-NN de vectores con \texttt{ORDER BY distancia(...)} y \texttt{LIMIT}), los resultados se muestran como una galería de miniaturas ordenadas por similitud, con el nombre del producto, su score y su posición en el ranking. Un botón permite volver a la tabla. Las miniaturas las sirve la API en \texttt{/api/imagenes/\{id\}}, que busca la ruta de la foto del producto en el CSV y la lee de la carpeta local de imágenes.
+  \item \emph{Archivos de consulta.} El botón \emph{Subir archivo} envía una imagen o un audio a la API y deja lista la consulta \texttt{SIMILAR\_TO} sobre la tabla seleccionada. El archivo se muestra junto a los resultados, y en la tabla \texttt{canciones} cada resultado trae un reproductor en lugar de una miniatura.
+  \item \emph{k vecinos espaciales.} En el mapa, una consulta \texttt{ORDER BY distancia(lugar, POINT(...)) LIMIT k} dibuja el punto de consulta, numera los vecinos según su posición en el ranking y traza una línea desde el centro hasta cada uno.
+  \item \emph{Plan de ejecución.} El grafo del plan muestra con nombres legibles los nodos nuevos de las Partes 3 y 4 (búsqueda de texto, k-NN de vectores y vecinos con índice de FAISS), junto con el índice y la métrica que usó cada uno.
+\end{itemize}
+
+Las pruebas de Playwright de \texttt{web/tests/resultados.spec.ts} cubren el score y el resaltado con una respuesta simulada y con un \texttt{MATCH} real sobre \texttt{productos\_1k}, la galería de un k-NN de vectores y los ejemplos de texto, espacio y vectores del editor.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
@@ -637,7 +728,94 @@ GiST resultó unas 10 veces más rápido que el R-Tree del motor en todas las co
 
 \subsection{Parte 3: TF-IDF, BM25 y GIN}
 
-\pendiente{Dayane. Construcción, espacio, tiempo de consulta, Precision@10 y Recall@10, con las gráficas y la tabla de ventajas. Fuente: \texttt{docs/comparacion\_texto/README.md}.}
+Se comparó el índice invertido SPIMI del motor, con ranking TF-IDF (coseno lnc.ltc) y BM25 ($k_1 = 1{,}2$, $b = 0{,}75$), contra el índice GIN de PostgreSQL 18 con \texttt{ts\_rank}, sobre la columna \texttt{descripcion} de los productos de ABO.
+
+\paragraph{Metodología.} El programa \texttt{motor/pruebas/texto\_bench.cpp} (\texttt{make bench-texto}) construye el índice SPIMI con bloques de 4 MB y mezcla k-way, lo vuelve a abrir desde disco y consulta directamente el índice, sin la capa SQL. En PostgreSQL, \texttt{datos/resultados/gin\_bench.sql} crea una columna \texttt{tsvector} generada con \texttt{to\_tsvector('english', descripcion)}, el índice GIN, y consulta con \texttt{@@} y \texttt{ts\_rank} dentro de un bloque PL/pgSQL. Se usan 30 consultas fijas, 10 de cada largo (1, 3 y 5 o más palabras), iguales en los dos lados. Cada una se repite 5 veces después de una pasada de calentamiento y se reporta el promedio. TF-IDF y BM25 rankean todo documento que tenga al menos una palabra de la consulta, así que en GIN la consulta de \texttt{plainto\_tsquery}, que une las palabras con AND, se convierte a OR para responder lo mismo.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrrr}
+\toprule
+& \multicolumn{3}{c}{Construcción} & \multicolumn{2}{c}{Tamaño} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-6}
+$n$ & SPIMI & GIN & GIN: carga + \texttt{tsvector} & SPIMI & GIN \\
+\midrule
+1\,000 & 99 ms & 21 ms & 68 ms & 0,5 MB & 0,4 MB \\
+10\,000 & 0,81 s & 0,16 s & 0,73 s & 4,9 MB & 2,1 MB \\
+100\,000 & 8,2 s & 1,23 s & 7,7 s & 48,3 MB & 15,2 MB \\
+\bottomrule
+\end{tabular}
+\caption{Construcción y espacio del índice de texto.}
+\end{table}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/texto_construccion.png}
+\caption{Tiempo de construcción del índice de texto.}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/texto_tamano.png}
+\caption{Tamaño del índice de texto.}
+\end{figure}
+
+Los dos índices crecen de forma lineal con $n$. GIN construye casi 7 veces más rápido, pero porque el \texttt{tsvector} ya está calculado: la tokenización y el stemming se pagan al cargar la tabla, y sumando carga e índice PostgreSQL tarda casi lo mismo que SPIMI, que tokeniza durante la construcción. GIN ocupa un tercio porque comprime sus listas de postings (diferencias entre ids con codificación de largo variable) y no guarda la frecuencia, mientras que SPIMI guarda cada posting sin comprimir, con un \texttt{doc\_id} de 8 bytes y un \texttt{tf} de 4 bytes.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Consulta (100\,000 productos) & TF-IDF & BM25 & GIN & Postings leídos por SPIMI \\
+\midrule
+1 palabra & 1,5 ms & 1,8 ms & 2,1 ms & 1\,139 \\
+3 palabras & 4,4 ms & 4,4 ms & 17,3 ms & 15\,723 \\
+5 o más palabras & 7,9 ms & 7,8 ms & 48,8 ms & 38\,138 \\
+\bottomrule
+\end{tabular}
+\caption{Tiempo de consulta del índice de texto con 100\,000 productos.}
+\end{table}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/texto_consulta_palabras.png}
+\caption{Tiempo de consulta según el número de palabras.}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/texto_consulta_tamano.png}
+\caption{Tiempo de consulta según el tamaño de la colección.}
+\end{figure}
+
+TF-IDF y BM25 tardan lo mismo porque leen exactamente los mismos postings y solo cambia la fórmula del score. El tiempo de SPIMI crece con los postings leídos: con 100\,000 productos y 5 palabras recorre 38 mil postings, unas 114 páginas de 4 KB. GIN es parecido con una palabra, pero entre 4 y 6 veces más lento con varias. El índice GIN solo dice qué filas cumplen \texttt{doc @@ q}, y para rankearlas PostgreSQL tiene que leer cada fila candidata y calcular \texttt{ts\_rank} sobre su \texttt{tsvector}; con OR, las candidatas son miles. SPIMI, en cambio, calcula el score desde los postings, que ya traen el \texttt{tf}, y se queda con los 10 mejores en un heap sin tocar la tabla.
+
+\paragraph{Calidad del ranking.} Para medir la relevancia se escribieron a mano 30 consultas, guardadas en \texttt{consultas\_relevancia.csv}. Un producto se considera relevante si tiene el mismo \texttt{tipo} que la consulta y su \texttt{categoria} termina en la misma ruta, por ejemplo \emph{bar stool} con \texttt{STOOL\_SEATING} en \texttt{.../Barstools}. Ninguno de los dos campos está en el texto indexado, así que el juicio no favorece a ninguna técnica. Las tres responden sobre los mismos 10\,000 productos.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Técnica & Precision@10 & Recall@10 \\
+\midrule
+TF-IDF (coseno) & 0,360 & 0,219 \\
+BM25 & 0,507 & 0,301 \\
+GIN (\texttt{ts\_rank}) & \textbf{0,533} & \textbf{0,306} \\
+\bottomrule
+\end{tabular}
+\caption{Calidad del ranking con 30 consultas sobre 10\,000 productos. El Recall@10 máximo posible es 0,611, porque varias consultas tienen más de 10 productos relevantes.}
+\end{table}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/texto_relevancia.png}
+\caption{Precision@10 y Recall@10 de las tres técnicas.}
+\end{figure}
+
+BM25 supera a TF-IDF por 15 puntos de precisión. El coseno favorece los documentos muy cortos: para \emph{table lamp}, TF-IDF pone primero ``Rivet End Tables'', de 16 caracteres, que solo tiene \emph{table}, porque con un vector de norma chica una sola palabra ya da un coseno alto. BM25 satura la frecuencia y normaliza el largo de forma más suave, así que prefiere las lámparas que tienen las dos palabras. GIN y BM25 quedan casi empatados, porque \texttt{ts\_rank} tampoco penaliza mucho el largo y premia tener varias palabras de la consulta. Los valores absolutos son bajos para las tres técnicas porque el juicio por metadatos es estricto: un producto que responde la consulta pero está en otra categoría cuenta como no relevante. Lo que importa es la comparación, que usa los mismos juicios para todas.
+
+En resumen, BM25 es la mejor opción del motor: tarda lo mismo que TF-IDF y su precisión está al nivel de PostgreSQL. Frente a GIN, SPIMI ocupa unas 3 veces más espacio pero responde las consultas de varias palabras entre 4 y 6 veces más rápido. Como en la Parte 2, los tiempos de los dos sistemas no se miden igual (el motor sin la capa SQL y PostgreSQL con la tabla en memoria compartida), y el stemming no es idéntico (Porter en el motor y Snowball en PostgreSQL), así que la comparación más justa es cómo crece cada uno. El detalle está en \texttt{docs/comparacion\_texto/README.md}.
 
 \subsection{Parte 4: comportamiento del HNSW}
 
@@ -685,9 +863,112 @@ Borrado & Recall & Comparados & Tamaño & Recall & Comparados & Tamaño \\
 
 Sin reconstruir, el borrado no ahorra nada: se calculan las mismas 483 distancias y el índice pesa lo mismo, porque el grafo se recorre igual y los nodos muertos solo se saltan al armar el resultado. Con muchos borrados el recall cae, ya que esos nodos ocupan lugares de la lista de candidatos. Con el umbral, el índice vuelve a su tamaño real y el recall se mantiene. Marcar 1\,000 claves cuesta 1,4 ms y reconstruir cuesta lo que construir con los vivos, entre 0,15 y 1,36 s en estas pruebas.
 
-\subsection{Parte 4: IVF, HNSW y k-NN secuencial}
+\subsection{Parte 4: k-NN secuencial, IVF y HNSW}
 
-\pendiente{Noé y Dayane. Comparación con los vectores reales de 100\,000 productos: tiempo, Recall@10, construcción, memoria, euclidiana frente a coseno, galería de éxitos y errores y recomendaciones. Fuente: \texttt{docs/comparacion\_vectorial/README.md}.}
+Se comparó el k-NN secuencial del motor (\texttt{ORDER BY distancia(v, VECTOR(...)) LIMIT 10}) con los índices IVF y HNSW de FAISS y con el índice plano exacto de FAISS, con las métricas euclidiana y coseno.
+
+\paragraph{Metodología.} Los vectores son los histogramas TF-IDF de 256 palabras visuales de las fotos de los productos, con norma 1. Se extraen una vez para los 100\,000 productos y se usan los primeros 1\,000 y 10\,000. Las consultas son 50 vectores de la colección con un ruido gaussiano pequeño ($\sigma = 0{,}01$), para medir una búsqueda de vecinos y no solo que cada vector se encuentre a sí mismo, siempre con $k = 10$. La respuesta correcta la da el índice plano de FAISS, que compara contra todos los vectores. Para el motor, \texttt{api/multimedia/bench\_vectorial.py --motor} carga los vectores con \texttt{COPY} en una tabla \texttt{HEAP} y ejecuta cada consulta como un \texttt{SELECT}, tomando el tiempo que informa el motor sin contar el arranque del proceso. El IVF usa $\texttt{nlist} \approx \sqrt{n}$ y \texttt{nprobe} de 1 a \texttt{nlist}; el HNSW usa $M = 32$, \texttt{ef\_construccion} = 100 y \texttt{ef\_busqueda} de 16 a 256. FAISS corre con un solo hilo.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{Coseno} & \multicolumn{2}{c}{Euclidiana} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+Técnica (100\,000 vectores) & Tiempo & Recall@10 & Tiempo & Recall@10 \\
+\midrule
+k-NN secuencial del motor & 488 ms & 0,996 & 460 ms & 0,994 \\
+Plano exacto de FAISS & 3,72 ms & 1,000 & 4,41 ms & 1,000 \\
+IVF, \texttt{nprobe} = 8 & 0,58 ms & 0,934 & 0,60 ms & 0,952 \\
+IVF, \texttt{nprobe} = 32 & 3,07 ms & 0,986 & 2,03 ms & 1,000 \\
+HNSW, \texttt{ef\_busqueda} = 64 & 0,42 ms & 0,978 & 0,39 ms & 0,886 \\
+HNSW, \texttt{ef\_busqueda} = 256 & 1,16 ms & 0,984 & 1,74 ms & 0,944 \\
+\bottomrule
+\end{tabular}
+\caption{Tiempo de consulta y recall con 100\,000 vectores.}
+\end{table}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/vectorial_consulta_coseno.png}
+\caption{Tiempo de consulta según el tamaño de la colección, métrica coseno.}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/vectorial_consulta_euclidiana.png}
+\caption{Tiempo de consulta según el tamaño de la colección, métrica euclidiana.}
+\end{figure}
+
+El k-NN secuencial crece de forma lineal con $n$ (6,6, 66 y 488 ms): lee las 33\,334 páginas de la tabla, con 3 vectores de 1 KB por página, y calcula 100\,000 distancias. El índice plano de FAISS hace las mismas cuentas, pero en memoria y con instrucciones vectoriales, y es unas 130 veces más rápido; la diferencia es el costo de leer del disco y deserializar cada registro. IVF y HNSW casi no crecen: de 1k a 100k, el IVF pasa de 0,09 a 0,58 ms y el HNSW de 0,17 a 0,42 ms, porque solo revisan una parte de los vectores. Con 100\,000 vectores, el HNSW es unas 1\,000 veces más rápido que el recorrido del motor. Con 1\,000 vectores, en cambio, el plano es el más rápido (0,02 ms), porque con tan pocos datos recorrerlos todos cuesta menos que consultar un índice.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/vectorial_recall_tiempo_coseno.png}
+\caption{Recall@10 contra tiempo de consulta con 100\,000 vectores, métrica coseno.}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/vectorial_recall_tiempo_euclidiana.png}
+\caption{Recall@10 contra tiempo de consulta con 100\,000 vectores, métrica euclidiana.}
+\end{figure}
+
+Las curvas de recall contra tiempo muestran cómo cambia cada índice al mover su parámetro. El IVF cambia recall por tiempo de forma predecible: con coseno pasa de 0,73 con $\texttt{nprobe} = 1$ (0,20 ms) a 0,93 con 8 (0,58 ms) y 0,99 con 32 (3 ms); más allá ya cuesta lo mismo que el plano. El HNSW llega antes a un recall alto, 0,92 en 0,22 ms con $\texttt{ef\_busqueda} = 16$, pero se estanca: subir a 256 lo deja en 0,98 y multiplica el tiempo por 5. Para el mismo tiempo, el HNSW gana con coseno y el IVF gana con euclidiana, donde llega a 1,0 con $\texttt{nprobe} = 32$ mientras el HNSW se queda entre 0,89 y 0,94.
+
+\paragraph{Euclidiana frente a coseno.} Como los histogramas tienen norma 1, se cumple $\| a-b\|^2 = 2 - 2\cos(a,b)$, y las dos métricas ordenan los vecinos igual. Por eso el plano, el motor y el IVF dan casi el mismo recall con ambas. La diferencia aparece en el HNSW, cuyo grafo se construye con la métrica del índice. Una explicación probable, que no se midió aparte, es que con la euclidiana al cuadrado las distancias entre vectores de norma 1 caen en un rango muy chico, quedan más vecinos casi empatados y la búsqueda voraz se detiene antes. Se recomienda el coseno: compara la proporción de palabras visuales y no su cantidad, rinde mejor con el HNSW y sigue siendo correcto si algún vector llega sin normalizar.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrrr}
+\toprule
+$n$ & IVF: construcción & HNSW: construcción & Plano & IVF & HNSW \\
+\midrule
+1\,000 & 10 ms & 98 ms & 1,0 MB & 1,0 MB & 1,2 MB \\
+10\,000 & 0,12 s & 0,62 s & 9,8 MB & 9,9 MB & 12,4 MB \\
+100\,000 & 1,8 s & 13,5 s & 97,7 MB & 98,7 MB & 124,4 MB \\
+\bottomrule
+\end{tabular}
+\caption{Construcción y tamaño de los índices vectoriales con la métrica coseno. El k-NN secuencial no construye nada.}
+\end{table}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/vectorial_construccion.png}
+\caption{Tiempo de construcción de los índices vectoriales.}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{img/vectorial_tamano.png}
+\caption{Tamaño de los índices vectoriales.}
+\end{figure}
+
+El IVF construye unas 7 veces más rápido que el HNSW, porque su costo es entrenar el k-means y asignar cada vector a una lista, mientras que el HNSW inserta los vectores de a uno buscando en el grafo los $M$ vecinos de cada uno. Ninguno de los dos ahorra espacio, porque ambos guardan los vectores completos: el IVF agrega solo los ids y los centroides (1\,\%) y el HNSW agrega los enlaces del grafo (27\,\%).
+
+\paragraph{Éxitos y errores.} Las figuras siguientes muestran la consulta y sus 5 vecinos más cercanos por coseno sobre los 100\,000 productos. El borde verde indica que el vecino es del mismo \texttt{tipo} que la consulta y el rojo que es de otro. Se considera éxito cuando al menos 4 de los 5 vecinos son del mismo tipo, y error cuando no lo es ninguno. El dataset guarda solo la foto principal de cada producto, así que el criterio usa el \texttt{tipo} y no otras fotos del mismo producto.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{img/galeria_exito_1.png}\\[0.4em]
+\includegraphics[width=\textwidth]{img/galeria_exito_2.png}\\[0.4em]
+\includegraphics[width=\textwidth]{img/galeria_exito_3.png}
+\caption{Tres éxitos: la consulta (izquierda) y sus 5 vecinos más cercanos.}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{img/galeria_error_1.png}\\[0.4em]
+\includegraphics[width=\textwidth]{img/galeria_error_2.png}\\[0.4em]
+\includegraphics[width=\textwidth]{img/galeria_error_3.png}
+\caption{Tres errores: ninguno de los 5 vecinos es del mismo tipo que la consulta.}
+\end{figure}
+
+Los éxitos son imágenes con mucha textura y un diseño repetido. En el primero, una funda con un guacamayo devuelve el mismo diseño para otros 5 modelos de celular, que es el caso de ``otra foto del mismo producto''. Los errores son objetos lisos o blancos, como una funda transparente que devuelve faldones de cama: SIFT encuentra pocos puntos clave en superficies sin textura, y la bolsa de palabras visuales no sabe de forma ni de color, así que las imágenes se parecen por el fondo blanco.
+
+\paragraph{Limitaciones.} Los 15\,571 productos que comparten foto tienen vectores idénticos. Cuando dos vecinos empatan en el puesto 10, cada técnica desempata distinto, y por eso el motor da un recall de 0,994 a 0,996 y no de 1, aunque su búsqueda es exacta. Además, los tiempos del motor incluyen leer del disco y los de FAISS no, así que la comparación justa entre ambos es cómo crece cada uno con $n$. El detalle está en \texttt{docs/comparacion\_vectorial/README.md}.
 
 \subsection{Cuándo usar cada técnica}
 
@@ -704,13 +985,16 @@ B+ agrupado & se consulta por rango o se lista ordenado por la clave primaria & 
 B+ no agrupado & se necesita un índice secundario con repetidos, por igualdad o rango & una lectura del heap por cada fila devuelta \\
 Hash extensible & solo hay búsquedas por igualdad & no sirve para rangos ni para ordenar \\
 R-Tree & se busca por distancia a un punto o dentro de un polígono, con pocas filas en el resultado & radios que devuelven gran parte de la tabla \\
-HNSW & búsqueda interactiva por similitud sobre vectores que caben en memoria & construcción lenta; más memoria; no borra de verdad \\
+SPIMI + TF-IDF & los textos tienen un largo parecido & premia los textos muy cortos; el índice ocupa unas 3 veces más que GIN \\
+SPIMI + BM25 & se rankea texto de propósito general; es la mejor opción del motor & mismo espacio que TF-IDF; \texttt{INSERT} y \texttt{DELETE} obligan a reconstruir \\
+GIN (PostgreSQL) & se filtra con AND o la tabla cambia seguido & lento para rankear consultas OR largas \\
+k-NN secuencial & la tabla es chica o la consulta lleva otros filtros en el \texttt{WHERE} & lee toda la tabla: unos 0,5 s con 100\,000 vectores \\
+IVF & la colección es grande y se reconstruye seguido, o se quiere controlar el recall con \texttt{nprobe} & con \texttt{nprobe} chico pierde vecinos en los bordes de las celdas \\
+HNSW & búsqueda interactiva con coseno sobre datos que caben en memoria & construcción 7 veces más lenta y 27\,\% más de memoria \\
 \bottomrule
 \end{tabular}
 \caption{Resumen de ventajas y desventajas.}
 \end{table}
-
-\pendiente{Agregar a la tabla SPIMI con TF-IDF y BM25, IVF y k-NN secuencial cuando estén sus comparaciones.}
 
 %-------------------------------------------------------------------------------
 \section{Conclusiones y límites conocidos}
@@ -722,7 +1006,7 @@ La Parte 1 está completa, con tres límites. El motor no implementa \texttt{JOI
 
 De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. El repositorio ya incluye \texttt{postgis\_bench.sql}, que repite la comparación con PostGIS sobre \texttt{geography} y distancia geodésica; como trabajo futuro queda ejecutarlo y comparar esos tiempos con la métrica haversine del motor.
 
-\pendiente{Noé y Dayane. Conclusión de la búsqueda de texto y de la comparación con GIN.}
+En las Partes 3 y 4 se repitió la misma lección con otros tipos de datos. En texto, el índice invertido del motor responde las consultas largas más rápido que GIN porque el score sale del propio índice, sin leer la tabla, y BM25 resultó claramente mejor que TF-IDF a igual costo. En vectores, los índices aproximados son entre 100 y 1\,000 veces más rápidos que el recorrido secuencial con 100\,000 vectores, a cambio de perder algunos vecinos; el IVF permite controlar esa pérdida con \texttt{nprobe} y el HNSW da mejor recall con coseno. La galería de errores mostró además el límite de la representación: con SIFT y bolsa de palabras visuales, dos objetos lisos sobre fondo blanco se parecen aunque sean de tipos distintos.
 
 De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el trabajo más delicado no fue el índice, sino mantenerlo coherente con una tabla que vive en otro proceso. El archivo de cambios y la cláusula \texttt{CANDIDATES} permitieron que el motor siga siendo la única fuente de verdad, que FAISS solo vea lo confirmado y que cada proceso haga lo que ya sabe hacer. El HNSW también mostró un costo que no aparece en la teoría de la búsqueda: un grafo no se puede borrar de forma directa, y el borrado lógico solo es sano si después se reconstruye. Como límites conocidos, una búsqueda con \texttt{USING} y filtros puede devolver menos de $k$ filas, y dentro de una transacción esa búsqueda no ve los cambios de la propia transacción.
 
@@ -736,8 +1020,13 @@ De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el tra
   \item Lowe, D. G. Distinctive image features from scale-invariant keypoints. \emph{International Journal of Computer Vision}, 60(2), 2004.
   \item Malkov, Y. A. y Yashunin, D. A. Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs. \emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 42(4), 2020.
   \item Pugh, W. Skip lists: a probabilistic alternative to balanced trees. \emph{Communications of the ACM}, 33(6), 1990.
-  \item Sivic, J. y Zisserman, A. Video Google: a text retrieval approach to object matching in videos. \emph{Proceedings of ICCV}, 2003.
-  \item Wiki de FAISS. \url{https://github.com/facebookresearch/faiss/wiki}
+  \item Sivic, J. y Zisserman, A. Video Google: A Text Retrieval Approach to Object Matching in Videos. \emph{Proceedings of ICCV}, 2003.
+  \item Documentación de FAISS. \url{https://github.com/facebookresearch/faiss/wiki}
+  \item Collins, J. et al. ABO: Dataset and Benchmarks for Real-World 3D Object Understanding. \emph{Proceedings of CVPR}, 2022. \url{https://amazon-berkeley-objects.s3.amazonaws.com/index.html}
+  \item Robertson, S. y Zaragoza, H. The Probabilistic Relevance Framework: BM25 and Beyond. \emph{Foundations and Trends in Information Retrieval}, 3(4), 2009.
+  \item Jégou, H., Douze, M. y Schmid, C. Product Quantization for Nearest Neighbor Search. \emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 33(1), 2011.
+  \item Porter, M. F. An algorithm for suffix stripping. \emph{Program}, 14(3), 1980.
+  \item Tzanetakis, G. y Cook, P. Musical genre classification of audio signals. \emph{IEEE Transactions on Speech and Audio Processing}, 10(5), 2002.
 \end{enumerate}
 
 \end{document}
