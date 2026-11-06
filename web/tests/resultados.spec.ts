@@ -142,6 +142,40 @@ test("MATCH real sobre productos_1k con Text Scan en el plan", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
+test("subir un archivo arma SIMILAR_TO y lo muestra con los resultados", async ({ page }) => {
+  await page.goto("/");
+  await page.route("**/api/multimedia/subir*", (route) =>
+    route.fulfill({ json: { archivo: "0123456789abcdef.mp3", consulta: "" } }),
+  );
+  await page
+    .getByLabel("Archivo de consulta")
+    .setInputFiles({ name: "cancion.mp3", mimeType: "audio/mpeg", buffer: Buffer.from("x") });
+  const editor = page.getByRole("textbox", { name: "Editor SQL" });
+  await expect(editor).toHaveValue(/SIMILAR_TO\('0123456789abcdef\.mp3', k=10\)/);
+
+  await answer(page, {
+    ok: true,
+    tipo: "select",
+    mensaje: "1 fila",
+    tiempo_ms: 1,
+    columnas: ["id", "score"],
+    filas: [[7, 0.98]],
+    plan: [{ operacion: "knn_vectorial", nodo: "Seq Vector Scan", nivel: 0 }],
+  });
+  await execute(page, "SELECT id, SIMILARITY_SCORE() FROM canciones WHERE SIMILAR_TO('0123456789abcdef.mp3', k=1);");
+  await expect(page.getByText("Archivo de consulta")).toBeVisible();
+  await expect(page.locator('.gallery-query audio[src$="0123456789abcdef.mp3"]')).toBeVisible();
+  await expect(page.getByRole("note")).toContainText("k = 1");
+});
+
+test("un archivo que la API rechaza muestra el error", async ({ page }) => {
+  await page.goto("/");
+  await page
+    .getByLabel("Archivo de consulta")
+    .setInputFiles({ name: "notas.txt", mimeType: "text/plain", buffer: Buffer.from("hola") });
+  await expect(page.getByText(/extension no admitida/)).toBeVisible();
+});
+
 test("ejemplos y sintaxis de texto, espacial y vectores", async ({ page }) => {
   await page.goto("/");
   const ejemplos = page.getByLabel("Ejemplos SQL");

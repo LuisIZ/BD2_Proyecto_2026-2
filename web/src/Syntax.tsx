@@ -5,6 +5,8 @@ CREATE TABLE t (id INT PRIMARY KEY, precio FLOAT, lugar POINT, v VECTOR(256));
 CREATE INDEX i ON t (col) USING BPLUS;
 CREATE INDEX i ON t (texto) USING SPIMI;   -- índice invertido para MATCH, solo VARCHAR
 CREATE INDEX i ON t (lugar) USING RTREE;   -- índice espacial para POINT
+CREATE INDEX i ON t (v) USING HNSW [WITH (M = 32, ef_busqueda = 64)];   -- FAISS, solo VECTOR
+CREATE INDEX i ON t (v) USING IVF [WITH (nlist = 100, nprobe = 8)];     -- FAISS, solo VECTOR
 COPY t FROM FILE 'datos/organizations-1000.csv';   -- carga en una tabla ya creada
 DROP TABLE t;
 
@@ -24,6 +26,11 @@ SELECT * FROM t WHERE dentro(lugar, POLYGON((lat lon, lat lon, lat lon, ...)));
 SELECT * FROM t ORDER BY distancia(v, VECTOR(x1, ..., x256)
   [, 'euclidiana' | 'producto_punto' | 'coseno']) LIMIT k;
 SELECT * FROM t WHERE distancia(v, VECTOR(...), 'coseno') < 0.3;
+
+SELECT id, SIMILARITY_SCORE() FROM t
+  WHERE SIMILAR_TO([v,] 'foto.jpg' | 'cancion.mp3' | VECTOR(...) [, k = 10]) [AND col < v]
+  [USING IVF | HNSW] [WITH METRIC = cosine | euclidean | inner_product]
+  [ORDER BY score DESC] [LIMIT n];
 
 INSERT INTO t VALUES (v1, v2, ...);
 DELETE FROM t [WHERE ...];
