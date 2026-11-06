@@ -30,7 +30,8 @@ SELECT id, nombre, tipo, categoria, imagen FROM productos LIMIT 5;
 CREATE INDEX productos_desc ON productos (descripcion) USING SPIMI;
 -- espera: ok
 
--- [4] TF-IDF (coseno) premia los textos cortos: "Rivet End Tables" sale primero y solo dice "table"
+-- [4] TF-IDF (coseno) premia los textos cortos: despues de "White Table Lamp" salen mesas
+--     ("Rivet End Tables", "Coffee Table") que solo dicen "table"
 SELECT id, nombre, SCORE() AS relevancia FROM productos
 WHERE MATCH(descripcion, 'table lamp') USING TF_IDF ORDER BY relevancia DESC LIMIT 5;
 -- espera: contiene "Rivet End Tables"
@@ -58,8 +59,9 @@ WHERE MATCH(descripcion, 'running shoes') AND tipo = 'SHOES' USING BM25 ORDER BY
 
 -- ===================== PARTE 4: IMAGENES E IVF =====================
 
--- [9] los mismos productos con el vector de su foto: SIFT -> 256 palabras visuales -> TF-IDF
-CREATE TABLE fotos (id INT PRIMARY KEY, nombre VARCHAR(200), tipo VARCHAR(50), v VECTOR(256));
+-- [9] los mismos productos con el vector de su foto: SIFT -> 256 palabras visuales -> TF-IDF.
+--     BPLUS para que, con el indice, las filas que devuelve FAISS se lean por clave y no recorriendo la tabla
+CREATE TABLE fotos (id INT PRIMARY KEY, nombre VARCHAR(200), tipo VARCHAR(50), v VECTOR(256)) USING BPLUS;
 COPY fotos FROM FILE 'datos/productos/demo_10k.csv';
 SELECT COUNT(*) FROM fotos;
 -- espera: ids 10000
@@ -70,7 +72,7 @@ SELECT id, nombre, tipo, SIMILARITY_SCORE() AS score FROM fotos
 WHERE SIMILAR_TO('4d/4dcbf99d.jpg', k=6);
 -- espera: ids 5, 8406, 5423, 2142, 7633, 3232
 
--- [11] el plan: Seq Vector Scan lee toda la tabla (3 vectores por pagina)
+-- [11] el plan: Seq Vector Scan lee toda la tabla (unas 5 000 paginas) y compara los 10 000 vectores
 EXPLAIN ANALYZE SELECT id FROM fotos WHERE SIMILAR_TO('4d/4dcbf99d.jpg', k=6);
 -- espera: contiene "Seq Vector Scan on fotos"
 
@@ -83,7 +85,7 @@ SELECT id, nombre, tipo, SIMILARITY_SCORE() AS score FROM fotos
 WHERE SIMILAR_TO('4d/4dcbf99d.jpg', k=6) USING IVF;
 -- espera: igual 10
 
--- [14] el plan con IVF: comparar el tiempo con el bloque 11
+-- [14] el plan con IVF: comparar el tiempo y las paginas del nodo con el bloque 11 (unas 14 paginas)
 EXPLAIN ANALYZE SELECT id FROM fotos WHERE SIMILAR_TO('4d/4dcbf99d.jpg', k=6) USING IVF;
 -- espera: contiene "Vector Scan using fotos_ivf on fotos (IVF, coseno, nprobe=8)"
 
