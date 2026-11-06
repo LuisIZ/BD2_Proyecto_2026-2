@@ -2,7 +2,10 @@ import { useState } from "react";
 import type { Cell, Result } from "./types";
 import PlanGraph, { stepPages } from "./PlanGraph";
 import { highlight, parseTextSearch } from "./textSearch";
-import Gallery, { galleryColumns, parseSimilarSearch } from "./Gallery";
+import Gallery, { Thumbnail, galleryColumns, parseSimilarSearch } from "./Gallery";
+
+/** Tablas del dataset de productos (ABO): su id es el del producto y tiene foto. */
+const PRODUCT_TABLES = ["productos", "fotos"];
 
 function Highlighted({ text, stems }: { text: string; stems: string[] }) {
   return (
@@ -47,6 +50,18 @@ export function Results({
   const canShowGallery =
     !!similar && rows.length > 0 && galleryColumns(columns, rows, similar).id >= 0;
   const showGallery = canShowGallery && layout === "galeria";
+  // en la tabla, la celda del id puede llevar la foto del producto
+  // lo que eligió el usuario vale solo para esa consulta; la siguiente vuelve al valor por omisión
+  const [choice, setChoice] = useState<{ sql: string; on: boolean }>();
+  const imagesChoice = choice?.sql === sql ? choice.on : undefined;
+  const idIndex = columns.findIndex((col) => col.toLowerCase() === "id");
+  const fromTable = /\bFROM\s+(\w+)/i.exec(sql)?.[1].toLowerCase() ?? "";
+  const canShowImages = !!result?.ok && idIndex >= 0 && rows.length > 0 && !showGallery;
+  const showImages =
+    canShowImages &&
+    (imagesChoice ??
+      (PRODUCT_TABLES.includes(fromTable) ||
+        columns.some((col) => col.toLowerCase() === "imagen")));
 
   function download() {
     const escape = (value: unknown) =>
@@ -84,6 +99,17 @@ export function Results({
                   {item === "galeria" ? "Galería" : "Tabla"}
                 </button>
               ))}
+            </div>
+          )}
+          {canShowImages && (
+            <div className="segmented">
+              <button
+                aria-pressed={showImages}
+                title="Mostrar la foto del producto junto a su id"
+                onClick={() => setChoice({ sql, on: !showImages })}
+              >
+                Imágenes
+              </button>
             </div>
           )}
           <button onClick={download} disabled={!rows.length || busy}>
@@ -205,6 +231,11 @@ export function Results({
                                   maximumFractionDigits: 4,
                                 })}
                               </span>
+                            </td>
+                          ) : j === idIndex && showImages ? (
+                            <td key={j} className="id-image">
+                              <Thumbnail id={cell} alt={`Producto ${cell}`} />
+                              <span>{cell ?? "NULL"}</span>
                             </td>
                           ) : (
                             <td

@@ -71,7 +71,8 @@ export function galleryColumns(
   return { id, name, score };
 }
 
-function Thumbnail({ id, alt }: { id: Cell; alt: string }) {
+/** Foto del producto con ese id (/api/imagenes/{id}); si no hay, un recuadro "sin imagen". */
+export function Thumbnail({ id, alt }: { id: Cell; alt: string }) {
   const [failed, setFailed] = useState(false);
   return failed ? (
     <div className="gallery-missing" role="img" aria-label={`Sin imagen: ${alt}`}>
