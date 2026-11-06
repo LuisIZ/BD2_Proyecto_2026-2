@@ -432,7 +432,7 @@ SELECT id, nombre, SIMILARITY_SCORE() FROM productos
 WHERE SIMILAR_TO(VECTOR(0.01, ...), k=3) USING HNSW CANDIDATES (812, 45, 3301)
 \end{lstlisting}
 
-El motor lee esas filas, recalcula la distancia exacta y responde, de modo que una misma fila tiene el mismo score con o sin índice. Lo que la API no puede resolver, como una tabla inexistente o una métrica distinta de la del índice, se envía igual al motor para que responda con su propio error. El plan muestra qué se usó, aunque el tiempo de FAISS no entra en \texttt{Execution Time}, porque la búsqueda ocurre antes de llamar al motor; la API lo devuelve aparte.
+El motor lee esas filas, recalcula la distancia exacta y responde, de modo que una misma fila tiene el mismo score con o sin índice. Lo que la API no puede resolver, como una tabla inexistente o una métrica distinta de la del índice, se envía igual al motor para que responda con su propio error. Esto hace que la organización de la tabla importe: con 100\,000 vectores y $k = 5$, FAISS responde en cerca de 1 ms, pero en un heap sin índice sobre la clave el motor recorre toda la tabla para leer los candidatos y tarda 768 ms, mientras que en una tabla B+ agrupada los busca por clave y tarda 8 ms. El plan muestra qué se usó, aunque el tiempo de FAISS no entra en \texttt{Execution Time}, porque la búsqueda ocurre antes de llamar al motor; la API lo devuelve aparte.
 
 \begin{lstlisting}
 Projection on img (actual rows=2)
@@ -449,11 +449,11 @@ Después de cada lote que escribe, y antes de cada búsqueda, la API aplica los 
 
 \paragraph{Filtros adicionales.} En una consulta como \texttt{SIMILAR\_TO('zapato.jpg', k=10) AND precio < 50 USING HNSW}, FAISS no conoce el precio: devuelve los 10 más parecidos y el motor filtra después. Si solo 4 cumplen la condición, la respuesta tiene 4 filas, aunque existan otros productos baratos un poco menos parecidos. Sin \texttt{USING} esto no ocurre, porque el motor filtra primero y elige los $k$ entre los que pasan. pgvector tiene el mismo comportamiento con sus índices, y se decidió dejarlo así y documentarlo: para un resultado exacto con filtros basta con quitar \texttt{USING}.
 
-\paragraph{Imagen de consulta.} En \texttt{SIMILAR\_TO('foto.jpg')}, la API busca el archivo entre las imágenes subidas y las del dataset, sin salir de esas carpetas, y le aplica \texttt{extract\_features} con el mismo vocabulario e IDF de los productos. Así el vector de consulta es comparable con los de la tabla. El archivo se reemplaza por el literal \texttt{VECTOR(...)} antes de llegar al motor.
+\paragraph{Archivo de consulta.} En \texttt{SIMILAR\_TO('foto.jpg')} o \texttt{SIMILAR\_TO('audio\_query.mp3')}, la extensión indica si se trata de una imagen o de un audio. La API busca el archivo entre los subidos y los del dataset, sin salir de esas carpetas, y le aplica la extracción con el mismo vocabulario e IDF de la colección. Así el vector de consulta es comparable con los de la tabla. El archivo se reemplaza por el literal \texttt{VECTOR(...)} antes de llegar al motor. Si el vector queda en cero, como en una imagen sin puntos clave, la API responde con un error, porque todas las filas estarían a la misma distancia y el resultado sería arbitrario.
 
 \subsection{Estado de la Parte 4}
 
-Están terminados la extracción de imágenes y de audio, los tipos \texttt{FLOAT} y \texttt{VECTOR}, las tres métricas, el k-NN secuencial, los índices IVF y HNSW con inserción y borrado, y la extensión SQL. Quedan dos límites. \texttt{SIMILAR\_TO} acepta archivos de imagen pero todavía no de audio, así que el audio se consulta con el literal \texttt{VECTOR(...)}. Además, la API ya recibe imágenes subidas, pero la interfaz aún no ofrece esa opción.
+Están terminados la extracción de imágenes y de audio, los tipos \texttt{FLOAT} y \texttt{VECTOR}, las tres métricas, el k-NN secuencial, los índices IVF y HNSW con inserción y borrado, y la extensión SQL, que acepta archivos de imagen y de audio, subidos desde la interfaz o tomados del dataset.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
@@ -724,7 +724,7 @@ De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de dis
 
 \pendiente{Noé y Dayane. Conclusión de la búsqueda de texto y de la comparación con GIN.}
 
-De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el trabajo más delicado no fue el índice, sino mantenerlo coherente con una tabla que vive en otro proceso. El archivo de cambios y la cláusula \texttt{CANDIDATES} permitieron que el motor siga siendo la única fuente de verdad, que FAISS solo vea lo confirmado y que cada proceso haga lo que ya sabe hacer. El HNSW también mostró un costo que no aparece en la teoría de la búsqueda: un grafo no se puede borrar de forma directa, y el borrado lógico solo es sano si después se reconstruye. Como límites conocidos, \texttt{SIMILAR\_TO} todavía no acepta archivos de audio, la interfaz no permite subir la imagen de consulta, una búsqueda con \texttt{USING} y filtros puede devolver menos de $k$ filas, y dentro de una transacción esa búsqueda no ve los cambios de la propia transacción.
+De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el trabajo más delicado no fue el índice, sino mantenerlo coherente con una tabla que vive en otro proceso. El archivo de cambios y la cláusula \texttt{CANDIDATES} permitieron que el motor siga siendo la única fuente de verdad, que FAISS solo vea lo confirmado y que cada proceso haga lo que ya sabe hacer. El HNSW también mostró un costo que no aparece en la teoría de la búsqueda: un grafo no se puede borrar de forma directa, y el borrado lógico solo es sano si después se reconstruye. Como límites conocidos, una búsqueda con \texttt{USING} y filtros puede devolver menos de $k$ filas, y dentro de una transacción esa búsqueda no ve los cambios de la propia transacción.
 
 \section*{Referencias}
 \begin{enumerate}

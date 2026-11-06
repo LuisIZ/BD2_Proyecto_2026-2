@@ -148,7 +148,9 @@ WHERE SIMILAR_TO('ab/abdc8684.jpg', k=10) USING HNSW WITH METRIC=cosine ORDER BY
 
 Si el resultado trae la columna `id`, Resultados muestra una **Galería** con la imagen de cada producto y su score, y se puede cambiar a **Tabla**. Si la tabla es `canciones`, cada resultado trae un reproductor de audio en lugar de la imagen.
 
-Las imágenes y los audios no están en el repositorio. La galería necesita `C:\datos_bd2\imagenes` y el reproductor `C:\datos_bd2\audio\genres_original`, y las consultas con un archivo de imagen necesitan `datos/productos/vocabulario_256.npy` e `idf_256.npy` (ver el [README](../README.md#datos-que-no-están-en-el-repositorio)). La interfaz todavía no permite subir una imagen; la consulta usa una imagen del dataset o el literal `VECTOR(...)`. Un archivo de audio tampoco se acepta en `SIMILAR_TO`: el audio se busca con `VECTOR(...)`.
+Las imágenes y los audios no están en el repositorio. La galería necesita `C:\datos_bd2\imagenes` y el reproductor `C:\datos_bd2\audio\genres_original`, y las consultas con un archivo necesitan el vocabulario y el IDF: `datos/productos/vocabulario_256.npy` e `idf_256.npy` para imágenes, y `datos/audio/vocabulario_audio_256.npy` e `idf_audio_256.npy` para audio (ver el [README](../README.md#datos-que-no-están-en-el-repositorio)). La extensión decide cómo se lee el archivo: `SIMILAR_TO('blues/blues.00000.wav', k=5)` busca canciones parecidas a ese audio.
+
+Para consultar con un archivo propio, selecciona la tabla y pulsa **Subir archivo**, en el panel Consulta SQL. El editor queda con la consulta `SIMILAR_TO` lista, con `USING` si la tabla tiene un índice IVF o HNSW, y Resultados muestra el archivo junto a la galería. Se aceptan imágenes `jpg`, `jpeg`, `png`, `webp` y `bmp` de hasta 10 MB, y audios `wav`, `mp3`, `flac` y `ogg` de hasta 50 MB.
 
 ## 11. Problemas frecuentes
 

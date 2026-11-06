@@ -86,11 +86,10 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 | Métricas euclidiana, producto punto y coseno; k-NN secuencial en el motor | listo |
 | Índices IVF y HNSW de FAISS, con inserción y borrado | listo ([ivf](docs/ivf.md), [hnsw](docs/hnsw.md)) |
 | SQL: `SIMILAR_TO`, `SIMILARITY_SCORE()`, `USING IVF \| HNSW`, `WITH METRIC` | listo ([sql_multimedia](docs/sql_multimedia.md)) |
-| `SIMILAR_TO('foto.jpg')` con una imagen | listo; la API extrae el vector |
-| `SIMILAR_TO('cancion.mp3')` con un archivo de audio | falta; el audio se busca con `VECTOR(...)` |
+| `SIMILAR_TO('foto.jpg')` y `SIMILAR_TO('cancion.mp3')` con un archivo | listo; la API extrae el vector |
 | Comparación IVF vs HNSW y euclidiana vs coseno con 1k, 10k y 100k imágenes | listo ([comparación vectorial](docs/comparacion_vectorial/README.md)) |
 | Galería de imágenes y reproductor de audio en la interfaz | listo |
-| Subir la imagen de consulta desde la interfaz | falta; la API ya tiene `POST /api/multimedia/subir` |
+| Subir la imagen o el audio de consulta desde la interfaz | listo |
 
 Ejemplo de consultas:
 
@@ -220,6 +219,23 @@ cd web && npm install && npm run dev
 
 En Windows: `python`, `.venv\Scripts\pip` y `npm.cmd`.
 
+### Opción 4: Docker
+
+Solo hace falta Docker. Desde la raíz del repositorio:
+
+```bash
+docker compose up --build
+```
+
+Compila el motor, instala las dependencias y abre la interfaz en http://localhost:5173. La
+primera vez tarda varios minutos. La carpeta `datos/` se monta en el contenedor, así que los
+archivos de la tabla de abajo se usan igual. Las imágenes se buscan en `datos/imagenes`; si están
+en otra carpeta, se indica con `BD2_IMAGENES=C:/datos_bd2/imagenes docker compose up`.
+
+La base del motor vive en el volumen `db`. `docker compose down` la conserva y
+`docker compose down -v` la borra. Comparte el puerto 5173 con `motor run`: no se pueden usar a
+la vez.
+
 ### Datos que no están en el repositorio
 
 `datos/productos_1k.csv` y `datos/productos_10k.csv` sí están en el repositorio y alcanzan para
@@ -230,8 +246,10 @@ probar la búsqueda de texto. Lo demás pesa demasiado y se genera o se copia ap
 | `productos_100k.csv` | `datos/` | `bench-texto` con 100k | `tools/dataset/preparar.py` ([dataset](docs/dataset.md)) |
 | `vectores_100000.npy` | `datos/productos/` | `bench-vectorial` | `api/multimedia/extraer.py` ([extracción](docs/extraccion_caracteristicas.md)) |
 | `vocabulario_256.npy` e `idf_256.npy` | `datos/productos/` | `SIMILAR_TO('foto.jpg')` | igual que los vectores |
+| `catalogo_<n>.csv` | `datos/productos/` | tabla con `id`, `nombre` y `v` para `COPY` | `tools/dataset/preparar_catalogo.py --n 10000` |
 | Imágenes de ABO | `C:\datos_bd2\imagenes` (o `BD2_DATOS`) | galería y consultas con imagen | [dataset](docs/dataset.md) |
-| Audios de GTZAN | `C:\datos_bd2\audio\genres_original` | reproductor de audio | [audio](docs/extraccion_audio.md) |
+| Audios de GTZAN | `C:\datos_bd2\audio\genres_original` (o `datos/audio/genres_original` con `BD2_DATOS=datos`) | reproductor y consultas con audio | [audio](docs/extraccion_audio.md) |
+| `vocabulario_audio_256.npy` e `idf_audio_256.npy` | `datos/audio/` | `SIMILAR_TO('cancion.mp3')` | `api/multimedia/extraer_audio.py` ([audio](docs/extraccion_audio.md)) |
 
 ### Pruebas
 
