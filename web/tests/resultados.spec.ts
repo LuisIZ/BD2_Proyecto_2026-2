@@ -57,6 +57,60 @@ test("MATCH muestra el score y resalta los términos", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("la tabla de productos muestra la foto junto al id", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/");
+  await answer(page, {
+    ok: true,
+    tipo: "select",
+    mensaje: "2 filas",
+    tiempo_ms: 1.1,
+    columnas: ["id", "nombre", "relevancia"],
+    filas: [
+      [4125, "Rivet Modern Metal Dome-Shaped Table Lamp", 14.7984],
+      [5466, "Rivet Contemporary Table Desk Lamp", 14.7984],
+    ],
+    plan: [],
+  });
+  await execute(
+    page,
+    "SELECT id, nombre, SCORE() AS relevancia FROM productos WHERE MATCH(descripcion, 'table lamp') USING BM25 ORDER BY relevancia DESC LIMIT 2;",
+  );
+  const images = page.getByRole("button", { name: "Imágenes" });
+  await expect(images).toHaveAttribute("aria-pressed", "true");
+  // la foto la sirve /api/imagenes/{id}; sin el dataset muestra "sin imagen"
+  const first = page.locator("td.id-image").first();
+  await expect(first).toContainText("4125");
+  await expect(
+    first.locator('img[src="/api/imagenes/4125"], [aria-label^="Sin imagen"]'),
+  ).toBeVisible();
+  await images.click();
+  await expect(images).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("td.id-image")).toHaveCount(0);
+  await expect(page.getByRole("cell", { name: "4125", exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("una tabla que no es de productos no muestra fotos hasta pedirlas", async ({ page }) => {
+  await page.goto("/");
+  await answer(page, {
+    ok: true,
+    tipo: "select",
+    mensaje: "1 fila",
+    tiempo_ms: 0.4,
+    columnas: ["id", "nombre"],
+    filas: [[1, "Barranco"]],
+    plan: [],
+  });
+  await execute(page, "SELECT id, nombre FROM tiendas;");
+  await expect(page.getByRole("button", { name: "Imágenes" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(page.locator("td.id-image")).toHaveCount(0);
+});
+
 test("k-NN de vectores muestra la galería de miniaturas", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
