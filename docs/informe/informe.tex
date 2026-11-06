@@ -193,7 +193,7 @@ En el B+ agrupado las hojas del árbol contienen las filas completas, ordenadas 
 
 \subsection{B+ no agrupado}
 
-El B+ no agrupado es un índice secundario: sus hojas guardan pares (clave, RID) que apuntan al Heap File, con 16 bytes por entrada y unas 205 entradas por página. Admite claves repetidas y puede crearse sobre cualquier columna \texttt{INT} con \texttt{CREATE INDEX}. Su costo está en que cada fila encontrada obliga a leer una página del heap, y esas páginas están dispersas.
+El B+ no agrupado es un índice secundario: sus hojas guardan pares (clave, RID) que apuntan al Heap File, con 16 bytes por entrada y unas 205 entradas por página. Admite claves repetidas y puede crearse sobre cualquier columna \texttt{INT} o \texttt{VARCHAR} con \texttt{CREATE INDEX}. Su costo está en que cada fila encontrada obliga a leer una página del heap, y esas páginas están dispersas.
 
 \subsection{Hash extensible en disco}
 
@@ -209,7 +209,7 @@ El hash responde una igualdad con una lectura del directorio y una del bucket, p
 
 \subsection{Parser, planificador y EXPLAIN}
 
-El parser es de descenso recursivo y reconoce \texttt{CREATE TABLE} (con esquema o desde un CSV), \texttt{COPY}, \texttt{CREATE INDEX ... USING BPLUS | HASH}, \texttt{INSERT}, \texttt{DELETE}, \texttt{SELECT} con \texttt{WHERE}, \texttt{GROUP BY}, \texttt{ORDER BY} y \texttt{LIMIT}, \texttt{DROP}, \texttt{SHOW TABLES}, \texttt{DESCRIBE}, \texttt{EXPLAIN [ANALYZE]} y las sentencias de transacción.
+El parser es de descenso recursivo y reconoce \texttt{CREATE TABLE} (con esquema o desde un CSV), \texttt{COPY}, \texttt{CREATE INDEX ... USING BPLUS | HASH | RTREE | SPIMI}, \texttt{INSERT}, \texttt{DELETE}, \texttt{SELECT} con \texttt{WHERE}, \texttt{GROUP BY}, \texttt{ORDER BY} y \texttt{LIMIT}, \texttt{DROP}, \texttt{SHOW TABLES}, \texttt{DESCRIBE}, \texttt{EXPLAIN [ANALYZE]} y las sentencias de transacción.
 
 El planificador elige una sola condición del \texttt{WHERE} que pueda resolverse con una estructura (índice, clave del agrupado o búsqueda binaria del secuencial) y deja el resto para un filtro en memoria. La decisión se toma mirando solo el catálogo, sin leer datos, y por eso \texttt{EXPLAIN} puede mostrar el plan sin ejecutar la consulta. \texttt{EXPLAIN ANALYZE} sí la ejecuta y agrega a cada nodo las filas, páginas y milisegundos reales, y termina con el tiempo de planificación (que incluye el parseo) y el de ejecución, como en PostgreSQL:
 
@@ -327,7 +327,7 @@ El diseño inicial proponía guardar el diccionario final en páginas ordenadas 
 
 \subsection{Ranking: TF-IDF con coseno y BM25}
 
-La función \texttt{buscar} de \texttt{motor/texto/ranking.h} solo recorre los postings de los términos de la consulta, acumula el score de cada documento y conserva los $k$ mejores con un heap de tamaño $k$. Devuelve solo documentos con score positivo.
+La función \texttt{buscar} de \texttt{motor/texto/ranking.h} solo recorre los postings de los términos de la consulta, acumula el score de cada documento y conserva los $k$ mejores con un heap de tamaño $k$. Así el costo es $O(n \log k)$ y no $O(n \log n)$, y los empates se resuelven por el identificador menor. Devuelve solo documentos con score positivo.
 
 \paragraph{TF-IDF con coseno.} Se usa el esquema lnc.ltc de la clase. El documento pesa $w_d = 1 + \log_{10}(\mathrm{tf})$ y la consulta $w_q = (1 + \log_{10}(\mathrm{tf})) \cdot \log_{10}(N / \mathrm{df})$, y el score es el coseno entre ambos:
 \[
@@ -361,7 +361,28 @@ Text Scan using idx_desc on productos (descripcion)
   Index Cond: MATCH(descripcion, 'wooden door photo') USING BM25
 \end{lstlisting}
 
-El índice no se actualiza fila a fila. Un \texttt{INSERT} o un \texttt{DELETE} lo invalida y se reconstruye en la siguiente búsqueda con \texttt{MATCH}, así que varias inserciones seguidas cuestan una sola reconstrucción. Es un límite frente a GIN, que se actualiza de forma incremental.
+El índice no se actualiza fila a fila. Un \texttt{INSERT} o un \texttt{DELETE} lo invalida y se reconstruye en la siguiente búsqueda con \texttt{MATCH}, así que varias inserciones seguidas cuestan una sola reconstrucción. Es un límite frente a GIN, que se actualiza de forma incremental. Las pruebas cubren las tres organizaciones, las búsquedas con filtros, el \texttt{EXPLAIN}, el \texttt{INSERT} y el \texttt{DELETE} seguidos de una búsqueda, y la reapertura del índice desde otro catálogo.
+
+\subsection{Índices según el tipo de columna}
+
+\texttt{CREATE INDEX ... USING BPLUS | HASH | RTREE | SPIMI} se puede usar en las tres organizaciones de archivo (\texttt{HEAP}, \texttt{SEQUENTIAL} y \texttt{BPLUS}). Lo que cambia es el tipo de la columna:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Índice & \texttt{INT} & \texttt{VARCHAR} & \texttt{POINT} \\
+\midrule
+\texttt{BPLUS} & sí & sí & no \\
+\texttt{HASH} & sí & sí & no \\
+\texttt{RTREE} & no & no & sí \\
+\texttt{SPIMI} & no & sí & no \\
+\bottomrule
+\end{tabular}
+\caption{Índices admitidos según el tipo de la columna.}
+\end{table}
+
+La tabla de combinaciones está en el ejecutor y, si el usuario pide una no válida, el motor responde con un error que dice qué tipos acepta (por ejemplo, \texttt{un indice RTREE solo se crea sobre columnas POINT, no VARCHAR}). Una prueba recorre todas las combinaciones de índice, tipo y organización. En \texttt{SEQUENTIAL} y \texttt{BPLUS} el índice guarda la clave primaria y no la posición de la fila, porque esas organizaciones pueden mover registros. En \texttt{VARCHAR}, la clave del índice son los primeros 4 caracteres, así que el índice puede devolver filas de más y después se revisa la condición completa; con \texttt{HASH} solo sirve la igualdad. Una misma columna puede tener a la vez un índice \texttt{BPLUS} y uno \texttt{SPIMI}: el primero responde comparaciones y el segundo \texttt{MATCH}.
 
 %-------------------------------------------------------------------------------
 \section{Parte 4: búsqueda multimedia}
@@ -376,16 +397,16 @@ La función \texttt{extract\_features} de \texttt{api/multimedia/extraer.py} sig
   \item SIFT (Lowe, 2004) detecta en la imagen, en escala de grises, hasta 500 puntos clave y describe cada uno con un vector de 128 dimensiones. Estos descriptores no cambian con la escala ni con la rotación.
   \item K-Means de FAISS agrupa una muestra de hasta 1\,000\,000 de descriptores en $K = 256$ centroides, que son las palabras visuales. Este vocabulario se entrena una sola vez.
   \item Cada descriptor de una imagen se asigna a su centroide más cercano, y la imagen queda como un histograma de $K$ frecuencias.
-  \item Al histograma se le aplica TF-IDF, con $\mathrm{tf} = 1 + \ln(f)$ e $\mathrm{idf} = \ln\frac{N + 1}{\mathrm{df} + 1} + 1$, y se normaliza a norma 1.
+  \item Al histograma se le aplica TF-IDF, con $\mathrm{tf} = 1 + \ln(f)$ e $\mathrm{idf} = \ln\frac{N + 1}{\mathrm{df} + 1} + 1$, y se normaliza con norma L2.
 \end{enumerate}
 
 Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 minutos. Una imagen sin puntos clave produce un histograma de ceros, como los 252 que hay entre los 100\,000 vectores. La distancia coseno de un vector cero a cualquier otro se toma como 1, es decir, ni parecido ni opuesto.
 
 \subsection{Extracción de características de audio}
 
-La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\_audio.py} usa el mismo pipeline que las imágenes, con MFCC en lugar de SIFT. \texttt{librosa} carga el audio en mono a 22\,050 Hz, hasta 30 segundos, y calcula 13 coeficientes MFCC por cada ventana de 2\,048 muestras con un salto de 512. Un clip de 30 segundos da unas 1\,290 ventanas, y cada ventana es un descriptor. K-Means aprende $K = 256$ palabras acústicas, cada ventana se asigna a su palabra más cercana y el audio queda como un histograma con TF-IDF y norma 1.
+La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\_audio.py} usa el mismo pipeline que las imágenes, con MFCC en lugar de SIFT. \texttt{librosa} carga el audio en mono a 22\,050 Hz, hasta 30 segundos, y calcula 13 coeficientes MFCC por cada ventana de 2\,048 muestras con un salto de 512. Un clip de 30 segundos da unas 1\,290 ventanas, y cada ventana es un descriptor. K-Means aprende $K = 256$ palabras acústicas, cada ventana se asigna a su palabra más cercana y el audio queda como un histograma con TF-IDF y norma L2.
 
-La colección es GTZAN, con 100 clips de cada uno de 10 géneros. Se quitó \texttt{jazz.00054.wav} porque está dañado, así que son 999 audios. Para evaluar, se pidieron los 5 vecinos más cercanos de cada audio y se contó cuántos eran de su mismo género, cuando al azar sería un 10\,\%. Con $K$ = 64, 128 y 256 se obtuvo 47, 52 y 54\,\%. Clásica acierta un 86\,\% y rock un 25\,\%. El histograma cuenta cuántas veces aparece cada palabra acústica, pero no cuándo, así que se pierden el ritmo y la melodía, y los géneros con instrumentos parecidos se confunden más. Aun así, en una prueba con un fragmento de 10 segundos de un clip en formato mp3, la canción original salió en primer lugar.
+La colección es GTZAN, con 100 clips de cada uno de 10 géneros. Se quitó \texttt{jazz.00054.wav} porque está dañado, así que son 999 audios. Para evaluar, se pidieron los 5 vecinos más cercanos de cada audio y se contó cuántos eran de su mismo género, cuando al azar sería un 10\,\%. Con $K$ = 64, 128 y 256 se obtuvo 47, 52 y 54\,\%, y entrenar el vocabulario y calcular los vectores tomó 64, 56 y 93 segundos. Se eligió $K = 256$, el mismo valor que en imágenes. Con ese valor, clásica acierta un 86\,\% y rock un 25\,\%. El histograma cuenta cuántas veces aparece cada palabra acústica, pero no cuándo, así que se pierden el ritmo y la melodía, y los géneros con instrumentos parecidos, como rock, disco y country, se confunden más.
 
 \subsection{Tipos FLOAT y VECTOR}
 
