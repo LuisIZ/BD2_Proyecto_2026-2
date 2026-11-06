@@ -85,6 +85,17 @@ cualquier `SELECT`. El usuario nunca escribe `CANDIDATES`; lo agrega la API
 - En un heap sin índice sobre la clave, el motor lee los k candidatos en **una sola pasada**
   por la tabla. Con un B+ o un hash sobre la clave, o en las organizaciones secuencial y B+
   agrupado, los busca uno por uno.
+- Por eso la organización decide cuánto se gana con el índice. Con 100 000 vectores reales, k = 5
+  y `USING HNSW`, FAISS tarda unos 1 ms en cualquier caso, y el motor tarda (una corrida):
+
+  | Tabla | Sin `USING` | Con `USING HNSW` |
+  |---|---:|---:|
+  | `BPLUS` | 748 ms | **8 ms** |
+  | `SEQUENTIAL` | 1 550 ms | 466 ms |
+  | `HEAP` con hash sobre `id` | 810 ms | 444 ms |
+  | `HEAP` sin índice sobre `id` | 911 ms | 768 ms |
+
+  Para búsquedas por similitud conviene una tabla `BPLUS`.
 - Un candidato que ya no existe (borrado después de la búsqueda) se salta.
 - Un `EXPLAIN` sin `ANALYZE` no ejecuta: la API no busca y el motor muestra el plan sin
   candidatos. `EXPLAIN ANALYZE` sí busca.
@@ -244,19 +255,24 @@ IVFFlat: el filtro se aplica después de recorrer el índice, y la versión 0.8 
 *iterative index scans* para seguir pidiendo vecinos hasta juntar k. Aquí se dejó el post-filtro
 y se documenta: para un resultado exacto con filtros, se quita `USING`.
 
-## 9. La imagen de consulta
+## 9. El archivo de consulta
 
 | Endpoint | Qué hace |
 |---|---|
-| `POST /api/multimedia/subir?nombre=foto.jpg` | el cuerpo es la imagen tal cual (`fetch(url, {method: "POST", body: archivo})`). Valida la extensión (`jpg`, `jpeg`, `png`, `webp`, `bmp`), el tamaño (hasta 10 MB) y que OpenCV la pueda leer. La guarda en `.build/subidas/` con el hash de su contenido como nombre y responde `{"archivo": "3f2a...c1.png", "consulta": "SIMILAR_TO('3f2a...c1.png', k=10)"}` |
-| `GET /api/multimedia/subidas/{archivo}` | devuelve la imagen subida, para mostrarla junto a los resultados |
+| `POST /api/multimedia/subir?nombre=foto.jpg` | el cuerpo es el archivo tal cual (`fetch(url, {method: "POST", body: archivo})`). Valida la extensión, el tamaño y que se pueda leer: imágenes `jpg`, `jpeg`, `png`, `webp` y `bmp` de hasta 10 MB, con OpenCV; audios `wav`, `mp3`, `flac` y `ogg` de hasta 50 MB, con `soundfile`. Lo guarda en `.build/subidas/` con el hash de su contenido como nombre y responde `{"archivo": "3f2a...c1.png", "consulta": "SIMILAR_TO('3f2a...c1.png', k=10)"}` |
+| `GET /api/multimedia/subidas/{archivo}` | devuelve el archivo subido, para mostrarlo junto a los resultados |
 
-En `SIMILAR_TO('archivo')`, la API busca el archivo entre las imágenes subidas y en las carpetas
-de imágenes del dataset (ahí sirve la ruta relativa del CSV de productos, como `'a1/abc.jpg'`),
-sin salir de esas carpetas. Le aplica `extract_features`
-([extraccion_caracteristicas.md](extraccion_caracteristicas.md)): SIFT, palabras visuales y
-TF-IDF con el mismo vocabulario e IDF que los productos. Así el vector de consulta es comparable
-con los de la tabla. Por eso hacen falta `datos/productos/vocabulario_256.npy` e `idf_256.npy`.
+En `SIMILAR_TO('archivo')`, la extensión dice si es un audio o una imagen. La API busca el
+archivo entre los subidos y en las carpetas del dataset, sin salir de ellas:
+
+| Archivo | Dónde se busca | Qué se le aplica | Qué necesita |
+|---|---|---|---|
+| imagen | subidas y carpetas de imágenes (ruta relativa del CSV de productos, como `'a1/abc.jpg'`) | `extract_features` ([extraccion_caracteristicas.md](extraccion_caracteristicas.md)) | `datos/productos/vocabulario_256.npy` e `idf_256.npy` |
+| audio | subidas y `audio/genres_original` (ruta relativa de `datos/audios_1k.csv`, como `'blues/blues.00000.wav'`) | `extract_features_audio` ([extraccion_audio.md](extraccion_audio.md)) | `datos/audio/vocabulario_audio_256.npy` e `idf_audio_256.npy` |
+
+El vector sale del mismo vocabulario e IDF que la colección, y por eso es comparable con los de la
+tabla. Si el vector queda en cero (una imagen sin puntos SIFT o un audio vacío), la API responde
+con un error, porque todas las filas estarían a la misma distancia y las k saldrían al azar.
 
 ## 10. Límites conocidos
 
@@ -267,6 +283,8 @@ con los de la tabla. Por eso hacen falta `datos/productos/vocabulario_256.npy` e
   solo HNSW (no hay `DROP INDEX`). Sin `USING`, el k-NN secuencial acepta cualquier métrica.
 - Los índices de FAISS viven en la memoria de la API. Con 100 000 vectores de 256 dimensiones,
   el HNSW ocupa unos 130 MB.
+- El motor no sabe si una columna `VECTOR` guarda imágenes o audios. Imágenes y audios usan K = 256,
+  así que `SIMILAR_TO('foto.jpg')` sobre `canciones` no da error, pero el resultado no significa nada.
 
 ## 11. Pruebas
 
@@ -289,4 +307,6 @@ con los de la tabla. Por eso hacen falta `datos/productos/vocabulario_256.npy` e
   - un archivo de cambios cortado no frena a los demás índices;
   - la reescritura con `CANDIDATES` (HNSW e IVF), lo que no se toca, lo pendiente antes de buscar;
   - el endpoint `/api/consultas`;
-  - subir una imagen y encontrarla a ella misma, con y sin índice.
+  - subir una imagen y encontrarla a ella misma, con y sin índice;
+  - consultar con un audio del dataset y con un mp3 subido, con y sin índice;
+  - los errores: archivo inválido, inexistente, fuera de las carpetas o con vector cero.

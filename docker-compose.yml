@@ -1,0 +1,28 @@
+# docker compose up --build   y abrir http://localhost:5173
+#
+# Los datasets se montan desde ./datos. Si las imagenes estan en otra carpeta, se indica con
+# BD2_IMAGENES (por ejemplo C:/datos_bd2/imagenes). La base del motor vive en el volumen "db".
+
+services:
+  api:
+    build: .
+    volumes:
+      - ./datos:/app/datos
+      - ${BD2_IMAGENES:-./datos/imagenes}:/app/datos/imagenes:ro
+      - db:/app/.build
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build: ./web
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db:

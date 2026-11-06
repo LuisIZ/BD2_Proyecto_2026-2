@@ -354,6 +354,98 @@ class PruebaImagenDeConsulta(ConMotor):
         with self.assertRaises(HTTPException):
             self.consultar("SELECT id FROM imagenes WHERE SIMILAR_TO('../img1.png')")
 
+        # sin puntos SIFT el vector es cero: las k filas saldrian al azar
+        import cv2
+
+        _, blanca = cv2.imencode(".png", np.full((100, 100), 255, dtype=np.uint8))
+        archivo = self.web_api.guardar_subida(blanca.tobytes(), "blanca.png")
+        with self.assertRaises(HTTPException) as error:
+            self.consultar(f"SELECT id FROM imagenes WHERE SIMILAR_TO('{archivo}')")
+        self.assertIn("no tiene puntos SIFT", error.exception.detail)
+
+
+class PruebaAudioDeConsulta(ConMotor):
+    """SIMILAR_TO('audio') con el vocabulario y el IDF de una coleccion chica de audios sinteticos."""
+
+    def setUp(self):
+        super().setUp()
+        import sys
+
+        import soundfile
+
+        sys.path.insert(0, str(RAIZ))
+        from api import web_api
+        from multimedia.extraer_audio import extract_features_audio, extraer_descriptores_audio
+        from multimedia.test_extraer_audio import FRECUENCIA, escribir_wav, ruido, tono
+
+        self.web_api = web_api
+        self.antes = (web_api.motor, web_api.indices_faiss, web_api.SUBIDAS, web_api.AUDIOS, dict(os.environ))
+        web_api.motor, web_api.indices_faiss = self.motor, self.indices
+        web_api.SUBIDAS = Path(self.dir) / "subidas"
+        web_api.AUDIOS = Path(self.dir) / "audios"
+        (web_api.AUDIOS / "blues").mkdir(parents=True)
+
+        senales = {1: tono(220, 2), 2: tono(880, 2), 3: ruido(2, 1), 4: tono(220, 2) + ruido(2, 2)}
+        rutas = {}
+        for pk, senal in senales.items():
+            rutas[pk] = str(web_api.AUDIOS / "blues" / f"blues.{pk}.wav")
+            escribir_wav(rutas[pk], senal)
+        descriptores = np.vstack([extraer_descriptores_audio(r) for r in rutas.values()])
+        vocabulario = descriptores[np.random.default_rng(1).choice(len(descriptores), DIMENSION, replace=False)]
+        os.environ["BD2_VOCABULARIO_AUDIO"] = os.path.join(self.dir, "vocabulario.npy")
+        os.environ["BD2_IDF_AUDIO"] = os.path.join(self.dir, "idf.npy")
+        np.save(os.environ["BD2_VOCABULARIO_AUDIO"], vocabulario)
+        np.save(os.environ["BD2_IDF_AUDIO"], np.ones(DIMENSION, dtype=np.float32))
+
+        self.sql(f"CREATE TABLE canciones (id INT PRIMARY KEY, v VECTOR({DIMENSION}))")
+        for pk, ruta in rutas.items():
+            self.sql(f"INSERT INTO canciones VALUES ({pk}, {literal(extract_features_audio(ruta))})")
+
+        # el mismo tono de la cancion 2, como mp3
+        self.mp3 = os.path.join(self.dir, "consulta.mp3")
+        soundfile.write(self.mp3, senales[2].astype(np.float32), FRECUENCIA, format="MP3")
+        escribir_wav(str(web_api.AUDIOS / "vacio.wav"), np.zeros(0))
+
+    def tearDown(self):
+        web_api = self.web_api
+        web_api.motor, web_api.indices_faiss, web_api.SUBIDAS, web_api.AUDIOS, entorno = self.antes
+        os.environ.clear()
+        os.environ.update(entorno)
+        super().tearDown()
+
+    def consultar(self, sql):
+        return self.web_api.consultas(self.web_api.Consulta(sql=sql))
+
+    def test_audio_del_dataset(self):
+        r = self.consultar("SELECT id, SIMILARITY_SCORE() FROM canciones WHERE SIMILAR_TO('blues/blues.3.wav', k=2)")
+        self.assertEqual(r["resultados"][0]["filas"][0][0], 3)
+        self.assertAlmostEqual(r["resultados"][0]["filas"][0][1], 1.0, places=5)
+
+    def test_subir_mp3_y_buscar(self):
+        with open(self.mp3, "rb") as f:
+            archivo = self.web_api.guardar_subida(f.read(), "consulta.MP3")
+        self.assertTrue(archivo.endswith(".mp3"))
+        r = self.consultar(f"SELECT id FROM canciones WHERE SIMILAR_TO('{archivo}', k=2)")
+        self.assertEqual(r["resultados"][0]["filas"][0][0], 2)
+        self.consultar("CREATE INDEX canciones_hnsw ON canciones (v) USING HNSW")
+        r = self.consultar(f"SELECT id FROM canciones WHERE SIMILAR_TO('{archivo}', k=2) USING HNSW")
+        self.assertEqual(r["resultados"][0]["filas"][0][0], 2)
+        self.assertEqual(r["faiss"][0]["candidatos"], 2)
+
+    def test_errores(self):
+        from fastapi import HTTPException
+
+        with self.assertRaisesRegex(ValueError, "audio que se pueda leer"):
+            self.web_api.guardar_subida(b"no soy un audio" * 20, "cancion.mp3")
+        for consulta, mensaje in [
+            ("SIMILAR_TO('no_existe.mp3')", "no se encontro el audio"),
+            ("SIMILAR_TO('../consulta.mp3')", "no se encontro el audio"),
+            ("SIMILAR_TO('vacio.wav')", "el audio esta vacio"),
+        ]:
+            with self.assertRaises(HTTPException) as error:
+                self.consultar(f"SELECT id FROM canciones WHERE {consulta}")
+            self.assertIn(mensaje, error.exception.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

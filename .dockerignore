@@ -1,0 +1,11 @@
+.git
+.build
+.venv
+.contexto
+.vscode
+datos
+docs
+logs
+web
+**/__pycache__
+**/*.exe
