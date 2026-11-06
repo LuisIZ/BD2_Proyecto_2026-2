@@ -1853,3 +1853,16 @@ details summary {
   background: #287a4b;
   border-color: #287a4b;
 }
+
+.gallery-query {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.gallery-query img {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+}

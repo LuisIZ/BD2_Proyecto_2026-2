@@ -310,7 +310,7 @@ def literal_vector(vector):
 def reescribir(sql, catalogo, indices, extraer=None):
     """Prepara un lote para el motor. En cada SIMILAR_TO:
 
-    - con un archivo y una funcion `extraer`, cambia 'archivo' por el VECTOR(...) de la imagen;
+    - con un archivo y una funcion `extraer`, cambia 'archivo' por su VECTOR(...);
     - con USING IVF|HNSW (salvo en un EXPLAIN sin ANALYZE, que no ejecuta), busca los k
       vecinos en FAISS y agrega CANDIDATES (pk, ...) despues de USING.
 

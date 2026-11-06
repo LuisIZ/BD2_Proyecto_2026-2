@@ -31,7 +31,10 @@ Quedan en `datos/audio/`: `vocabulario_audio_256.npy`, `idf_audio_256.npy`, `vec
 CREATE TABLE canciones (id INT PRIMARY KEY, vector VECTOR(256));
 COPY canciones FROM FILE 'datos/audio/vectores_audio_999.csv';
 SELECT id FROM canciones ORDER BY distancia(vector, VECTOR(...), 'euclidiana') LIMIT 5;
+SELECT id, SIMILARITY_SCORE() FROM canciones WHERE SIMILAR_TO('blues/blues.00000.wav', k=5) WITH METRIC=euclidean;
 ```
+
+`SIMILAR_TO` acepta un audio del dataset o uno subido con `POST /api/multimedia/subir`, en `wav`, `mp3`, `flac` u `ogg`. La API le aplica `extract_features_audio`, así que necesita el vocabulario y el IDF de `datos/audio/` (ver [sql_multimedia.md](sql_multimedia.md)).
 
 El `id` es el mismo de `datos/audios_1k.csv`, que dice qué audio y qué género es cada uno.
 

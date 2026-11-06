@@ -2,6 +2,7 @@
 
 import csv
 import hashlib
+import io
 import os
 import re
 import sys
@@ -113,7 +114,7 @@ def preparar_similitud(sql):
     if "similar_to" not in sql.lower():
         return sql, []
     try:
-        return reescribir(sql, motor.catalogo(), indices_faiss, extraer=vector_de_imagen)
+        return reescribir(sql, motor.catalogo(), indices_faiss, extraer=vector_de_archivo)
     except (ErrorMotor, OSError, ValueError, RuntimeError) as error:
         raise HTTPException(400, f"SIMILAR_TO: {error}") from error
 
@@ -334,38 +335,79 @@ def audio(id: int):
     raise HTTPException(404, f"Falta el audio {relativa} en {AUDIOS}. Ver docs/extraccion_audio.md.")
 
 
-# --- imagenes de consulta para SIMILAR_TO('archivo') (Parte 4) ---
+# --- imagenes y audios de consulta para SIMILAR_TO('archivo') (Parte 4) ---
 
 SUBIDAS = RAIZ / ".build" / "subidas"
 EXTENSIONES_IMAGEN = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+EXTENSIONES_AUDIO = {".wav", ".mp3", ".flac", ".ogg"}
 MAX_SUBIDA = 10 * 1024 * 1024
+MAX_SUBIDA_AUDIO = 50 * 1024 * 1024
 
 
-def ruta_imagen(nombre):
-    """Donde se busca el archivo de SIMILAR_TO('nombre'): las imagenes subidas y las
-    carpetas de imagenes del dataset (ahi 'nombre' es la ruta relativa del CSV de productos)."""
-    for carpeta in [SUBIDAS, *CARPETAS_IMAGENES]:
+def ruta_en(nombre, carpetas):
+    """La ruta de 'nombre' en la primera carpeta que lo tenga, sin salir de ella; None si no esta."""
+    for carpeta in carpetas:
         ruta = (carpeta / nombre).resolve()
         if ruta.is_relative_to(carpeta.resolve()) and ruta.is_file():
             return ruta
-    raise FileNotFoundError(f"no se encontro la imagen {nombre}: subela con POST /api/multimedia/subir")
+    return None
 
 
 def vector_de_imagen(nombre):
-    """El mismo vector que extraer.py guardo para cada producto: SIFT, palabras visuales y TF-IDF."""
+    """El mismo vector que extraer.py guardo para cada producto: SIFT, palabras visuales y TF-IDF.
+    Se busca en las subidas y en las imagenes del dataset (ruta relativa del CSV de productos)."""
     from multimedia.extraer import extract_features  # carga OpenCV y el vocabulario solo si hace falta
 
-    return extract_features(ruta_imagen(nombre))
+    ruta = ruta_en(nombre, [SUBIDAS, *CARPETAS_IMAGENES])
+    if ruta is None:
+        raise FileNotFoundError(f"no se encontro la imagen {nombre}: subela con POST /api/multimedia/subir")
+    return extract_features(ruta)
+
+
+def vector_de_audio(nombre):
+    """El mismo vector que extraer_audio.py guardo para cada cancion: MFCC, palabras acusticas y TF-IDF.
+    Se busca en las subidas y en los audios del dataset (ruta relativa de datos/audios_1k.csv)."""
+    from multimedia.extraer_audio import extract_features_audio  # carga librosa solo si hace falta
+
+    ruta = ruta_en(nombre, [SUBIDAS, AUDIOS])
+    if ruta is None:
+        raise FileNotFoundError(f"no se encontro el audio {nombre}: subelo con POST /api/multimedia/subir")
+    return extract_features_audio(ruta)
+
+
+def vector_de_archivo(nombre):
+    """SIMILAR_TO('nombre'): la extension dice si es un audio o una imagen."""
+    es_audio = Path(nombre).suffix.lower() in EXTENSIONES_AUDIO
+    vector = vector_de_audio(nombre) if es_audio else vector_de_imagen(nombre)
+    # un vector cero no se parece a nada: las k filas saldrian al azar
+    if not np.any(vector):
+        raise ValueError(f"no se pudieron extraer caracteristicas de {nombre}: " +
+                         ("el audio esta vacio" if es_audio else "la imagen no tiene puntos SIFT"))
+    return vector
+
+
+def validar_audio(contenido):
+    import soundfile  # viene con librosa
+
+    try:
+        soundfile.info(io.BytesIO(contenido))
+    except RuntimeError as error:
+        raise ValueError("el archivo no es un audio que se pueda leer") from error
 
 
 def guardar_subida(contenido, nombre):
-    """Guarda la imagen con el hash de su contenido como nombre: subir dos veces la misma no duplica."""
+    """Guarda el archivo con el hash de su contenido como nombre: subir dos veces el mismo no duplica."""
     extension = Path(nombre).suffix.lower()
-    if extension not in EXTENSIONES_IMAGEN:
-        raise ValueError(f"extension no admitida: {extension or '(ninguna)'} ({', '.join(sorted(EXTENSIONES_IMAGEN))})")
-    if not contenido or len(contenido) > MAX_SUBIDA:
-        raise ValueError("la imagen debe pesar entre 1 byte y 10 MB")
-    if cv2.imdecode(np.frombuffer(contenido, dtype=np.uint8), cv2.IMREAD_GRAYSCALE) is None:
+    es_audio = extension in EXTENSIONES_AUDIO
+    if not es_audio and extension not in EXTENSIONES_IMAGEN:
+        admitidas = ", ".join(sorted(EXTENSIONES_IMAGEN | EXTENSIONES_AUDIO))
+        raise ValueError(f"extension no admitida: {extension or '(ninguna)'} ({admitidas})")
+    limite = MAX_SUBIDA_AUDIO if es_audio else MAX_SUBIDA
+    if not contenido or len(contenido) > limite:
+        raise ValueError(f"el archivo debe pesar entre 1 byte y {limite // (1024 * 1024)} MB")
+    if es_audio:
+        validar_audio(contenido)
+    elif cv2.imdecode(np.frombuffer(contenido, dtype=np.uint8), cv2.IMREAD_GRAYSCALE) is None:
         raise ValueError("el archivo no es una imagen que OpenCV pueda leer")
     SUBIDAS.mkdir(parents=True, exist_ok=True)
     archivo = hashlib.sha1(contenido).hexdigest()[:16] + extension
@@ -375,7 +417,7 @@ def guardar_subida(contenido, nombre):
 
 @app.post("/api/multimedia/subir")
 async def subir(request: Request, nombre: str):
-    """El cuerpo es la imagen tal cual (fetch con body: archivo); devuelve el nombre para SIMILAR_TO."""
+    """El cuerpo es la imagen o el audio tal cual (fetch con body: archivo); devuelve el nombre para SIMILAR_TO."""
     try:
         archivo = guardar_subida(await request.body(), nombre)
     except ValueError as error:
@@ -387,5 +429,5 @@ async def subir(request: Request, nombre: str):
 def subida(archivo: str):
     ruta = (SUBIDAS / archivo).resolve()
     if not ruta.is_relative_to(SUBIDAS.resolve()) or not ruta.is_file():
-        raise HTTPException(404, f"No hay una imagen subida con el nombre {archivo}.")
+        raise HTTPException(404, f"No hay un archivo subido con el nombre {archivo}.")
     return FileResponse(ruta, headers={"Cache-Control": "public, max-age=86400"})

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { request } from "./api";
+import { request, uploadFile } from "./api";
 import type { Result, Table } from "./types";
 import ImportCsv from "./ImportCsv";
 import Experiments from "./Experiments";
@@ -48,6 +48,7 @@ export default function App() {
   const editor = useRef<HTMLTextAreaElement>(null);
   const gutter = useRef<HTMLPreElement>(null);
   const running = useRef(false);
+  const fileInput = useRef<HTMLInputElement>(null);
   const table = tables.find((item) => item.nombre === selected) ?? tables[0];
   const name = table?.nombre ?? "organizaciones";
   const pk = table?.clave ?? "Index";
@@ -141,6 +142,25 @@ export default function App() {
       setBusy(false);
     }
   }
+  /** Sube la imagen o el audio y deja lista la consulta sobre la tabla seleccionada. */
+  async function upload(file: File) {
+    setBusy(true);
+    setError("");
+    try {
+      const { archivo } = await uploadFile(file);
+      const index = table?.indices.find((item) =>
+        ["HNSW", "IVF"].includes(item.tipo),
+      );
+      openSql(`SELECT ${pk}, SIMILARITY_SCORE() FROM ${name}
+  WHERE SIMILAR_TO('${archivo}', k=10)${index ? ` USING ${index.tipo}` : ""}
+  ORDER BY score DESC;`);
+    } catch (error) {
+      setError((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** Antepone EXPLAIN a la sentencia del cursor y la manda sin tocar el editor. */
   async function explain(analyze: boolean) {
     if (running.current) return;
@@ -197,6 +217,10 @@ export default function App() {
   WHERE distancia(${point}, POINT(-12.0464, -77.0428)) <= 3000;`,
     knnVectorial: `SELECT ${pk} FROM ${name}
   ORDER BY distancia(${vectorColumn?.nombre ?? "v"}, ${queryVector}, 'coseno') LIMIT 10;`,
+    hnsw: `CREATE INDEX idx_${name}_hnsw ON ${name} (${vectorColumn?.nombre ?? "v"}) USING HNSW WITH (M = 32, ef_busqueda = 64);`,
+    similar: `SELECT ${pk}, SIMILARITY_SCORE() FROM ${name}
+  WHERE SIMILAR_TO(${queryVector}, k=10) USING HNSW WITH METRIC=cosine
+  ORDER BY score DESC;`,
   };
 
   return (
@@ -367,6 +391,25 @@ export default function App() {
               <div className="panel-heading">
                 <h2 id="editor-title">Consulta SQL</h2>
                 <div className="panel-actions">
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    hidden
+                    aria-label="Archivo de consulta"
+                    accept="image/*,audio/*"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void upload(file);
+                    }}
+                  />
+                  <button
+                    onClick={() => fileInput.current?.click()}
+                    disabled={busy || !connected}
+                    title="Sube una imagen o un audio y arma la consulta SIMILAR_TO sobre la tabla seleccionada"
+                  >
+                    Subir archivo
+                  </button>
                   <select
                     aria-label="Ejemplos SQL"
                     value=""
@@ -394,6 +437,8 @@ export default function App() {
                     </optgroup>
                     <optgroup label="Vectores (Parte 4)">
                       <option value="knnVectorial">k-NN de vectores</option>
+                      <option value="hnsw">Crear índice HNSW</option>
+                      <option value="similar">SIMILAR_TO con HNSW</option>
                     </optgroup>
                   </select>
                   <select

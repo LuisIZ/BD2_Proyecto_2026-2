@@ -13,21 +13,30 @@ export interface SimilarSearch {
   /** alias de SIMILARITY_SCORE() en el SELECT */
   scoreColumn?: string;
   table?: string;
+  /** archivo de SIMILAR_TO('archivo') */
+  file?: string;
 }
 
+/** Los nombres de /api/multimedia/subir: 16 hexadecimales y la extensión. */
+const SUBIDA = /^[0-9a-f]{16}\.\w+$/;
+const AUDIO = /\.(wav|mp3|flac|ogg)$/i;
+
 export function parseSimilarSearch(sql: string): SimilarSearch | undefined {
-  const similar = /\bSIMILAR_TO\s*\(([^)]*)\)/i.exec(sql);
+  const similar = /\bSIMILAR_TO\s*\(/i.exec(sql);
   const knn =
     /ORDER\s+BY\s+distancia\s*\(\s*[\w.]+\s*,\s*VECTOR\s*\([^)]*\)(?:\s*,\s*'([^']*)')?\s*\)(?:\s+ASC)?\s+LIMIT\s+(\d+)/i.exec(
       sql,
     );
   if (!similar && !knn) return;
-  const k = similar ? /\bk\s*=\s*(\d+)/i.exec(similar[1])?.[1] : knn?.[2];
+  // lo que sigue a SIMILAR_TO( puede traer los paréntesis de VECTOR(...)
+  const args = similar ? sql.slice(similar.index + similar[0].length) : "";
+  const k = similar ? (/\bk\s*=\s*(\d+)/i.exec(args)?.[1] ?? "10") : knn?.[2];
   const metric = similar
-    ? /\bMETRIC\s*=\s*(\w+)/i.exec(sql)?.[1]
+    ? (/\bMETRIC\s*=\s*(\w+)/i.exec(sql)?.[1] ?? "coseno")
     : (knn?.[1] ?? "euclidiana");
   return {
     k: k ? Number(k) : undefined,
+    file: /^\s*(?:\w+\s*,\s*)?'([^']+)'/.exec(args)?.[1],
     metric: metric?.toLowerCase(),
     index: /\bUSING\s+(IVF|HNSW)\b/i.exec(sql)?.[1].toUpperCase(),
     scoreColumn: /\bSIMILARITY_SCORE\s*\(\s*\)\s+(?:AS\s+)?(\w+)/i.exec(sql)?.[1],
@@ -78,6 +87,20 @@ function Thumbnail({ id, alt }: { id: Cell; alt: string }) {
   );
 }
 
+function QueryFile({ file }: { file: string }) {
+  const url = `/api/multimedia/subidas/${file}`;
+  return (
+    <figure className="gallery-query">
+      <figcaption>Archivo de consulta</figcaption>
+      {AUDIO.test(file) ? (
+        <audio controls preload="none" src={url} />
+      ) : (
+        <img src={url} alt="Imagen de consulta" />
+      )}
+    </figure>
+  );
+}
+
 export default function Gallery({
   columns,
   rows,
@@ -92,6 +115,8 @@ export default function Gallery({
 }) {
   const { id, name, score } = galleryColumns(columns, rows, search);
   return (
+    <>
+    {search.file && SUBIDA.test(search.file) && <QueryFile file={search.file} />}
     <ol className="gallery" aria-label="Resultados por similitud">
       {rows.map((row, i) => {
         const title = name >= 0 ? String(row[name] ?? "") : `id ${row[id]}`;
@@ -126,5 +151,6 @@ export default function Gallery({
         );
       })}
     </ol>
+    </>
   );
 }

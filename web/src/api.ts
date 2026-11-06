@@ -16,6 +16,26 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
       "No se pudo conectar con la API. Comprueba que npm run dev siga abierto.",
     );
   }
+  return read<T>(response);
+}
+
+/** Sube una imagen o un audio para SIMILAR_TO; devuelve el nombre con que quedó guardado. */
+export async function uploadFile(file: File) {
+  let response: Response;
+  try {
+    response = await fetch(
+      `/api/multimedia/subir?nombre=${encodeURIComponent(file.name)}`,
+      { method: "POST", body: file },
+    );
+  } catch {
+    throw new Error(
+      "No se pudo conectar con la API. Comprueba que npm run dev siga abierto.",
+    );
+  }
+  return read<{ archivo: string; consulta: string }>(response);
+}
+
+async function read<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => null);
   if (!response.ok || data === null) {
     const detail = data?.detail;
