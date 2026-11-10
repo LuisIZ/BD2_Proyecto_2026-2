@@ -1,0 +1,559 @@
+{
+  "_contrato": "Ejemplo de las respuestas de /api/tienda (#90), con datos reales de datos/tienda (semilla 7). La API de Luis debe devolver estas mismas claves.",
+  "productos": {
+    "q": "bar stool",
+    "tipo": "",
+    "pagina": 1,
+    "por_pagina": 12,
+    "total": 27,
+    "productos": [
+      {
+        "id": 5,
+        "nombre": "Amazon Brand – Rivet Malida Mid-Century Modern Open Back Swivel Kitchen Bar Stool, 41\"H, Charcoal",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "Gray",
+        "precio": 537.9,
+        "imagen": "4d/4dcbf99d.jpg"
+      },
+      {
+        "id": 536,
+        "nombre": "Amazon Brand – Stone & Beam Wishbone Counter-Height Barstool, 35.5\"H, Natural",
+        "tipo": "CHAIR",
+        "marca": "Stone & Beam",
+        "color": "Natural",
+        "precio": 1099.9,
+        "imagen": "4f/4ffd0330.jpg"
+      },
+      {
+        "id": 836,
+        "nombre": "Amazon Brand – Stone & Beam Morgan Faux Leather Memory-Swivel Counter-Height Barstool, 38.2\"H, Brown",
+        "tipo": "STOOL_SEATING",
+        "marca": "Stone & Beam",
+        "color": "Wax Sand",
+        "precio": 411.9,
+        "imagen": "b8/b8048e59.jpg"
+      },
+      {
+        "id": 1522,
+        "nombre": "Amazon Brand – Ravenna Home Modern Bar Stool with Back, 44 Inch Height, Grey, Set of 2",
+        "tipo": "STOOL_SEATING",
+        "marca": "Ravenna Home",
+        "color": "",
+        "precio": 720.9,
+        "imagen": "60/607259a1.jpg"
+      },
+      {
+        "id": 1979,
+        "nombre": "Phoenix Home Brown Faux Leather Counter Height Barstool, 26\", Anti Walnut",
+        "tipo": "STOOL_SEATING",
+        "marca": "Phoenix Home",
+        "color": "Anti Brown/Walnut",
+        "precio": 162.9,
+        "imagen": "74/747f832c.jpg"
+      },
+      {
+        "id": 2142,
+        "nombre": "Amazon Brand – Rivet Malida Mid-Century Modern Faux Leather Open Back Swivel Kitchen Bar Stool, 41\"H, Grey",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "Grey",
+        "precio": 412.9,
+        "imagen": "f8/f837ac2a.jpg"
+      },
+      {
+        "id": 2442,
+        "nombre": "Amazon Brand – Rivet Decatur Modern Faux Leather Kitchen Bar Stool, 41\"H, Dark Brown",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "Brown",
+        "precio": 339.9,
+        "imagen": "e0/e0a9daab.jpg"
+      },
+      {
+        "id": 2706,
+        "nombre": "AmazonBasics Modern Adjustable Swivel Bar/Island Stools - PU with Chrome Air Lift - Set of 2, Cognac",
+        "tipo": "STOOL_SEATING",
+        "marca": "AmazonBasics",
+        "color": "",
+        "precio": 147.9,
+        "imagen": "b5/b5b0cfcd.jpg"
+      },
+      {
+        "id": 3114,
+        "nombre": "Amazon Brand – Ravenna Home Lisetta Nailhead Saddle Bar Stool, 15.75\"W, Espresso with Dark Brown Faux Leather (2 Pack)",
+        "tipo": "STOOL_SEATING",
+        "marca": "Ravenna Home",
+        "color": "Dark Brown Faux Leather",
+        "precio": 269.9,
+        "imagen": "f6/f66dede8.jpg"
+      },
+      {
+        "id": 3232,
+        "nombre": "Amazon Brand – Ravenna Home Scott Tufted Back Bar Stool, 41.5\"H, Zinc",
+        "tipo": "STOOL_SEATING",
+        "marca": "Ravenna Home",
+        "color": "Zinc",
+        "precio": 281.9,
+        "imagen": "86/8645cf0c.jpg"
+      },
+      {
+        "id": 3867,
+        "nombre": "Ravenna Home High Back Bistro Metal Bar Stool",
+        "tipo": "STOOL_SEATING",
+        "marca": "Ravenna Home",
+        "color": "",
+        "precio": 291.9,
+        "imagen": "00/00f3c03e.jpg"
+      },
+      {
+        "id": 4069,
+        "nombre": "Stone & Beam Celinda Tufted High-Back Barstool, 42.9\"H, Ivory",
+        "tipo": "STOOL_SEATING",
+        "marca": "Stone & Beam",
+        "color": "White",
+        "precio": 403.9,
+        "imagen": "fe/fe189012.jpg"
+      }
+    ],
+    "tipos": [
+      {
+        "tipo": "CELLULAR_PHONE_CASE",
+        "productos": 5365
+      },
+      {
+        "tipo": "SHOES",
+        "productos": 815
+      },
+      {
+        "tipo": "GROCERY",
+        "productos": 519
+      },
+      {
+        "tipo": "HOME",
+        "productos": 197
+      },
+      {
+        "tipo": "CHAIR",
+        "productos": 142
+      },
+      {
+        "tipo": "HOME_BED_AND_BATH",
+        "productos": 124
+      },
+      {
+        "tipo": "HEALTH_PERSONAL_CARE",
+        "productos": 113
+      },
+      {
+        "tipo": "HOME_FURNITURE_AND_DECOR",
+        "productos": 110
+      },
+      {
+        "tipo": "SOFA",
+        "productos": 86
+      },
+      {
+        "tipo": "SANDAL",
+        "productos": 83
+      },
+      {
+        "tipo": "BOOT",
+        "productos": 80
+      },
+      {
+        "tipo": "FINEEARRING",
+        "productos": 78
+      },
+      {
+        "tipo": "FINENECKLACEBRACELETANKLET",
+        "productos": 76
+      },
+      {
+        "tipo": "FINERING",
+        "productos": 75
+      },
+      {
+        "tipo": "TABLE",
+        "productos": 75
+      },
+      {
+        "tipo": "PET_SUPPLIES",
+        "productos": 57
+      },
+      {
+        "tipo": "HANDBAG",
+        "productos": 56
+      },
+      {
+        "tipo": "OFFICE_PRODUCTS",
+        "productos": 53
+      },
+      {
+        "tipo": "ACCESSORY",
+        "productos": 52
+      },
+      {
+        "tipo": "RUG",
+        "productos": 50
+      },
+      {
+        "tipo": "WALL_ART",
+        "productos": 50
+      },
+      {
+        "tipo": "OUTDOOR_LIVING",
+        "productos": 49
+      },
+      {
+        "tipo": "KITCHEN",
+        "productos": 46
+      },
+      {
+        "tipo": "SPORTING_GOODS",
+        "productos": 42
+      },
+      {
+        "tipo": "HARDWARE_HANDLE",
+        "productos": 38
+      },
+      {
+        "tipo": "OTTOMAN",
+        "productos": 36
+      },
+      {
+        "tipo": "LAMP",
+        "productos": 34
+      },
+      {
+        "tipo": "LIGHT_BULB",
+        "productos": 33
+      },
+      {
+        "tipo": "STOOL_SEATING",
+        "productos": 33
+      },
+      {
+        "tipo": "HAT",
+        "productos": 28
+      },
+      {
+        "tipo": "JANITORIAL_SUPPLY",
+        "productos": 28
+      },
+      {
+        "tipo": "LIGHT_FIXTURE",
+        "productos": 28
+      },
+      {
+        "tipo": "NECKLACE",
+        "productos": 27
+      },
+      {
+        "tipo": "HEADBOARD",
+        "productos": 22
+      },
+      {
+        "tipo": "RING",
+        "productos": 20
+      },
+      {
+        "tipo": "SUITCASE",
+        "productos": 20
+      },
+      {
+        "tipo": "BACKPACK",
+        "productos": 19
+      },
+      {
+        "tipo": "BED",
+        "productos": 19
+      },
+      {
+        "tipo": "DRINKING_CUP",
+        "productos": 19
+      },
+      {
+        "tipo": "EARRING",
+        "productos": 19
+      }
+    ],
+    "consulta": "SELECT id, nombre, tipo, marca, color, precio, imagen, SCORE() AS relevancia FROM productos WHERE MATCH(descripcion, 'bar stool') USING BM25 ORDER BY relevancia DESC LIMIT 12;"
+  },
+  "producto": {
+    "id": 5,
+    "item_id": "B075YP3BY3",
+    "nombre": "Amazon Brand – Rivet Malida Mid-Century Modern Open Back Swivel Kitchen Bar Stool, 41\"H, Charcoal",
+    "tipo": "STOOL_SEATING",
+    "categoria": "/Categories/Furniture/Game & Recreation Room Furniture/Home Bar Furniture/Barstools",
+    "marca": "Rivet",
+    "color": "Gray",
+    "descripcion": "Amazon Brand – Rivet Malida Mid-Century Modern Open Back Swivel Kitchen Bar Stool, 41\"H, Charcoal Dimensions: 22\"W x 21\"D x41\"H | Seat height is 30\". Durable polyester fabric on wood frame, solid hardwood base Foam padding and elastic suspension system keep back and seat firm and springy Free returns for 30 days. 1-year warranty. This barstool's substantial arms, back and padded seat, and swivel seat make it easy to settle comfortably in the perfect spot. The unique shape of the seat back makes this a Mid-century style statement piece in your home. No assembly required. Wipe with soft dry cloth.",
+    "imagen": "4d/4dcbf99d.jpg",
+    "precio": 537.9
+  },
+  "recomendaciones": {
+    "producto_id": 5,
+    "k": 10,
+    "rrf_k": 60,
+    "tiempo_ms": 184.2,
+    "fuentes": [
+      {
+        "fuente": "texto",
+        "consulta": "SELECT id, SCORE() AS relevancia FROM productos WHERE MATCH(descripcion, 'Amazon Brand – Rivet Malida Mid-Century Modern Open Back Swi') USING BM25 ORDER BY relevancia DESC LIMIT 21;",
+        "candidatos": 20,
+        "ok": true,
+        "error": null
+      },
+      {
+        "fuente": "imagen",
+        "consulta": "SELECT id, SIMILARITY_SCORE() FROM catalogo WHERE SIMILAR_TO(VECTOR(0, 0, 0, ...), k = 21) USING HNSW;",
+        "candidatos": 20,
+        "ok": true,
+        "error": null
+      },
+      {
+        "fuente": "metadata",
+        "consulta": "SELECT id FROM productos WHERE tipo = 'STOOL_SEATING' AND (marca = 'Rivet' OR color = 'Gray') LIMIT 21;",
+        "candidatos": 8,
+        "ok": true,
+        "error": null
+      },
+      {
+        "fuente": "compras",
+        "consulta": "SELECT usuario_id FROM compras WHERE producto_id = 5; -- y por cada usuario u: SELECT producto_id FROM compras WHERE usuario_id = u;",
+        "candidatos": 20,
+        "ok": true,
+        "error": null
+      }
+    ],
+    "avisos": [],
+    "recomendaciones": [
+      {
+        "id": 2142,
+        "nombre": "Amazon Brand – Rivet Malida Mid-Century Modern Faux Leather Open Back Swivel Kitchen Bar Stool, 41\"H, Grey",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "Grey",
+        "precio": 412.9,
+        "imagen": "f8/f837ac2a.jpg",
+        "score": 0.048395,
+        "fuentes": [
+          "texto",
+          "imagen",
+          "metadata"
+        ],
+        "puestos": {
+          "texto": 1,
+          "imagen": 3,
+          "metadata": 2
+        }
+      },
+      {
+        "id": 3978,
+        "nombre": "Amazon Brand – Rivet Vermont Modern Diamond-Stitched Kitchen Counter-Height Stool, 38\"H, Chalk White and Brass",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "White",
+        "precio": 763.9,
+        "imagen": "87/87ba016f.jpg",
+        "score": 0.041945,
+        "fuentes": [
+          "texto",
+          "imagen",
+          "metadata"
+        ],
+        "puestos": {
+          "texto": 17,
+          "imagen": 15,
+          "metadata": 4
+        }
+      },
+      {
+        "id": 123,
+        "nombre": "Amazon Brand – Rivet Decatur Modern Faux Leather Kitchen Counter-Height Stool, 37\"H, Black",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "Black",
+        "precio": 201.9,
+        "imagen": "90/90362fc5.jpg",
+        "score": 0.031778,
+        "fuentes": [
+          "texto",
+          "metadata"
+        ],
+        "puestos": {
+          "texto": 5,
+          "metadata": 1
+        }
+      },
+      {
+        "id": 3232,
+        "nombre": "Amazon Brand – Ravenna Home Scott Tufted Back Bar Stool, 41.5\"H, Zinc",
+        "tipo": "STOOL_SEATING",
+        "marca": "Ravenna Home",
+        "color": "Zinc",
+        "precio": 281.9,
+        "imagen": "86/8645cf0c.jpg",
+        "score": 0.031258,
+        "fuentes": [
+          "texto",
+          "imagen"
+        ],
+        "puestos": {
+          "texto": 3,
+          "imagen": 5
+        }
+      },
+      {
+        "id": 7633,
+        "nombre": "Amazon Brand – Stone & Beam Alaina Contemporary High-Back Swivel Seat Counter Stool, 39\"H, Grey",
+        "tipo": "STOOL_SEATING",
+        "marca": "Stone & Beam",
+        "color": "Grey",
+        "precio": 771.9,
+        "imagen": "fa/fae3d857.jpg",
+        "score": 0.03125,
+        "fuentes": [
+          "texto",
+          "imagen"
+        ],
+        "puestos": {
+          "texto": 4,
+          "imagen": 4
+        }
+      },
+      {
+        "id": 2442,
+        "nombre": "Amazon Brand – Rivet Decatur Modern Faux Leather Kitchen Bar Stool, 41\"H, Dark Brown",
+        "tipo": "STOOL_SEATING",
+        "marca": "Rivet",
+        "color": "Brown",
+        "precio": 339.9,
+        "imagen": "e0/e0a9daab.jpg",
+        "score": 0.029762,
+        "fuentes": [
+          "texto",
+          "metadata"
+        ],
+        "puestos": {
+          "texto": 12,
+          "metadata": 3
+        }
+      },
+      {
+        "id": 5423,
+        "nombre": "Amazon Brand – Stone & Beam Burke Modern Wood Kitchen Counter Bar Stool, 44\"H, Hemp Beige",
+        "tipo": "STOOL_SEATING",
+        "marca": "Stone & Beam",
+        "color": "Hemp",
+        "precio": 301.9,
+        "imagen": "93/93a5daee.jpg",
+        "score": 0.028629,
+        "fuentes": [
+          "texto",
+          "imagen"
+        ],
+        "puestos": {
+          "texto": 20,
+          "imagen": 2
+        }
+      },
+      {
+        "id": 1571,
+        "nombre": "Amazon Brand – Ravenna Home Dawn Nailhead Saddle Counter Stool, 24\"H, Cherry with Black Fabric (2 Pack)",
+        "tipo": "STOOL_SEATING",
+        "marca": "Ravenna Home",
+        "color": "Cherry With Black Fabric",
+        "precio": 631.9,
+        "imagen": "20/20ca5123.jpg",
+        "score": 0.028083,
+        "fuentes": [
+          "imagen",
+          "compras"
+        ],
+        "puestos": {
+          "imagen": 16,
+          "compras": 7
+        }
+      },
+      {
+        "id": 2176,
+        "nombre": "Amazon Brand – Stone & Beam Sophia Modern Swivel Kitchen Counter Height Stool, 39.4\"H, Merlot",
+        "tipo": "STOOL_SEATING",
+        "marca": "Stone & Beam",
+        "color": "Red",
+        "precio": 894.9,
+        "imagen": "9c/9c88ff4e.jpg",
+        "score": 0.027799,
+        "fuentes": [
+          "texto",
+          "imagen"
+        ],
+        "puestos": {
+          "texto": 10,
+          "imagen": 14
+        }
+      },
+      {
+        "id": 5789,
+        "nombre": "Amazon Brand – Stone & Beam Carson Tufted Kitchen Counter Bar Stool, 45\"H, Slate",
+        "tipo": "STOOL_SEATING",
+        "marca": "Stone & Beam",
+        "color": "Grey",
+        "precio": 210.9,
+        "imagen": "ac/acd6e232.jpg",
+        "score": 0.025487,
+        "fuentes": [
+          "imagen",
+          "compras"
+        ],
+        "puestos": {
+          "imagen": 17,
+          "compras": 20
+        }
+      }
+    ]
+  },
+  "sedes": {
+    "producto_id": 5,
+    "origen": {
+      "lat": -12.1353,
+      "lon": -77.022
+    },
+    "k": 3,
+    "sedes": [
+      {
+        "id": 4,
+        "nombre": "Tienda Santiago de Surco",
+        "distrito": "Santiago de Surco",
+        "lat": -12.145,
+        "lon": -76.992,
+        "distancia_m": 3435,
+        "stock": 34
+      },
+      {
+        "id": 8,
+        "nombre": "Tienda Lince",
+        "distrito": "Lince",
+        "lat": -12.085,
+        "lon": -77.036,
+        "distancia_m": 5797,
+        "stock": 13
+      },
+      {
+        "id": 14,
+        "nombre": "Tienda La Victoria",
+        "distrito": "La Victoria",
+        "lat": -12.071,
+        "lon": -77.017,
+        "distancia_m": 7170,
+        "stock": 12
+      }
+    ],
+    "consultas": [
+      "SELECT sede_id, stock FROM inventario WHERE producto_id = 5 AND stock > 0;",
+      "SELECT id, nombre, distrito, ubicacion FROM sedes ORDER BY distancia(ubicacion, POINT(-12.1353, -77.022)) LIMIT 25;"
+    ]
+  }
+}
