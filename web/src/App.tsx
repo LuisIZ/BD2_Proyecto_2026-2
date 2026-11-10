@@ -8,11 +8,13 @@ import Demo from "./Demo";
 import Syntax from "./Syntax";
 import { Plan, Results } from "./Results";
 import SpatialMap from "./SpatialMap";
+import Tienda from "./tienda/Tienda";
 import { splitStatements, statementAt } from "./sql";
 import type { Cell } from "./types";
 
 const views = [
   ["consultas", "Consultas"],
+  ["tienda", "Tienda"],
   ["demo", "Demo guiada"],
   ["comparar", "Comparar estructuras"],
   ["mediciones", "Mediciones"],
@@ -565,6 +567,9 @@ export default function App() {
             />
             <Plan result={activeResult} />
           </div>
+        </div>
+        <div hidden={view !== "tienda"}>
+          {view === "tienda" && <Tienda />}
         </div>
         <div hidden={view !== "demo"}>
           <Demo
