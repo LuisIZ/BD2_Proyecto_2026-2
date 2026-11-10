@@ -39,9 +39,9 @@ interface SearchShape {
 const pointPattern =
   /^\s*POINT\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)\s*$/i;
 const defaultCenter: [number, number] = [-12.0464, -77.0428];
-const queryColor = "#c2255c";
+export const queryColor = "#c2255c";
 
-function knnLabel(rank: number) {
+export function knnLabel(rank: number) {
   return L.divIcon({
     className: "knn-label",
     html: String(rank),
