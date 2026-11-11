@@ -568,6 +568,44 @@ El panel de resultados se adaptó para que cada tipo de consulta se muestre de l
 Las pruebas de Playwright de \texttt{web/tests/resultados.spec.ts} cubren el score y el resaltado con una respuesta simulada y con un \texttt{MATCH} real sobre \texttt{productos\_1k}, la galería de un k-NN de vectores y los ejemplos de texto, espacio y vectores del editor.
 
 %-------------------------------------------------------------------------------
+\section{Parte 5: aplicación de tienda}
+\label{sec:tienda}
+
+\subsection{Datos de la tienda}
+
+La tienda (opción B del Anexo A) usa el catálogo de 10\,000 productos de ABO, que ya tiene texto, foto y vector. ABO no trae precios, tiendas, stock ni compras, así que esos datos se generan con \texttt{tools/tienda/generar\_datos.py}. El script usa un generador pseudoaleatorio con semilla: con \texttt{--semilla 7} siempre escribe los mismos archivos, y así los tres integrantes y la demo trabajan con los mismos datos. Los CSV están en el repositorio, en \texttt{datos/tienda/}, junto con \texttt{catalogo.csv}, que trae el vector de cada producto; así la tienda se carga sin volver a extraer las características de las fotos.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrl}
+\toprule
+Tabla & Filas & Cómo se generó \\
+\midrule
+\texttt{productos} & 10\,000 & las columnas de ABO más \texttt{precio}, al azar dentro de un rango según el \texttt{tipo} \\
+\texttt{catalogo} & 10\,000 & \texttt{id}, \texttt{nombre} y el vector de 256 palabras visuales de la foto \\
+\texttt{sedes} & 25 & una tienda por distrito de Lima, en las coordenadas del distrito \\
+\texttt{inventario} & 29\,915 & cada producto en 1 a 5 sedes; el 15\,\% de las filas con stock 0 \\
+\texttt{usuarios} & 500 & nombres y apellidos comunes en el Perú \\
+\texttt{compras} & 7\,458 & de 10 a 20 por usuario, el 80\,\% de sus 2 o 3 tipos preferidos \\
+\bottomrule
+\end{tabular}
+\caption{Tablas de la tienda generadas con la semilla 7.}
+\end{table}
+
+Algunas decisiones del generador:
+\begin{itemize}
+  \item \emph{Precios.} Cada \texttt{tipo} frecuente tiene un rango propio en soles, por ejemplo de 15 a 80 para una funda de celular y de 900 a 6\,000 para un sofá; los tipos raros usan de 20 a 500. Los precios terminan en ,90, como en una tienda real.
+  \item \emph{Inventario.} Un producto no está en todas las sedes, y en algunas está agotado. Así la búsqueda de las sedes cercanas con stock no se reduce a tomar las 3 más cercanas. La primera sede de cada producto siempre tiene stock, para que todo producto se pueda comprar en algún lado.
+  \item \emph{Compras.} Si las compras fueran al azar, ``quienes compraron X también compraron Y'' no encontraría nada útil. Por eso cada usuario elige 2 o 3 tipos preferidos entre los que tienen al menos 10 productos, y el 80\,\% de sus compras sale de ellos. El otro 20\,\% es ruido de cualquier tipo, como en una tienda real.
+  \item \emph{Ids.} Los \texttt{id} de \texttt{productos} son los de \texttt{productos\_10k.csv}, igual que los de \texttt{catalogo}, que arma \texttt{tools/dataset/preparar\_catalogo.py}. Por eso un resultado de la búsqueda por imagen se cruza con el precio y el stock sin traducir ids.
+\end{itemize}
+
+El script \texttt{docs/tienda.sql} crea las tablas, las carga con \texttt{COPY} y crea un índice para cada consulta del recomendador: B+ en \texttt{inventario(producto\_id)} y \texttt{compras(producto\_id)}, hash en \texttt{compras(usuario\_id)}, R-Tree en \texttt{sedes(ubicacion)}, SPIMI en \texttt{productos(descripcion)} y HNSW en \texttt{catalogo(v)}. Las tablas \texttt{productos} y \texttt{catalogo} son B+ agrupados, porque la ficha del producto y los vecinos que devuelve FAISS se leen por \texttt{id}. Cada registro cabe en una página de 4\,KB: el más largo, el de \texttt{productos}, ocupa unos 1\,400 bytes.
+
+La prueba \texttt{tools/tienda/test\_generar.py} comprueba que la misma semilla da los mismos archivos, los conteos, que cada precio está en el rango de su tipo, que cada \texttt{sede\_id}, \texttt{usuario\_id} y \texttt{producto\_id} existe, y que el 80\,\% de las compras de cada usuario cae en sus tipos preferidos. Además, \texttt{tools/probar\_sql.py docs/tienda.sql} ejecuta el script contra el motor con 13 bloques que revisan sus resultados.
+
+%-------------------------------------------------------------------------------
 \section{Comparación experimental}
 
 \subsection{Metodología}
