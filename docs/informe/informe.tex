@@ -605,6 +605,58 @@ El script \texttt{docs/tienda.sql} crea las tablas, las carga con \texttt{COPY} 
 
 La prueba \texttt{tools/tienda/test\_generar.py} comprueba que la misma semilla da los mismos archivos, los conteos, que cada precio está en el rango de su tipo, que cada \texttt{sede\_id}, \texttt{usuario\_id} y \texttt{producto\_id} existe, y que el 80\,\% de las compras de cada usuario cae en sus tipos preferidos. Además, \texttt{tools/probar\_sql.py docs/tienda.sql} ejecuta el script contra el motor con 13 bloques que revisan sus resultados.
 
+\subsection{Interfaz de copyright}
+
+La vista \emph{Copyright} de la web recibe una canción, la manda a \texttt{POST /api/copyright/analizar} y muestra qué partes de ella se parecen a canciones de GTZAN.
+
+\begin{itemize}
+  \item \emph{Reproductor.} El audio subido se reproduce en el navegador con \texttt{<audio>}, sin volver a pedirlo a la API.
+  \item \emph{Línea de tiempo.} Cada tramo de 10\,s es un bloque en su posición dentro de la canción. Como los tramos empiezan cada 5\,s y se solapan a la mitad, se dibujan en dos carriles alternados. El color indica la canción original de su mejor coincidencia, y gris si no supera el umbral; la intensidad indica la similitud. Al pasar el mouse se ven la canción, su género, el segundo del original donde empieza el tramo y el porcentaje. Un clic reproduce la subida desde ese segundo, y una línea vertical sigue la reproducción.
+  \item \emph{Canciones detectadas.} Cada una aparece con su color, su género, cuántos tramos coinciden, el porcentaje promedio y un botón para escuchar el original, que sirve \texttt{/api/audios/\{id\}}.
+  \item \emph{Veredicto.} ``Posible uso no autorizado'' o ``Sin coincidencias'', con el umbral usado: similitud mínima y cantidad mínima de tramos de la misma canción.
+\end{itemize}
+
+La prueba \texttt{web/tests/copyright.spec.ts} simula la API y comprueba el veredicto, los 8 tramos de una canción de 45\,s, que los tramos de la misma canción tienen el mismo color, el detalle al pasar el mouse, que un clic mueve la reproducción, el original de cada canción, el caso sin coincidencias y los errores.
+
+\paragraph{Cómo un audio se vuelve un vector: la cuantización.} Cada ventana de 2\,048 muestras da 13 coeficientes MFCC, así que un clip de 30\,s es una nube de unos 1\,290 vectores de 13 números. Para comparar dos audios de distinto largo hay que convertir esa nube en un solo vector de tamaño fijo. Eso hace la \emph{cuantización}, igual que con las palabras visuales de las imágenes:
+
+\begin{enumerate}
+  \item \emph{K-Means.} Con las ventanas de toda la colección, K-Means busca $K$ centroides que minimicen la distancia de cada ventana a su centroide más cercano. Empieza con $K$ centroides al azar y repite dos pasos hasta que casi no cambian: asignar cada ventana a su centroide más cercano y mover cada centroide al promedio de sus ventanas. Cada centroide es una \emph{palabra acústica}, un tipo de sonido corto. Se entrena una sola vez, con $K = 256$.
+  \item \emph{Asignación al centroide más cercano.} Cada ventana de un audio se reemplaza por el número de su centroide más cercano en distancia euclidiana. El audio pasa a ser una secuencia de palabras.
+  \item \emph{Histograma.} Se cuenta cuántas veces aparece cada palabra. El resultado tiene $K$ posiciones, sin importar cuánto dure el audio.
+  \item \emph{TF-IDF.} Igual que en texto, se usa $\mathrm{tf} = 1 + \ln f$ para que una palabra muy repetida no domine, y $\mathrm{idf} = \ln\frac{N + 1}{\mathrm{df} + 1} + 1$ para que pesen más las palabras raras en la colección. El vector se normaliza con norma L2, así el coseno compara solo la proporción de sonidos.
+\end{enumerate}
+
+\emph{Ejemplo pequeño.} Supongamos $K = 3$ palabras con solo 2 coeficientes: $c_1 = (0, 0)$, $c_2 = (4, 0)$ y $c_3 = (0, 4)$. Un audio tiene 6 ventanas, y cada una se asigna al centroide más cercano:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrc}
+\toprule
+Ventana & a $c_1$ & a $c_2$ & a $c_3$ & Palabra \\
+\midrule
+$(1, 0)$ & 1,00 & 3,00 & 4,12 & 1 \\
+$(0, 1)$ & 1,00 & 4,12 & 3,00 & 1 \\
+$(3, 1)$ & 3,16 & 1,41 & 4,24 & 2 \\
+$(5, 0)$ & 5,00 & 1,00 & 6,40 & 2 \\
+$(4, 1)$ & 4,12 & 1,00 & 5,00 & 2 \\
+$(1, 5)$ & 5,10 & 5,83 & 1,41 & 3 \\
+\bottomrule
+\end{tabular}
+\caption{Distancia euclidiana de cada ventana a cada centroide.}
+\end{table}
+
+El histograma es $f = (2, 3, 1)$. Si la colección tiene $N = 4$ audios y las palabras aparecen en $\mathrm{df} = (4, 2, 1)$ de ellos:
+\begin{itemize}
+  \item $\mathrm{tf} = (1 + \ln 2,\ 1 + \ln 3,\ 1 + \ln 1) = (1{,}693;\ 2{,}099;\ 1)$;
+  \item $\mathrm{idf} = (\ln\frac{5}{5} + 1,\ \ln\frac{5}{3} + 1,\ \ln\frac{5}{2} + 1) = (1;\ 1{,}511;\ 1{,}916)$;
+  \item $\mathrm{tf} \cdot \mathrm{idf} = (1{,}693;\ 3{,}171;\ 1{,}916)$, con norma $\sqrt{1{,}693^2 + 3{,}171^2 + 1{,}916^2} = 4{,}073$;
+  \item el vector final es $(0{,}416;\ 0{,}778;\ 0{,}470)$.
+\end{itemize}
+
+La palabra 1 aparece en los 4 audios, así que no ayuda a distinguirlos: su idf es 1, el mínimo. La palabra 3 aparece una sola vez en este audio, pero es la más rara de la colección, y por eso termina pesando más que la palabra 1, que aparece dos veces. En la detección de copyright esto se hace con cada tramo de 10\,s, y dos tramos se parecen si sus vectores tienen un coseno alto.
+
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
 
