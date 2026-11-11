@@ -321,6 +321,3 @@ datos/productos/
 # artefactos de api/multimedia/extraer_audio.py y los audios descargados
 datos/audio/
 datos/imagenes/
-
-# datos sinteticos de la tienda: se regeneran con tools/tienda/generar_datos.py
-datos/tienda/
