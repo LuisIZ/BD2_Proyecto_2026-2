@@ -573,7 +573,7 @@ Las pruebas de Playwright de \texttt{web/tests/resultados.spec.ts} cubren el sco
 
 \subsection{Datos de la tienda}
 
-La tienda (opción B del Anexo A) usa el catálogo de 10\,000 productos de ABO, que ya tiene texto, foto y vector. ABO no trae precios, tiendas, stock ni compras, así que esos datos se generan con \texttt{tools/tienda/generar\_datos.py}. El script usa un generador pseudoaleatorio con semilla: con \texttt{--semilla 7} siempre escribe los mismos archivos, y así los tres integrantes y la demo trabajan con los mismos datos. Los CSV no se suben al repositorio; se regeneran en un segundo.
+La tienda (opción B del Anexo A) usa el catálogo de 10\,000 productos de ABO, que ya tiene texto, foto y vector. ABO no trae precios, tiendas, stock ni compras, así que esos datos se generan con \texttt{tools/tienda/generar\_datos.py}. El script usa un generador pseudoaleatorio con semilla: con \texttt{--semilla 7} siempre escribe los mismos archivos, y así los tres integrantes y la demo trabajan con los mismos datos. Los CSV están en el repositorio, en \texttt{datos/tienda/}, junto con \texttt{catalogo.csv}, que trae el vector de cada producto; así la tienda se carga sin volver a extraer las características de las fotos.
 
 \begin{table}[H]
 \centering

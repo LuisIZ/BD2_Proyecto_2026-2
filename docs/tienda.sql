@@ -1,8 +1,8 @@
 -- Tienda (Parte 5): crea y carga las 6 tablas de la tienda y sus indices.
 --
--- Antes (una sola vez, ver docs/tienda.md):
---     python tools/tienda/generar_datos.py --n 10000 --semilla 7   -> datos/tienda/*.csv
---     python tools/dataset/preparar_catalogo.py --n 10000          -> datos/productos/catalogo_10000.csv
+-- Los CSV ya estan en datos/tienda/. Para regenerarlos (ver docs/tienda.md):
+--     python tools/tienda/generar_datos.py --n 10000 --semilla 7
+--     python tools/dataset/preparar_catalogo.py --n 10000   (y copiarlo a datos/tienda/catalogo.csv)
 --
 -- Se ejecuta entero desde la vista Consultas de la web. Para probarlo sobre una base temporal:
 --     python tools/probar_sql.py docs/tienda.sql
@@ -18,7 +18,7 @@ SELECT COUNT(*) FROM productos;
 
 -- [2] catalogo: el vector de 256 palabras visuales de cada producto, con los mismos id
 CREATE TABLE catalogo (id INT PRIMARY KEY, nombre VARCHAR(80), v VECTOR(256)) USING BPLUS;
-COPY catalogo FROM FILE 'datos/productos/catalogo_10000.csv';
+COPY catalogo FROM FILE 'datos/tienda/catalogo.csv';
 SELECT COUNT(*) FROM catalogo;
 -- espera: ids 10000
 

@@ -5,19 +5,30 @@ tienen texto, foto y vector (ver [dataset.md](dataset.md)). ABO no trae precios,
 compras, así que esos datos son **sintéticos y reproducibles**: la misma semilla da siempre los
 mismos archivos.
 
+## Archivos
+
+Los 6 CSV ya están en el repositorio, en `datos/tienda/` (unos 21 MB):
+- `productos.csv`, `sedes.csv`, `inventario.csv`, `usuarios.csv` y `compras.csv`;
+- `catalogo.csv`, con el vector de cada producto (14 MB).
+
+Se cargan con [tienda.sql](tienda.sql), entero desde la vista **Consultas** de la web.
+
 ## Cómo regenerarlos
+
+Solo hace falta si se cambia el generador o la semilla:
 
 ```
 python tools/tienda/generar_datos.py --n 10000 --semilla 7
 python tools/dataset/preparar_catalogo.py --n 10000
+copy datos\productos\catalogo_10000.csv datos\tienda\catalogo.csv
 ```
 
-- El primero escribe `datos/tienda/` en un segundo.
+- El primero reescribe los 5 CSV de `datos/tienda/` en un segundo. Con la misma semilla salen
+  idénticos.
 - El segundo escribe `datos/productos/catalogo_10000.csv` y necesita
-  `datos/productos/vectores_100000.npy` (ver [comparacion_vectorial/README.md](comparacion_vectorial/README.md)).
-- Las dos carpetas están en `.gitignore`.
-
-Después se carga todo con [tienda.sql](tienda.sql), entero desde la vista **Consultas** de la web.
+  `datos/productos/vectores_100000.npy`, que no está en el repo por su tamaño (ver
+  [comparacion_vectorial/README.md](comparacion_vectorial/README.md)). Por eso `catalogo.csv` se
+  sube ya armado.
 Para probarlo sobre una base temporal:
 
 ```
