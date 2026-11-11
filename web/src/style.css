@@ -1883,3 +1883,174 @@ details summary {
   height: 72px;
   object-fit: contain;
 }
+
+/* ---- Copyright (#94): audio subido, timeline de tramos y canciones detectadas ---- */
+.copyright {
+  display: grid;
+  gap: 16px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+.copyright .panel-note {
+  margin: 0;
+}
+.copyright-estado {
+  margin: 12px 16px;
+}
+.copyright-audio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 16px;
+}
+.copyright-audio strong {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.copyright-audio audio {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.copyright-veredicto {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border-left: 6px solid;
+}
+.copyright-veredicto strong {
+  font-size: 18px;
+}
+.copyright-veredicto.sospechoso {
+  border-left-color: #c2255c;
+}
+.copyright-veredicto.sospechoso strong {
+  color: #a61e4d;
+}
+.copyright-veredicto.limpio {
+  border-left-color: var(--accent);
+}
+.copyright-veredicto.limpio strong {
+  color: var(--accent);
+}
+.copyright-veredicto span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.timeline {
+  padding: 16px;
+}
+.timeline-pista {
+  position: relative;
+  height: 64px;
+  border-radius: 6px;
+  background: #eef2ef;
+}
+button.timeline-tramo {
+  position: absolute;
+  height: 26px;
+  padding: 0;
+  border: 2px solid #ffffff;
+  border-radius: 5px;
+}
+button.timeline-tramo.carril-0 {
+  top: 4px;
+}
+button.timeline-tramo.carril-1 {
+  top: 34px;
+}
+button.timeline-tramo:hover:not(:disabled),
+button.timeline-tramo:focus-visible {
+  border-color: var(--ink);
+  outline: none;
+}
+.timeline-cursor {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--ink);
+  pointer-events: none;
+}
+.timeline-eje {
+  position: relative;
+  height: 18px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.timeline-eje span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+.timeline-eje span:first-child {
+  transform: none;
+}
+.timeline-eje span:last-child {
+  transform: translateX(-100%);
+}
+.timeline-detalle {
+  min-height: 22px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.copyright-canciones {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 16px 16px;
+  list-style: none;
+}
+.copyright-canciones li {
+  display: grid;
+  grid-template-columns: 14px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+}
+.copyright-color {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+.copyright-cancion {
+  display: grid;
+  min-width: 0;
+}
+.copyright-porcentaje {
+  font-size: 16px;
+  font-weight: 700;
+}
+.copyright-original {
+  grid-column: 2 / -1;
+  width: 100%;
+}
+.copyright-sql {
+  margin: 0 16px 12px;
+  font-size: 12px;
+}
+.copyright-sql summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.copyright-sql code {
+  display: block;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+@media (max-width: 720px) {
+  .copyright-canciones li {
+    grid-template-columns: 14px 1fr auto;
+  }
+  .copyright-canciones li > button {
+    grid-column: 2 / -1;
+    justify-self: start;
+  }
+}

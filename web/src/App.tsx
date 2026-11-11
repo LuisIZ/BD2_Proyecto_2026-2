@@ -5,6 +5,7 @@ import ImportCsv from "./ImportCsv";
 import Experiments from "./Experiments";
 import Comparison from "./Comparison";
 import Demo from "./Demo";
+import Copyright from "./copyright/Copyright";
 import Syntax from "./Syntax";
 import { Plan, Results } from "./Results";
 import SpatialMap from "./SpatialMap";
@@ -17,6 +18,7 @@ const views = [
   ["comparar", "Comparar estructuras"],
   ["mediciones", "Mediciones"],
   ["sintaxis", "Sintaxis"],
+  ["copyright", "Copyright"],
 ];
 
 const organizations: Record<string, string> = {
@@ -587,6 +589,9 @@ export default function App() {
         </div>
         <div hidden={view !== "sintaxis"}>
           <Syntax />
+        </div>
+        <div hidden={view !== "copyright"}>
+          {view === "copyright" && <Copyright />}
         </div>
       </main>
       {importing && (
