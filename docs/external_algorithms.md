@@ -38,6 +38,47 @@ El rango practico descuenta 16-32 bytes por slot para longitud, offset,
 estado y alineamiento. En C++, `std::string`, capacidad reservada y allocator
 pueden aumentar el costo real.
 
+### Archivos temporales
+
+`motor/consultas/archivo_temporal.h` (solo cabecera) es la base para que el
+sort, el hashing y el join escriban sus runs y particiones en disco. La clase
+`ArchivoTemporal` guarda filas (`Fila`, un vector de `Valor`) en paginas de
+4 KB:
+
+```text
+pagina := [n filas: uint16] [fila 1] [fila 2] ... [ceros hasta 4096 B]
+fila   := [n valores: uint16] y por valor [tipo: uint8] [datos]
+          INT: int64 | FLOAT: float32 | VARCHAR: uint16 + bytes
+          POINT: 2 int32 | VECTOR: uint16 + float32 x n
+```
+
+`codificar_fila` y `decodificar_fila` guardan el tipo de cada valor, asi que
+no dependen del esquema de una tabla: sirven igual para las filas de un JOIN.
+Si una fila ocupa mas de 4094 bytes se lanza `la fila no cabe en una pagina`.
+
+```cpp
+motor::PlanTrace traza;
+motor::sql::ArchivoTemporal run(base_datos, &traza);  // <base>/tmp/temporal_*.pag
+for (const auto& fila : filas) run.agregar(fila);     // vuelca cada pagina llena
+run.cerrar_escritura();                               // escribe la ultima pagina
+motor::sql::Fila fila;
+while (run.siguiente(fila)) { /* carga una pagina a la vez */ }
+run.reiniciar_lectura();                              // otra pasada desde el inicio
+```
+
+- `paginas_escritas()` y `paginas_leidas()` cuentan las paginas de ese archivo;
+  si se pasa una `PlanTrace`, sus campos `paginas_escritas` y `paginas_leidas`
+  suman las de todos los temporales de la consulta, para mostrarlas en el
+  `EXPLAIN`.
+- El archivo se borra en el destructor (RAII), tambien si la consulta termina
+  con una excepcion. Se puede mover (por ejemplo, a un `std::vector` de runs)
+  y lo borra el ultimo dueno.
+- En memoria solo vive la pagina en curso: 4 KB para escribir y 4 KB para leer.
+
+`motor/pruebas/archivo_temporal_test.cpp` escribe y relee 10 000 filas con los
+5 tipos (231 paginas), compara cada fila, cuenta las paginas contra el calculo
+esperado y comprueba que el archivo se borra y que los errores son claros.
+
 ## 3. External Merge Sort
 
 `ExternalMergeSort<Registro, Clave>` calcula:
