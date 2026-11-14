@@ -205,7 +205,37 @@ El hash responde una igualdad con una lectura del directorio y una del bucket, p
 
 \paragraph{External merge sort.} Para \texttt{ORDER BY}, los registros se dividen en corridas del tamaño del presupuesto de memoria (páginas de buffer por registros por página). Cada corrida se ordena y luego se mezclan $k$ a la vez con un heap de mínimos, en $O(N \log k)$. La traza del plan reporta las corridas iniciales y las pasadas de mezcla.
 
-\paragraph{External hashing para GROUP BY.} Las filas se reparten en particiones según el hash de la columna de agrupación. Como todas las filas de un grupo caen en la misma partición, cada partición se agrega por separado con su propia tabla de hash y luego se libera. Así en memoria solo viven los grupos de la partición en curso: con 300 grupos repartidos en 9 particiones, el máximo de grupos simultáneos fue 42. El plan muestra ese valor como \texttt{grupos\_en\_memoria}.
+\paragraph{External Hashing en disco.} El \texttt{GROUP BY} y los agregados usan un presupuesto de $B = 10$ páginas de 4\,KB de memoria. Lo resuelve la clase \texttt{ExternalHashAggregate} de \texttt{hash\_externo.h} en cuatro pasos:
+
+\begin{enumerate}
+  \item \emph{Partición.} Cada fila se reduce al valor del grupo y a las columnas que piden los agregados, y se escribe en la partición $\mathrm{hash}(\mathit{grupo}) \bmod P$, con $P = B - 1$. Cada partición es un archivo temporal de páginas de 4\,KB con una sola página de buffer, que se escribe a disco cuando se llena.
+  \item \emph{Agregación.} Se lee una partición a la vez y se agrega con una tabla hash en memoria. Como el hash manda todas las filas de un grupo a la misma partición, cada grupo se completa dentro de ella y se emite; después el archivo se borra.
+  \item \emph{Volver a particionar.} Si la tabla hash de una partición pasa de $B$ páginas (cada grupo ocupa su clave y 32 bytes por agregado), esa partición se relee y se reparte en otras $P$ con otra semilla del hash, hasta 3 niveles. Si aun así no cabe, la consulta falla con un error claro. El límite cuenta grupos y no filas, así que un grupo con muchas filas siempre cabe.
+  \item \emph{Una sola pasada.} \texttt{COUNT}, \texttt{SUM}, \texttt{AVG}, \texttt{MIN} y \texttt{MAX} de todo el \texttt{SELECT} se calculan en la misma pasada, y el valor de la columna agrupada sale de la partición, sin una estructura con todos los grupos.
+\end{enumerate}
+
+\texttt{EXPLAIN ANALYZE} muestra en el nodo \texttt{HashAggregate} las particiones creadas, los niveles, los grupos que hubo a la vez en memoria y las páginas escritas y leídas de las particiones. La tabla~\ref{tab:hash-externo} mide tres consultas sobre los productos de ABO.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rlrrrrrr}
+\toprule
+Filas & Agrupa por & Grupos & Particiones & Niveles & En memoria & Escritas / leídas & Tiempo \\
+\midrule
+10\,000 & \texttt{tipo} & 328 & 9 & 1 & 49 & 73 / 73 & 56 ms \\
+10\,000 & \texttt{marca} & 190 & 9 & 1 & 26 & 124 / 124 & 67 ms \\
+10\,000 & \texttt{id} & 10\,000 & 90 & 2 & 953 & 135 / 180 & 208 ms \\
+100\,000 & \texttt{tipo} & 517 & 9 & 1 & 65 & 705 / 705 & 135 ms \\
+100\,000 & \texttt{marca} & 360 & 9 & 1 & 46 & 1\,203 / 1\,203 & 160 ms \\
+100\,000 & \texttt{id} & 100\,000 & 819 & 3 & 953 & 1\,756 / 2\,206 & 3\,300 ms \\
+\bottomrule
+\end{tabular}
+\caption{GROUP BY con external hashing en disco, $B = 10$. \emph{En memoria} es la mayor cantidad de grupos a la vez; \emph{escritas / leídas}, las páginas de 4\,KB de las particiones. La consulta por \texttt{marca} calcula además \texttt{MIN(id)} y \texttt{MAX(id)}. El tiempo es el del nodo \texttt{HashAggregate}, el mejor de 3 corridas.}
+\label{tab:hash-externo}
+\end{table}
+
+Con pocos grupos alcanza un nivel: cada fila se escribe y se lee una sola vez, y en memoria hay a la vez cerca de un noveno de los grupos. Con un grupo por fila, 40\,KB de tabla no alcanzan: 10\,000 grupos necesitan 2 niveles y 100\,000 necesitan 3, y se leen más páginas de las que se escriben porque las particiones que no caben se releen para repartirlas. Ese es el costo de acotar la memoria: agrupar 100\,000 filas por \texttt{id} crea 819 archivos y tarda 3,3\,s.
 
 \subsection{Parser, planificador y EXPLAIN}
 
@@ -1061,7 +1091,7 @@ HNSW & búsqueda interactiva con coseno sobre datos que caben en memoria & const
 
 El proyecto permitió comprobar en la práctica varias ideas que en clase se ven de forma teórica. La más clara es que el número de páginas leídas explica casi todas las diferencias de rendimiento: el secuencial gana en búsquedas porque lee 35 páginas en lugar de 1\,598, y el B+ agrupado gana en rangos porque sus filas están contiguas. También quedó claro que medir bien es parte del trabajo, porque dos de las observaciones del primer avance se explicaban por qué se estaba midiendo y no por un error en las estructuras.
 
-La Parte 1 está completa, con tres límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. El merge sort y el hashing externos modelan el presupuesto de memoria, pero sus corridas y particiones todavía viven en memoria y no en archivos temporales. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro. Estos pendientes quedan para la Entrega Final.
+La Parte 1 está completa, con tres límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. El merge sort externo modela el presupuesto de memoria, pero sus corridas todavía viven en memoria; el hashing del 	exttt{GROUP BY} ya escribe sus particiones en archivos temporales. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro. Estos pendientes quedan para la Entrega Final.
 
 De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. El repositorio ya incluye \texttt{postgis\_bench.sql}, que repite la comparación con PostGIS sobre \texttt{geography} y distancia geodésica; como trabajo futuro queda ejecutarlo y comparar esos tiempos con la métrica haversine del motor.
 

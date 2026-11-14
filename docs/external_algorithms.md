@@ -4,8 +4,10 @@
 
 Los algoritmos C++ estan en:
 
-- `motor/consultas/external_algorithms.h`: templates de ordenamiento,
-  agregacion, joins y `PlanTrace`.
+- `motor/consultas/external_algorithms.h`: templates de ordenamiento, joins y
+  `PlanTrace`.
+- `motor/consultas/hash_externo.h`: el GROUP BY con external hashing en disco
+  (seccion 4).
 - `motor/consultas/external_algorithms.cpp`: unidad de compilacion.
 - `motor/pruebas/external_algorithms_test.cpp`: pruebas principales.
 
@@ -18,10 +20,10 @@ motor::ExternalMergeSort<int, int> sort(10, 1000, 9, &traza);
 
 ## 2. Paginas y presupuesto
 
-El C++ modela el presupuesto mediante `buffer_pages`, `records_per_page` y
-`k`. No se crean paginas fisicas ni archivos temporales en esta version: runs
-y particiones viven en `std::vector`. Por tanto, `records_per_page` es un
-limite de memoria reproducible, no una serializacion real.
+El sort modela el presupuesto mediante `buffer_pages`, `records_per_page` y
+`k`: sus runs todavia viven en `std::vector`, asi que `records_per_page` es un
+limite de memoria reproducible, no una serializacion real. El GROUP BY ya
+escribe sus particiones en paginas de 4 KB con `ArchivoTemporal` (seccion 4).
 
 Para el CSV de prueba:
 
@@ -114,46 +116,81 @@ que esta version conserva en memoria.
 La traza registra `buffer_pages`, `records_per_page`, `k`, `initial_runs`,
 `merge_passes` y `records`.
 
-## 4. External Hash Aggregation
+## 4. External Hash Aggregation en disco
 
-`ExternalHashAggregate<Registro, Grupo>` particiona por:
+`GROUP BY` (y los agregados sin `GROUP BY`) se resuelve con
+`ExternalHashAggregate` de `motor/consultas/hash_externo.h`, sobre filas del
+motor (`Fila`) y con `ArchivoTemporal` para las particiones. Con **B** paginas
+de memoria (`PAGINAS_GROUP_BY = 10` en `ejecutor.cpp`):
+
+1. **Particion.** Cada fila se reduce al valor del grupo y a las columnas que
+   piden los agregados (`[grupo, v1, v2, ...]`) y se escribe en la particion
+   `hash(grupo, nivel) % P`, con **P = B - 1**. Cada particion es un
+   `ArchivoTemporal` con una sola pagina de buffer: cuando se llena, se
+   escribe a disco. El hash es FNV-1a sobre el texto del grupo, mezclado con el
+   nivel, asi que cada nivel reparte distinto.
+2. **Agregacion.** Se lee una particion a la vez y se agrega con una tabla hash
+   en memoria. Como el hash manda todas las filas de un grupo a la misma
+   particion, cada grupo se completa dentro de su particion y se emite apenas
+   termina; el archivo se borra en ese momento.
+3. **Volver a particionar.** La tabla hash de una particion puede ocupar hasta
+   B paginas: cada grupo cuenta su clave codificada mas 32 bytes por agregado
+   (`EstadoAgregado`). Si se pasa, la particion se relee y se reparte en otras
+   P con la semilla del nivel siguiente, hasta **3 niveles**. Si aun asi no
+   cabe, la consulta falla con
+   `GROUP BY: una particion no cabe en B paginas de memoria despues de 3 niveles`.
+   El limite es sobre los grupos y no sobre las filas: un solo grupo con
+   millones de filas cabe, porque ocupa una entrada.
+4. **Una sola pasada.** `COUNT`, `SUM`, `AVG`, `MIN` y `MAX` de todo el `SELECT`
+   se acumulan en la misma pasada (un `EstadoAgregado` por agregado). El valor
+   de la columna agrupada sale de la particion; ya no hay un `std::map` con
+   todos los grupos.
+
+Las particiones salen en el orden del hash. Para no cambiar resultados que antes
+salian ordenados, sin `ORDER BY` el ejecutor ordena la salida por el valor del
+grupo; eso ordena una fila por grupo, no las filas de entrada.
+
+`EXPLAIN ANALYZE` muestra las medidas en el nodo `HashAggregate`:
 
 ```text
-hash(grupo) % partitions
+HashAggregate on p10k (actual time=207.569 rows=10000)
+Group Key: id
+particiones=90  niveles=2  grupos_en_memoria=953  paginas_escritas=135  paginas_leidas=180
+  -> Seq Scan on p10k  (cost=1939.00 rows=10000) (actual time=22.292 rows=10000 pages=1939)
 ```
 
-El limite logico de grupos simultaneos es:
+- `particiones`: archivos temporales creados en todos los niveles (9 por cada
+  reparto).
+- `niveles`: 1 si ninguna particion se tuvo que volver a repartir.
+- `grupos_en_memoria`: la tabla hash mas grande que hubo a la vez.
+- `paginas_escritas` y `paginas_leidas`: paginas de 4 KB de las particiones.
+  Se leen mas de las que se escriben cuando una particion se relee para
+  repartirla.
 
-```text
-max_groups_in_memory = buffer_pages * records_per_page
-```
+### Medicion
 
-La cantidad de particiones es al menos `buffer_pages - 1` y aumenta cuando el
-volumen supera el limite. Cada grupo acumula `COUNT`, `SUM`, `AVG`, `MIN` y
-`MAX` en `AggregateResult`.
+`EXPLAIN ANALYZE` sobre `productos_10k.csv` y `productos_100k.csv` cargados con
+`CREATE TABLE ... FROM FILE` (heap), B = 10, el mejor de 3 corridas, en Windows
+con el repositorio en OneDrive. El tiempo es el del nodo `HashAggregate`, sin
+la lectura de la tabla.
 
-La prueba usa 100 grupos, 4 paginas y 2 registros por pagina:
+| Filas | Consulta | Grupos | Particiones | Niveles | Grupos en memoria | Paginas escritas | Paginas leidas | Tiempo |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 10 000 | `tipo, COUNT(*)` | 328 | 9 | 1 | 49 | 73 | 73 | 56 ms |
+| 10 000 | `marca, COUNT(*), MIN(id), MAX(id)` | 190 | 9 | 1 | 26 | 124 | 124 | 67 ms |
+| 10 000 | `id, COUNT(*)` | 10 000 | 90 | 2 | 953 | 135 | 180 | 208 ms |
+| 100 000 | `tipo, COUNT(*)` | 517 | 9 | 1 | 65 | 705 | 705 | 135 ms |
+| 100 000 | `marca, COUNT(*), MIN(id), MAX(id)` | 360 | 9 | 1 | 46 | 1 203 | 1 203 | 160 ms |
+| 100 000 | `id, COUNT(*)` | 100 000 | 819 | 3 | 953 | 1 756 | 2 206 | 3 300 ms |
 
-```text
-max_groups_in_memory = 4 * 2 = 8
-```
-
-Se prueban 100 grupos, 12.5 veces el limite simultaneo.
-
-Las particiones se agregan una por vez: cada una usa su propia tabla de hash,
-se vuelca al resultado y se libera antes de pasar a la siguiente. Como el hash
-manda todas las filas de un grupo a la misma particion, el resultado es el
-mismo que agregando todo junto, pero en memoria solo viven los grupos de la
-particion en curso. La traza registra ese maximo como `peak_groups_in_memory`
-y el plan del motor SQL lo muestra como `grupos_en_memoria`:
-
-```text
-SELECT Index, COUNT(*) FROM t GROUP BY Index    (300 claves distintas)
-grupos=300 particiones=9 grupos_en_memoria=42
-```
-
-Importante: las particiones todavia viven en `std::vector`. Para external
-hashing persistente se deben escribir en archivos temporales o paginas.
+- Con pocos grupos alcanza un nivel: cada fila se escribe y se lee una vez, y
+  en memoria hay a la vez unos 1/9 de los grupos.
+- Con un grupo por fila, 40 KB de tabla no alcanzan: 10 000 grupos necesitan 2
+  niveles y 100 000 necesitan 3. Las paginas leidas superan a las escritas por
+  las particiones que se releen.
+- El costo de la memoria acotada es el tiempo: `GROUP BY id` sobre 100 000
+  filas crea 819 archivos y tarda 3,3 s. Con mas paginas de buffer bajaria el
+  numero de niveles.
 
 ## 5. Joins
 
@@ -253,9 +290,10 @@ Ejemplo:
 INFO Plan externo: external_merge_sort buffer_pages=10 records_per_page=1000 k=9 initial_runs=10 merge_passes=1 records=100000
 ```
 
-Tambien se registran `external_hash_aggregate` (con `partitions`,
-`max_groups_in_memory` y `peak_groups_in_memory`), `hash_join` e
-`index_nested_loop_join`.
+Tambien se registran `external_hash_aggregate` (con `buffer_pages`,
+`partitions`, `levels`, `repartitions`, `peak_groups_in_memory`,
+`pages_written`, `pages_read`, `records`, `groups` y `aggregates`),
+`hash_join` e `index_nested_loop_join`.
 
 ## 7. Pruebas
 
@@ -264,12 +302,20 @@ Tambien se registran `external_hash_aggregate` (con `partitions`,
 1. Ordenamiento de 100 000 registros.
 2. 10 runs con 10 paginas y 1 000 registros por pagina.
 3. Merge k-way con `k=9`.
-4. 100 grupos con capacidad logica de 8 grupos.
-5. `COUNT`, `SUM`, `AVG`, `MIN` y `MAX`.
+4. GROUP BY en disco con 1, 100 y 50 000 grupos: `COUNT`, `SUM`, `AVG`,
+   `MIN` y `MAX` iguales a agrupar en memoria, y cada grupo emitido una vez.
+5. Con B = 3 y 200 grupos, la particion no cabe y se vuelve a particionar
+   (2 niveles); con 60 000 grupos ni 3 niveles alcanzan y el error es claro.
+   Los temporales se borran tambien cuando hay error.
 6. Hash join con claves coincidentes.
 7. Index nested loop join.
 8. Eleccion del planner.
 9. Persistencia de la traza.
+
+`sql_test.cpp` (`prueba_group_by_externo`) lo prueba por SQL: 20 000 filas con
+137 tipos y los cinco agregados en una consulta, `GROUP BY id` con 20 000
+grupos (2 niveles), agregados sin `GROUP BY` y las medidas del `EXPLAIN
+ANALYZE`.
 
 Compilacion:
 
@@ -286,9 +332,8 @@ Ejecucion:
 
 ## 8. Limitaciones
 
-La implementacion C++ preserva las APIs principales de Python, pero aun no
-persiste runs ni particiones. Para cumplir completamente el modelo externo
-sobre disco se necesita:
+El GROUP BY ya particiona en disco. El sort y el join todavia trabajan con
+vectores en memoria; para llevarlos al modelo externo completo se necesita:
 
 - formato de pagina de 4 KiB u 8 KiB;
 - administrador de paginas temporales;
