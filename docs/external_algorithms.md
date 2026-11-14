@@ -38,6 +38,47 @@ El rango practico descuenta 16-32 bytes por slot para longitud, offset,
 estado y alineamiento. En C++, `std::string`, capacidad reservada y allocator
 pueden aumentar el costo real.
 
+### Archivos temporales
+
+`motor/consultas/archivo_temporal.h` (solo cabecera) es la base para que el
+sort, el hashing y el join escriban sus runs y particiones en disco. La clase
+`ArchivoTemporal` guarda filas (`Fila`, un vector de `Valor`) en paginas de
+4 KB:
+
+```text
+pagina := [n filas: uint16] [fila 1] [fila 2] ... [ceros hasta 4096 B]
+fila   := [n valores: uint16] y por valor [tipo: uint8] [datos]
+          INT: int64 | FLOAT: float32 | VARCHAR: uint16 + bytes
+          POINT: 2 int32 | VECTOR: uint16 + float32 x n
+```
+
+`codificar_fila` y `decodificar_fila` guardan el tipo de cada valor, asi que
+no dependen del esquema de una tabla: sirven igual para las filas de un JOIN.
+Si una fila ocupa mas de 4094 bytes se lanza `la fila no cabe en una pagina`.
+
+```cpp
+motor::PlanTrace traza;
+motor::sql::ArchivoTemporal run(base_datos, &traza);  // <base>/tmp/temporal_*.pag
+for (const auto& fila : filas) run.agregar(fila);     // vuelca cada pagina llena
+run.cerrar_escritura();                               // escribe la ultima pagina
+motor::sql::Fila fila;
+while (run.siguiente(fila)) { /* carga una pagina a la vez */ }
+run.reiniciar_lectura();                              // otra pasada desde el inicio
+```
+
+- `paginas_escritas()` y `paginas_leidas()` cuentan las paginas de ese archivo;
+  si se pasa una `PlanTrace`, sus campos `paginas_escritas` y `paginas_leidas`
+  suman las de todos los temporales de la consulta, para mostrarlas en el
+  `EXPLAIN`.
+- El archivo se borra en el destructor (RAII), tambien si la consulta termina
+  con una excepcion. Se puede mover (por ejemplo, a un `std::vector` de runs)
+  y lo borra el ultimo dueno.
+- En memoria solo vive la pagina en curso: 4 KB para escribir y 4 KB para leer.
+
+`motor/pruebas/archivo_temporal_test.cpp` escribe y relee 10 000 filas con los
+5 tipos (231 paginas), compara cada fila, cuenta las paginas contra el calculo
+esperado y comprueba que el archivo se borra y que los errores son claros.
+
 ## 3. External Merge Sort
 
 `ExternalMergeSort<Registro, Clave>` calcula:
@@ -146,6 +187,57 @@ relacion interna.
 `outer_rows <= inner_rows`; en otro caso selecciona hash join. Es una
 heuristica inicial. Una version posterior debe considerar paginas, I/O,
 selectividad y cardinalidades del catalogo.
+
+### INNER JOIN en SQL
+
+El ejecutor usa estas piezas para `SELECT ... FROM a x JOIN b y ON x.c = y.c`
+(ver [parser_sql.md](parser_sql.md)). `planificar_join` en
+`motor/consultas/ejecutor.cpp`, sin leer datos:
+
+1. Valida el `ON`: una columna de cada tabla, del mismo tipo, sin `POINT` ni
+   `VECTOR`.
+2. Reparte el `WHERE`: cada condicion menciona una sola columna, asi que se
+   aplica en su tabla antes del join y puede usar sus indices.
+3. Una tabla es **indexable** si su columna del `ON` tiene un indice B+ o
+   HASH, o si es su clave primaria en una tabla `SEQUENTIAL` o `BPLUS` (en un
+   heap la clave no tiene indice). Si las dos lo son, la interna es la mas
+   grande.
+4. Con una tabla indexable, `JoinPlanner::choose(filas estimadas de la
+   externa, registros de la interna, true)` decide entre index nested loop y
+   hash join. Sin ninguna, hash join.
+
+Ejecucion:
+
+- **Index nested loop join:** lee la externa con su parte del `WHERE` y, por
+  cada clave distinta, busca en la interna con `columna = clave` mas su parte
+  del `WHERE`; el planificador de una tabla elige el indice. Las claves ya
+  vistas no se vuelven a buscar. El nodo de la interna suma las busquedas, las
+  filas y las paginas leidas.
+- **Hash join:** lee las dos tablas con su parte del `WHERE` y llama a
+  `hash_join` construyendo la tabla hash con la que trajo menos filas.
+
+Las filas unidas (las columnas de `a` y luego las de `b`) pasan por las mismas
+etapas que una tabla sola: `agrupar`, `ordenar`, `proyectar` y `limitar`
+reciben un esquema con las columnas calificadas por tabla o alias, no una
+`Tabla`. El `EXPLAIN` muestra el join como un arbol:
+
+```text
+Limit on compras JOIN compras  (rows=10) (actual rows=10)
+  -> Sort on compras JOIN compras (actual time=0.944 rows=33)
+     Sort Key: veces DESC
+    -> HashAggregate on compras JOIN compras (actual time=1.872 rows=33)
+       Group Key: c2.producto_id
+      -> Index Nested Loop Join on compras JOIN compras (actual time=0.788 rows=33)
+         Join Cond: c1.usuario_id = c2.usuario_id
+        -> Index Scan using compras_producto on compras c1 (producto_id)  (cost=40.00 rows=37) (actual time=0.065 rows=2 pages=4)
+           Index Cond: producto_id = 5
+        -> Index Scan using compras_usuario on compras c2 (usuario_id) (actual time=0.788 rows=33 pages=38)
+           Index Cond: usuario_id = c1.usuario_id
+           Nota: una busqueda por cada clave distinta de c1
+```
+
+Las dos tablas se leen enteras en memoria (filtradas por su `WHERE`); el join
+todavia no usa `ArchivoTemporal` para particionar en disco.
 
 ## 6. Trazas y logs
 

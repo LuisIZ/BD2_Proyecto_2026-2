@@ -30,10 +30,12 @@ MAX_VENTANAS_POR_AUDIO = 1500
 CARPETA_AUDIO = RAIZ / "datos" / "audio"
 
 
-def extraer_descriptores_audio(ruta, max_descriptores=MAX_VENTANAS_POR_AUDIO, n_mfcc=N_MFCC_DEFAULT):
+def extraer_descriptores_audio(ruta, max_descriptores=MAX_VENTANAS_POR_AUDIO, n_mfcc=N_MFCC_DEFAULT, offset=0.0, duracion=DURACION_MAXIMA):
     if max_descriptores <= 0:
         raise ValueError("max_descriptores debe ser mayor que cero")
-    senal, _ = librosa.load(os.fspath(ruta), sr=FRECUENCIA_MUESTREO, mono=True, duration=DURACION_MAXIMA)
+    if offset < 0 or duracion <= 0:
+        raise ValueError("offset debe ser >= 0 y duracion mayor que cero")
+    senal, _ = librosa.load(os.fspath(ruta), sr=FRECUENCIA_MUESTREO, mono=True, offset=offset, duration=duracion)
     if len(senal) == 0:
         return np.empty((0, n_mfcc), dtype=np.float32)
     # un vector de n_mfcc coeficientes por cada ventana de tiempo
