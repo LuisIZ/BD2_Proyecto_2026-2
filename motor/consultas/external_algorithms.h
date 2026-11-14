@@ -51,6 +51,9 @@ public:
 
     std::vector<PlanEvent> events;
     std::filesystem::path ruta_log_;
+    // páginas de 4 KB de los archivos temporales de la consulta (ver archivo_temporal.h)
+    std::size_t paginas_escritas = 0;
+    std::size_t paginas_leidas = 0;
 };
 
 template <typename Registro, typename Clave>

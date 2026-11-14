@@ -44,6 +44,11 @@ private:
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             std::size_t inicio = i_;
             while (i_ < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[i_])) || s_[i_] == '_')) ++i_;
+            // columna calificada: alias.columna es un solo nombre
+            if (i_ + 1 < s_.size() && s_[i_] == '.' && (std::isalpha(static_cast<unsigned char>(s_[i_ + 1])) || s_[i_ + 1] == '_')) {
+                ++i_;
+                while (i_ < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[i_])) || s_[i_] == '_')) ++i_;
+            }
             return {TipoToken::IDENT, s_.substr(inicio, i_ - inicio)};
         }
         if (std::isdigit(static_cast<unsigned char>(c)) ||
@@ -133,6 +138,7 @@ private:
             Sentencia interna = cuerpo();
             if (interna.tipo == TipoSentencia::EXPLAIN) error("no se puede anidar EXPLAIN");
             s.tabla = interna.tabla;
+            s.tabla_join = interna.tabla_join;  // para tomar el lock de las dos tablas
             s.explicada = std::make_shared<Sentencia>(std::move(interna));
             return s;
         }
@@ -608,7 +614,7 @@ private:
                     }
                 }
                 if (es("AS")) {
-                    if (!item.score) error("AS solo se admite para SCORE() y SIMILARITY_SCORE()");
+                    if (!item.score && item.agregado.empty()) error("AS solo se admite para agregados, SCORE() y SIMILARITY_SCORE()");
                     avanzar();
                     item.alias = identificador();
                 }
@@ -619,8 +625,23 @@ private:
         }
         esperar_palabra("FROM");
         s.tabla = identificador();
+        s.alias = alias_de_tabla();
+        if (es("INNER") || es("JOIN")) {
+            if (es("INNER")) avanzar();
+            esperar_palabra("JOIN");
+            s.hay_join = true;
+            s.tabla_join = identificador();
+            s.alias_join = alias_de_tabla();
+            esperar_palabra("ON");
+            s.on_izquierda = identificador();
+            if (!es_simbolo("=")) error("el ON del JOIN solo admite una igualdad entre dos columnas");
+            avanzar();
+            s.on_derecha = identificador();
+        }
         if (es("WHERE")) { avanzar(); where(s); }
         if (s.busqueda_texto && s.busqueda_similar) error("MATCH y SIMILAR_TO no se combinan en una consulta");
+        if (s.hay_join && s.busqueda_texto) error("MATCH no se combina con JOIN");
+        if (s.hay_join && s.busqueda_similar) error("SIMILAR_TO no se combina con JOIN");
         if (es("USING")) {
             avanzar();
             const std::string tipo = mayusculas(identificador());
@@ -678,6 +699,38 @@ private:
             s.limite = numero();
             if (s.limite < 0) error("LIMIT debe ser positivo");
         }
+        if (!s.hay_join) quitar_calificadores(s);
+    }
+
+    // FROM t [AS] x: el alias es cualquier nombre que no sea la palabra que sigue a la tabla
+    std::string alias_de_tabla() {
+        if (es("AS")) {
+            avanzar();
+            return identificador();
+        }
+        static const char* siguen[] = {"WHERE", "INNER", "JOIN", "ON", "USING", "WITH", "GROUP", "ORDER", "LIMIT"};
+        if (actual().tipo != TipoToken::IDENT) return "";
+        for (const char* palabra : siguen) if (es(palabra)) return "";
+        return identificador();
+    }
+
+    // sin JOIN, t.col o x.col es la columna col de la única tabla
+    void quitar_calificadores(Sentencia& s) const {
+        auto quitar = [&](std::string& columna) {
+            const std::size_t punto = columna.find('.');
+            if (punto == std::string::npos) return;
+            const std::string tabla = mayusculas(columna.substr(0, punto));
+            if (tabla != mayusculas(s.tabla) && tabla != mayusculas(s.alias)) {
+                throw std::runtime_error("la tabla " + columna.substr(0, punto) + " no esta en el FROM");
+            }
+            columna = columna.substr(punto + 1);
+        };
+        for (ItemSelect& item : s.items) quitar(item.columna);
+        for (Condicion& c : s.condiciones) quitar(c.columna);
+        quitar(s.group_by);
+        quitar(s.order_by);
+        quitar(s.columna_texto);
+        quitar(s.columna_similar);
     }
 
     std::vector<Token> t_;
