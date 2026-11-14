@@ -188,6 +188,57 @@ relacion interna.
 heuristica inicial. Una version posterior debe considerar paginas, I/O,
 selectividad y cardinalidades del catalogo.
 
+### INNER JOIN en SQL
+
+El ejecutor usa estas piezas para `SELECT ... FROM a x JOIN b y ON x.c = y.c`
+(ver [parser_sql.md](parser_sql.md)). `planificar_join` en
+`motor/consultas/ejecutor.cpp`, sin leer datos:
+
+1. Valida el `ON`: una columna de cada tabla, del mismo tipo, sin `POINT` ni
+   `VECTOR`.
+2. Reparte el `WHERE`: cada condicion menciona una sola columna, asi que se
+   aplica en su tabla antes del join y puede usar sus indices.
+3. Una tabla es **indexable** si su columna del `ON` tiene un indice B+ o
+   HASH, o si es su clave primaria en una tabla `SEQUENTIAL` o `BPLUS` (en un
+   heap la clave no tiene indice). Si las dos lo son, la interna es la mas
+   grande.
+4. Con una tabla indexable, `JoinPlanner::choose(filas estimadas de la
+   externa, registros de la interna, true)` decide entre index nested loop y
+   hash join. Sin ninguna, hash join.
+
+Ejecucion:
+
+- **Index nested loop join:** lee la externa con su parte del `WHERE` y, por
+  cada clave distinta, busca en la interna con `columna = clave` mas su parte
+  del `WHERE`; el planificador de una tabla elige el indice. Las claves ya
+  vistas no se vuelven a buscar. El nodo de la interna suma las busquedas, las
+  filas y las paginas leidas.
+- **Hash join:** lee las dos tablas con su parte del `WHERE` y llama a
+  `hash_join` construyendo la tabla hash con la que trajo menos filas.
+
+Las filas unidas (las columnas de `a` y luego las de `b`) pasan por las mismas
+etapas que una tabla sola: `agrupar`, `ordenar`, `proyectar` y `limitar`
+reciben un esquema con las columnas calificadas por tabla o alias, no una
+`Tabla`. El `EXPLAIN` muestra el join como un arbol:
+
+```text
+Limit on compras JOIN compras  (rows=10) (actual rows=10)
+  -> Sort on compras JOIN compras (actual time=0.944 rows=33)
+     Sort Key: veces DESC
+    -> HashAggregate on compras JOIN compras (actual time=1.872 rows=33)
+       Group Key: c2.producto_id
+      -> Index Nested Loop Join on compras JOIN compras (actual time=0.788 rows=33)
+         Join Cond: c1.usuario_id = c2.usuario_id
+        -> Index Scan using compras_producto on compras c1 (producto_id)  (cost=40.00 rows=37) (actual time=0.065 rows=2 pages=4)
+           Index Cond: producto_id = 5
+        -> Index Scan using compras_usuario on compras c2 (usuario_id) (actual time=0.788 rows=33 pages=38)
+           Index Cond: usuario_id = c1.usuario_id
+           Nota: una busqueda por cada clave distinta de c1
+```
+
+Las dos tablas se leen enteras en memoria (filtradas por su `WHERE`); el join
+todavia no usa `ArchivoTemporal` para particionar en disco.
+
 ## 6. Trazas y logs
 
 `PlanTrace` conserva eventos como `PlanEvent` y los agrega a:

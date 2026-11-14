@@ -124,7 +124,9 @@ también las consultas SQL que corrió, para mostrarlas en la web.
 | `GET /api/tienda/productos/{id}/recomendaciones?k=10` | el top k del recomendador, con la fuente y el puesto de cada producto |
 | `GET /api/tienda/productos/{id}/sedes?lat=&lon=&k=3` | las k sedes más cercanas que tienen stock |
 
-El motor no tiene `JOIN`, `OR` ni `OFFSET`, así que la API cruza los resultados en Python:
+El motor no tiene `OR` ni `OFFSET`, así que la API cruza los resultados en Python. Tampoco usa
+el `JOIN` del motor, que llegó después; [pruebas_entrega_final.sql](pruebas_entrega_final.sql)
+comprueba que el `JOIN` da lo mismo que estas consultas cruzadas en Python:
 - **Páginas:** pide todas las coincidencias y corta la página; sin filtros pagina con
   `id BETWEEN a AND b` (los `id` van de 1 a 10 000). Los tipos del filtro salen de un
   `GROUP BY tipo` que se calcula una vez por base.
