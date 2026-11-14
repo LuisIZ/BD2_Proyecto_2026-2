@@ -431,3 +431,9 @@ def subida(archivo: str):
     if not ruta.is_relative_to(SUBIDAS.resolve()) or not ruta.is_file():
         raise HTTPException(404, f"No hay un archivo subido con el nombre {archivo}.")
     return FileResponse(ruta, headers={"Cache-Control": "public, max-age=86400"})
+
+
+# tienda (Parte 5): catalogo, recomendaciones y sedes; se importa al final porque usa este modulo
+from api import tienda  # noqa: E402
+
+app.include_router(tienda.router)
