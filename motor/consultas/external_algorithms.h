@@ -155,83 +155,9 @@ private:
     PlanTrace* trace_;
 };
 
-enum class AggregateOp { COUNT, SUM, AVG, MIN, MAX };
+enum class AggregateOp { COUNT, SUM, AVG, MIN, MAX };  // los agregados del GROUP BY
 
-struct AggregateResult {
-    std::size_t count = 0;
-    double sum = 0.0;
-    double average = 0.0;
-    double minimum = std::numeric_limits<double>::max();
-    double maximum = std::numeric_limits<double>::lowest();
-};
-
-template <typename Registro, typename Grupo>
-class ExternalHashAggregate {
-public:
-    using GroupFunction = std::function<Grupo(const Registro&)>;
-    using ValueFunction = std::function<double(const Registro&)>;
-
-    explicit ExternalHashAggregate(std::size_t buffer_pages = 10,
-                                   std::size_t records_per_page = 100,
-                                   PlanTrace* trace = nullptr)
-        : buffer_pages_(buffer_pages), records_per_page_(records_per_page), trace_(trace) {
-        if (buffer_pages_ < 3 || records_per_page_ == 0) {
-            throw std::invalid_argument("Presupuesto invalido para external hashing");
-        }
-    }
-
-    std::unordered_map<Grupo, AggregateResult> agrupar(
-        const std::vector<Registro>& records,
-        const GroupFunction& group_key,
-        const ValueFunction& value,
-        const std::vector<AggregateOp>& operations) {
-        const auto max_groups = buffer_pages_ * records_per_page_;
-        const auto partitions = std::max<std::size_t>(buffer_pages_ - 1,
-            (records.size() + max_groups - 1) / max_groups);
-        std::vector<std::vector<std::pair<Grupo, double>>> buckets(partitions);
-        std::hash<Grupo> hash;
-        for (const auto& record : records) {
-            const auto group = group_key(record);
-            buckets[hash(group) % partitions].push_back({group, value(record)});
-        }
-        std::unordered_map<Grupo, AggregateResult> result;
-        std::size_t peak_groups = 0;
-        for (auto& partition : buckets) {
-            std::unordered_map<Grupo, AggregateResult> partial;
-            for (const auto& [group, item] : partition) {
-                auto& state = partial[group];
-                ++state.count;
-                state.sum += item;
-                state.minimum = std::min(state.minimum, item);
-                state.maximum = std::max(state.maximum, item);
-            }
-            peak_groups = std::max(peak_groups, partial.size());
-            for (auto& [group, state] : partial) {
-                state.average = state.sum / state.count;
-                result.emplace(group, state);
-            }
-            partition.clear();
-            partition.shrink_to_fit();
-        }
-        if (trace_) {
-            trace_->record("external_hash_aggregate", {
-                {"buffer_pages", std::to_string(buffer_pages_)},
-                {"partitions", std::to_string(partitions)},
-                {"max_groups_in_memory", std::to_string(max_groups)},
-                {"peak_groups_in_memory", std::to_string(peak_groups)},
-                {"records", std::to_string(records.size())},
-                {"groups", std::to_string(result.size())},
-                {"aggregates", std::to_string(operations.size())},
-            });
-        }
-        return result;
-    }
-
-private:
-    std::size_t buffer_pages_;
-    std::size_t records_per_page_;
-    PlanTrace* trace_;
-};
+// el GROUP BY con external hashing en disco esta en hash_externo.h (usa ArchivoTemporal)
 
 template <typename Left, typename Right, typename Key>
 std::vector<std::pair<Left, Right>> hash_join(
