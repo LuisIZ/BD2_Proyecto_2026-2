@@ -1484,6 +1484,268 @@ void escribir_cambios_vectoriales(const Catalogo& catalogo, const std::vector<Ca
     }
 }
 
+// --- etapas del SELECT ---
+//
+// La agrupacion, el orden, la proyeccion y el LIMIT trabajan sobre un esquema (columnas con
+// nombre y tipo) y sus filas, no sobre una Tabla: asi sirven igual para una tabla y para las
+// filas de un JOIN.
+
+struct ColumnaEsquema {
+    std::string relacion;  // la tabla o el alias que la califica
+    Columna columna;
+};
+
+struct Esquema {
+    std::vector<ColumnaEsquema> columnas;
+
+    // "x.col" o "col"; -1 si no existe. Sin calificar, una columna que esta en las dos tablas es ambigua
+    int buscar(const std::string& ref) const {
+        const std::size_t punto = ref.find('.');
+        const std::string relacion = punto == std::string::npos ? "" : minusculas(ref.substr(0, punto));
+        const std::string nombre = minusculas(punto == std::string::npos ? ref : ref.substr(punto + 1));
+        int encontrada = -1;
+        for (std::size_t i = 0; i < columnas.size(); ++i) {
+            if (minusculas(columnas[i].columna.nombre) != nombre) continue;
+            if (!relacion.empty() && minusculas(columnas[i].relacion) != relacion) continue;
+            if (encontrada >= 0) throw std::runtime_error("la columna " + ref + " es ambigua");
+            encontrada = static_cast<int>(i);
+        }
+        return encontrada;
+    }
+    int posicion(const std::string& ref, const std::string& donde) const {
+        const int p = buscar(ref);
+        if (p < 0) throw std::runtime_error("la columna " + ref + " no existe en " + donde);
+        return p;
+    }
+    const Columna& operator[](int i) const { return columnas[static_cast<std::size_t>(i)].columna; }
+};
+
+Esquema esquema_de(const Tabla& tabla, const std::string& relacion) {
+    Esquema e;
+    for (const Columna& c : tabla.columnas) e.columnas.push_back({relacion, c});
+    return e;
+}
+
+// lo que comparten las etapas: el esquema de las filas, la sentencia y el resultado que se arma
+struct Etapas {
+    const Esquema& esquema;
+    const Sentencia& s;
+    std::vector<ItemSelect> items;     // con el * ya expandido
+    std::string relacion;              // lo que muestra el plan: la tabla o "a JOIN b"
+    std::function<double(const Fila&)> score;  // MATCH y SIMILAR_TO: el score de una fila
+    Resultado& r;
+    PlanTrace traza;
+
+    bool agrupa() const {
+        return !s.group_by.empty() ||
+               std::any_of(items.begin(), items.end(), [](const ItemSelect& i) { return !i.agregado.empty(); });
+    }
+};
+
+std::string sin_tabla(const std::string& columna) {
+    const std::size_t punto = columna.find('.');
+    return punto == std::string::npos ? columna : columna.substr(punto + 1);
+}
+
+// sin alias, una columna calificada se muestra sin la tabla, como en PostgreSQL
+std::string etiqueta(const ItemSelect& item) {
+    if (!item.alias.empty() || item.score) return item.etiqueta();
+    if (item.agregado.empty()) return sin_tabla(item.columna);
+    return item.agregado + "(" + (item.columna.empty() ? "*" : sin_tabla(item.columna)) + ")";
+}
+
+// SELECT *: todas las columnas del esquema, calificadas si vienen de un JOIN
+std::vector<ItemSelect> items_de(const Sentencia& s, const Esquema& esquema, bool calificar) {
+    std::vector<ItemSelect> items;
+    if (s.todas_las_columnas) {
+        for (const ColumnaEsquema& c : esquema.columnas) {
+            ItemSelect item;
+            item.columna = calificar ? c.relacion + "." + c.columna.nombre : c.columna.nombre;
+            items.push_back(std::move(item));
+        }
+    }
+    items.insert(items.end(), s.items.begin(), s.items.end());
+    for (const ItemSelect& item : items) {
+        if (item.score && !s.busqueda_texto && !s.busqueda_similar) throw std::runtime_error("SCORE() solo se usa con MATCH");
+    }
+    return items;
+}
+
+void validar_items(const Etapas& e) {
+    for (const ItemSelect& item : e.items) {
+        if (!item.score && !item.columna.empty()) e.esquema.posicion(item.columna, e.relacion);
+    }
+}
+
+// GROUP BY con external hashing: una pasada por cada agregado sobre columna
+void agrupar(Etapas& e, const std::vector<Fila>& filas) {
+    const Sentencia& s = e.s;
+    Resultado& r = e.r;
+    const auto inicio = Reloj::now();
+    const int gcol = s.group_by.empty() ? -1 : e.esquema.buscar(s.group_by);
+    if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + s.group_by + " no existe");
+    for (const ItemSelect& item : e.items) {
+        if (item.agregado.empty() && (gcol < 0 || e.esquema.buscar(item.columna) != gcol)) {
+            throw std::runtime_error("la columna " + item.columna + " debe estar en GROUP BY o dentro de un agregado");
+        }
+        if (!item.agregado.empty() && !item.columna.empty()) {
+            const TipoColumna tipo = e.esquema[e.esquema.posicion(item.columna, e.relacion)].tipo;
+            if (tipo != TipoColumna::INT && tipo != TipoColumna::FLOAT) {
+                throw std::runtime_error(item.agregado + " solo se aplica a columnas INT o FLOAT");
+            }
+        }
+    }
+    auto clave_grupo = [&](const Fila& f) { return gcol < 0 ? std::string() : f[static_cast<std::size_t>(gcol)].a_texto(); };
+    std::map<std::string, Valor> valor_grupo;
+    for (const Fila& f : filas) valor_grupo.emplace(clave_grupo(f), gcol < 0 ? Valor::de_texto("") : f[static_cast<std::size_t>(gcol)]);
+
+    std::vector<std::unordered_map<std::string, AggregateResult>> resultados;
+    for (const ItemSelect& item : e.items) {
+        if (item.agregado.empty()) { resultados.emplace_back(); continue; }
+        const int col = item.columna.empty() ? -1 : e.esquema.posicion(item.columna, e.relacion);
+        ExternalHashAggregate<Fila, std::string> agregador(10, 100, &e.traza);
+        resultados.push_back(agregador.agrupar(filas, clave_grupo,
+                                               [&](const Fila& f) { return col < 0 ? 0.0 : f[static_cast<std::size_t>(col)].numero(); },
+                                               {AggregateOp::COUNT}));
+    }
+    for (const ItemSelect& item : e.items) r.columnas.push_back(etiqueta(item));
+    for (const auto& [clave, valor] : valor_grupo) {
+        Fila fila;
+        for (std::size_t i = 0; i < e.items.size(); ++i) {
+            const ItemSelect& item = e.items[i];
+            if (item.agregado.empty()) { fila.push_back(valor); continue; }
+            const AggregateResult& a = resultados[i].at(clave);
+            const bool es_float = !item.columna.empty() && e.esquema[e.esquema.posicion(item.columna, e.relacion)].tipo == TipoColumna::FLOAT;
+            auto numero = [&](double x) {
+                return es_float ? Valor::de_decimal(static_cast<float>(x)) : Valor::de_entero(static_cast<long long>(x));
+            };
+            if (item.agregado == "COUNT") fila.push_back(Valor::de_entero(static_cast<long long>(a.count)));
+            else if (item.agregado == "SUM") fila.push_back(numero(a.sum));
+            else if (item.agregado == "MIN") fila.push_back(numero(a.minimum));
+            else if (item.agregado == "MAX") fila.push_back(numero(a.maximum));
+            else {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%.2f", a.average);
+                fila.push_back(Valor::de_texto(buf));
+            }
+        }
+        r.filas.push_back(std::move(fila));
+    }
+    if (gcol < 0 && r.filas.empty()) {
+        Fila fila;
+        for (const ItemSelect& item : e.items) fila.push_back(item.agregado == "COUNT" ? Valor::de_entero(0) : Valor::de_texto(""));
+        r.filas.push_back(fila);
+    }
+    PasoPlan paso{"agrupacion", {{"algoritmo", "external_hash_aggregate"}, {"columna", s.group_by.empty() ? "(todo)" : s.group_by}, {"grupos", texto(r.filas.size())}}};
+    if (!e.traza.events.empty()) {
+        for (const auto& [k, v] : e.traza.last("external_hash_aggregate").details) {
+            if (k == "partitions") paso.detalles.push_back({"particiones", v});
+            if (k == "peak_groups_in_memory") paso.detalles.push_back({"grupos_en_memoria", v});
+        }
+    }
+    paso.nodo = "HashAggregate";
+    paso.relacion = e.relacion;
+    paso.columna = s.group_by;
+    paso.filas_reales = static_cast<long long>(r.filas.size());
+    paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+    r.plan.push_back(paso);
+}
+
+// ORDER BY: por score (MATCH y SIMILAR_TO) o con external merge sort (k-way), sobre las filas
+// del esquema o, si hubo GROUP BY, sobre los grupos (por su etiqueta, alias incluido)
+void ordenar(Etapas& e, std::vector<Fila>& filas) {
+    const Sentencia& s = e.s;
+    if (ordena_por_score(s)) {
+        std::stable_sort(filas.begin(), filas.end(), [&](const Fila& a, const Fila& b) {
+            const double score_a = e.score(a);
+            const double score_b = e.score(b);
+            return s.descendente ? score_a > score_b : score_a < score_b;
+        });
+        return;
+    }
+    if (s.order_by.empty()) return;
+    const bool agrupa = e.agrupa();
+    std::vector<Fila>& objetivo = agrupa ? e.r.filas : filas;
+    int col = -1;
+    if (agrupa) {
+        const int buscada = e.esquema.buscar(s.order_by);
+        for (std::size_t i = 0; i < e.items.size() && col < 0; ++i) {
+            const ItemSelect& item = e.items[i];
+            const bool misma = minusculas(etiqueta(item)) == minusculas(s.order_by) ||
+                               (item.agregado.empty() && buscada >= 0 && e.esquema.buscar(item.columna) == buscada);
+            if (misma) col = static_cast<int>(i);
+        }
+    } else {
+        col = e.esquema.buscar(s.order_by);
+    }
+    if (col < 0) throw std::runtime_error("no se puede ordenar por " + s.order_by);
+    const bool por_distancia = s.order_by_distancia;
+    if (por_distancia && agrupa) throw std::runtime_error("ORDER BY distancia no se combina con GROUP BY ni agregados");
+    if (!agrupa) {
+        const Columna& columna = e.esquema[col];
+        if (por_distancia) validar_distancia(columna, s.order_by_punto);
+        if (!por_distancia && columna.tipo == TipoColumna::POINT) throw std::runtime_error("no se puede ordenar por la columna POINT " + s.order_by + "; usa distancia(...)");
+        if (!por_distancia && columna.tipo == TipoColumna::VECTOR) {
+            throw std::runtime_error("no se puede ordenar por la columna VECTOR " + s.order_by + "; usa distancia(...)");
+        }
+    }
+    const auto inicio = Reloj::now();
+    const std::size_t c = static_cast<std::size_t>(col);
+    ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &e.traza);
+    objetivo = ordenador.ordenar(std::move(objetivo), [&](const Fila& f) {
+        if (!por_distancia) return f[c];
+        if (s.order_by_punto.es_vector) return Valor::de_decimal(static_cast<float>(distancia_valores(f[c], s.order_by_punto, s.order_by_metrica)));
+        return Valor::de_entero(std::llround(distancia_m(f[c], s.order_by_punto, s.order_by_metrica) * 1000));
+    }, s.descendente);
+    PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
+    if (por_distancia) paso.detalles.push_back({"clave", s.order_by_punto.es_vector ? "distancia " + minusculas(s.order_by_metrica) : "distancia en milimetros"});
+    for (const auto& [k, v] : e.traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
+    paso.nodo = "Sort";
+    paso.relacion = e.relacion;
+    paso.columna = s.order_by;
+    paso.condicion = describir_orden(s);
+    paso.filas_reales = static_cast<long long>(objetivo.size());
+    paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+    e.r.plan.push_back(paso);
+}
+
+// sin GROUP BY: se queda con las columnas pedidas (y el score), en el orden del SELECT
+void proyectar(Etapas& e, std::vector<Fila>& filas) {
+    if (e.agrupa()) return;
+    std::vector<int> posiciones;
+    for (const ItemSelect& item : e.items) posiciones.push_back(item.score ? -1 : e.esquema.posicion(item.columna, e.relacion));
+    for (Fila& f : filas) {
+        Fila salida;
+        for (const int p : posiciones) {
+            salida.push_back(p < 0 ? Valor::de_decimal(static_cast<float>(e.score(f))) : f[static_cast<std::size_t>(p)]);
+        }
+        e.r.filas.push_back(std::move(salida));
+    }
+    if (!e.s.todas_las_columnas) {
+        std::string nombres;
+        for (const ItemSelect& item : e.items) nombres += (nombres.empty() ? "" : ", ") + etiqueta(item);
+        PasoPlan paso{"proyeccion", {{"columnas", texto(posiciones.size())}, {"lista", nombres}}};
+        paso.nodo = "Projection";
+        paso.relacion = e.relacion;
+        paso.columna = nombres;
+        paso.filas_reales = static_cast<long long>(e.r.filas.size());
+        e.r.plan.push_back(paso);
+    }
+}
+
+void limitar(Etapas& e) {
+    Resultado& r = e.r;
+    if (e.s.limite >= 0 && r.filas.size() > static_cast<std::size_t>(e.s.limite)) {
+        r.filas.resize(static_cast<std::size_t>(e.s.limite));
+        PasoPlan paso{"limite", {{"filas", texto(r.filas.size())}}};
+        paso.nodo = "Limit";
+        paso.relacion = e.relacion;
+        paso.filas_reales = static_cast<long long>(r.filas.size());
+        paso.filas_estimadas = e.s.limite;
+        r.plan.push_back(paso);
+    }
+}
+
 }  // namespace
 
 // --- Ejecutor ---
@@ -2251,109 +2513,19 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
 
     const std::unordered_map<long long, double>& score_por_pk = acceso.scores;
+    const Esquema esquema = esquema_de(tabla, tabla.nombre);
+    Etapas e{esquema, s, items_de(s, esquema, false), tabla.nombre, [&](const Fila& f) {
+        const auto encontrado = score_por_pk.find(clave_de(tabla, f));
+        if (encontrado == score_por_pk.end()) throw std::runtime_error("no se encontro el score de la fila");
+        return encontrado->second;
+    }, r, PlanTrace()};
+    validar_items(e);
 
-    std::vector<ItemSelect> items;
-    if (s.todas_las_columnas) {
-        for (const Columna& c : tabla.columnas) {
-            ItemSelect item;
-            item.columna = c.nombre;
-            items.push_back(std::move(item));
-        }
-    }
-    items.insert(items.end(), s.items.begin(), s.items.end());
-    bool hay_agregados = false;
-    for (const ItemSelect& item : items) {
-        if (!item.agregado.empty()) hay_agregados = true;
-        if (item.score && !s.busqueda_texto && !s.busqueda_similar) throw std::runtime_error("SCORE() solo se usa con MATCH");
-        if (!item.score && !item.columna.empty() && tabla.posicion_columna(item.columna) < 0)
-            throw std::runtime_error("la columna " + item.columna + " no existe en " + tabla.nombre);
-    }
+    if (e.agrupa()) agrupar(e, filas);
+    else for (const ItemSelect& item : e.items) r.columnas.push_back(etiqueta(item));
 
-    PlanTrace traza;
-    if (hay_agregados || !s.group_by.empty()) {
-        const auto inicio_agrupacion = Reloj::now();
-        // GROUP BY con external hashing: una pasada por cada agregado sobre columna
-        const int gcol = s.group_by.empty() ? -1 : tabla.posicion_columna(s.group_by);
-        if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + s.group_by + " no existe");
-        for (const ItemSelect& item : items) {
-            if (item.agregado.empty() && (gcol < 0 || minusculas(item.columna) != minusculas(s.group_by))) {
-                throw std::runtime_error("la columna " + item.columna + " debe estar en GROUP BY o dentro de un agregado");
-            }
-            if (!item.agregado.empty() && !item.columna.empty()) {
-                const TipoColumna tipo = tabla.columnas[tabla.posicion_columna(item.columna)].tipo;
-                if (tipo != TipoColumna::INT && tipo != TipoColumna::FLOAT) {
-                    throw std::runtime_error(item.agregado + " solo se aplica a columnas INT o FLOAT");
-                }
-            }
-        }
-        auto clave_grupo = [&](const Fila& f) { return gcol < 0 ? std::string() : f[gcol].a_texto(); };
-        std::map<std::string, Valor> valor_grupo;
-        for (const Fila& f : filas) valor_grupo.emplace(clave_grupo(f), gcol < 0 ? Valor::de_texto("") : f[gcol]);
-
-        std::vector<std::unordered_map<std::string, AggregateResult>> resultados;
-        for (const ItemSelect& item : items) {
-            if (item.agregado.empty()) { resultados.emplace_back(); continue; }
-            const int col = item.columna.empty() ? -1 : tabla.posicion_columna(item.columna);
-            ExternalHashAggregate<Fila, std::string> agregador(10, 100, &traza);
-            resultados.push_back(agregador.agrupar(filas, clave_grupo,
-                                                   [&](const Fila& f) { return col < 0 ? 0.0 : f[col].numero(); },
-                                                   {AggregateOp::COUNT}));
-        }
-        for (const ItemSelect& item : items) r.columnas.push_back(item.etiqueta());
-        for (const auto& [clave, valor] : valor_grupo) {
-            Fila fila;
-            for (std::size_t i = 0; i < items.size(); ++i) {
-                const ItemSelect& item = items[i];
-                if (item.agregado.empty()) { fila.push_back(valor); continue; }
-                const AggregateResult& a = resultados[i].at(clave);
-                const bool es_float = !item.columna.empty() &&
-                                      tabla.columnas[tabla.posicion_columna(item.columna)].tipo == TipoColumna::FLOAT;
-                auto numero = [&](double x) {
-                    return es_float ? Valor::de_decimal(static_cast<float>(x)) : Valor::de_entero(static_cast<long long>(x));
-                };
-                if (item.agregado == "COUNT") fila.push_back(Valor::de_entero(static_cast<long long>(a.count)));
-                else if (item.agregado == "SUM") fila.push_back(numero(a.sum));
-                else if (item.agregado == "MIN") fila.push_back(numero(a.minimum));
-                else if (item.agregado == "MAX") fila.push_back(numero(a.maximum));
-                else {
-                    char buf[32];
-                    std::snprintf(buf, sizeof(buf), "%.2f", a.average);
-                    fila.push_back(Valor::de_texto(buf));
-                }
-            }
-            r.filas.push_back(std::move(fila));
-        }
-        if (gcol < 0 && r.filas.empty()) {
-            Fila fila;
-            for (const ItemSelect& item : items) fila.push_back(item.agregado == "COUNT" ? Valor::de_entero(0) : Valor::de_texto(""));
-            r.filas.push_back(fila);
-        }
-        PasoPlan paso{"agrupacion", {{"algoritmo", "external_hash_aggregate"}, {"columna", s.group_by.empty() ? "(todo)" : s.group_by}, {"grupos", texto(r.filas.size())}}};
-        if (!traza.events.empty()) {
-            for (const auto& [k, v] : traza.last("external_hash_aggregate").details) {
-                if (k == "partitions") paso.detalles.push_back({"particiones", v});
-                if (k == "peak_groups_in_memory") paso.detalles.push_back({"grupos_en_memoria", v});
-            }
-        }
-        paso.nodo = "HashAggregate";
-        paso.relacion = tabla.nombre;
-        paso.columna = s.group_by;
-        paso.filas_reales = static_cast<long long>(r.filas.size());
-        paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_agrupacion).count();
-        r.plan.push_back(paso);
-    } else {
-        for (const ItemSelect& item : items) r.columnas.push_back(item.etiqueta());
-    }
-
-    // varchar: se reordenan solo las filas con el mismo prefijo
-    const bool ordena_score = ordena_por_score(s);
-    if (ordena_score) {
-        std::stable_sort(filas.begin(), filas.end(), [&](const Fila& a, const Fila& b) {
-            const double score_a = score_por_pk.at(clave_de(tabla, a));
-            const double score_b = score_por_pk.at(clave_de(tabla, b));
-            return s.descendente ? score_a > score_b : score_a < score_b;
-        });
-    } else if (!s.order_by.empty() && acceso.orden_por_indice) {
+    if (!ordena_por_score(s) && !s.order_by.empty() && acceso.orden_por_indice) {
+        // varchar: el indice ordena por un prefijo; se reordenan solo las filas con el mismo prefijo
         const int col = tabla.posicion_columna(s.order_by);
         if (tabla.columnas[col].tipo == TipoColumna::VARCHAR) {
             auto antes = [&](const Fila& a, const Fila& b) { return s.descendente ? a[col] > b[col] : a[col] < b[col]; };
@@ -2364,84 +2536,12 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
                 i = j;
             }
         }
-    } else if (!s.order_by.empty()) {
-        // ORDER BY con external merge sort (k-way)
-        int col = -1;
-        std::vector<Fila>& objetivo = hay_agregados || !s.group_by.empty() ? r.filas : filas;
-        if (hay_agregados || !s.group_by.empty()) {
-            for (std::size_t i = 0; i < r.columnas.size(); ++i) if (minusculas(r.columnas[i]) == minusculas(s.order_by)) col = static_cast<int>(i);
-        } else {
-            col = tabla.posicion_columna(s.order_by);
-        }
-        if (col < 0) throw std::runtime_error("no se puede ordenar por " + s.order_by);
-        const bool por_distancia = s.order_by_distancia;
-        if (por_distancia && (hay_agregados || !s.group_by.empty())) throw std::runtime_error("ORDER BY distancia no se combina con GROUP BY ni agregados");
-        if (!hay_agregados && s.group_by.empty()) {
-            const bool es_point = tabla.columnas[col].tipo == TipoColumna::POINT;
-            if (por_distancia) validar_distancia(tabla.columnas[col], s.order_by_punto);
-            if (!por_distancia && es_point) throw std::runtime_error("no se puede ordenar por la columna POINT " + s.order_by + "; usa distancia(...)");
-            if (!por_distancia && tabla.columnas[col].tipo == TipoColumna::VECTOR) {
-                throw std::runtime_error("no se puede ordenar por la columna VECTOR " + s.order_by + "; usa distancia(...)");
-            }
-        }
-        const auto inicio_orden = Reloj::now();
-        ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &traza);
-        objetivo = ordenador.ordenar(std::move(objetivo), [&](const Fila& f) {
-            if (!por_distancia) return f[col];
-            if (s.order_by_punto.es_vector) return Valor::de_decimal(static_cast<float>(distancia_valores(f[col], s.order_by_punto, s.order_by_metrica)));
-            return Valor::de_entero(std::llround(distancia_m(f[col], s.order_by_punto, s.order_by_metrica) * 1000));
-        }, s.descendente);
-        PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
-        if (por_distancia) paso.detalles.push_back({"clave", s.order_by_punto.es_vector ? "distancia " + minusculas(s.order_by_metrica) : "distancia en milimetros"});
-        for (const auto& [k, v] : traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
-        paso.nodo = "Sort";
-        paso.relacion = tabla.nombre;
-        paso.columna = s.order_by;
-        paso.condicion = describir_orden(s);
-        paso.filas_reales = static_cast<long long>(objetivo.size());
-        paso.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio_orden).count();
-        r.plan.push_back(paso);
+    } else {
+        ordenar(e, filas);
     }
+    proyectar(e, filas);
+    limitar(e);
 
-    // proyección
-    if (!(hay_agregados || !s.group_by.empty())) {
-        std::vector<int> posiciones;
-        for (const ItemSelect& item : items) posiciones.push_back(item.score ? -1 : tabla.posicion_columna(item.columna));
-        for (Fila& f : filas) {
-            Fila salida;
-            for (std::size_t i = 0; i < posiciones.size(); ++i) {
-                const int p = posiciones[i];
-                if (p < 0) {
-                    const auto encontrado = score_por_pk.find(clave_de(tabla, f));
-                    if (encontrado == score_por_pk.end()) throw std::runtime_error("no se encontro el score de la fila");
-                    salida.push_back(Valor::de_decimal(static_cast<float>(encontrado->second)));
-                } else {
-                    salida.push_back(f[static_cast<std::size_t>(p)]);
-                }
-            }
-            r.filas.push_back(std::move(salida));
-        }
-        if (!s.todas_las_columnas) {
-            std::string nombres;
-            for (const ItemSelect& item : items) nombres += (nombres.empty() ? "" : ", ") + item.etiqueta();
-            PasoPlan paso{"proyeccion", {{"columnas", texto(posiciones.size())}, {"lista", nombres}}};
-            paso.nodo = "Projection";
-            paso.relacion = tabla.nombre;
-            paso.columna = nombres;
-            paso.filas_reales = static_cast<long long>(r.filas.size());
-            r.plan.push_back(paso);
-        }
-    }
-
-    if (s.limite >= 0 && r.filas.size() > static_cast<std::size_t>(s.limite)) {
-        r.filas.resize(static_cast<std::size_t>(s.limite));
-        PasoPlan paso{"limite", {{"filas", texto(r.filas.size())}}};
-        paso.nodo = "Limit";
-        paso.relacion = tabla.nombre;
-        paso.filas_reales = static_cast<long long>(r.filas.size());
-        paso.filas_estimadas = s.limite;
-        r.plan.push_back(paso);
-    }
     r.afectadas = r.filas.size();
     r.mensaje = texto(r.filas.size()) + " filas";
     ordenar_como_explain(r.plan);
