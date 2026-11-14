@@ -1,6 +1,7 @@
 #include "../consultas/catalogo.h"
 #include "../consultas/ejecutor.h"
 #include "../consultas/parser_sql.h"
+#include "../espacial/distancia.h"
 #include "../vectorial/vector.h"
 
 #include <algorithm>
@@ -10,7 +11,9 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -1241,12 +1244,197 @@ void prueba_matriz_indices() {
               << "          lo valido da lo mismo que sin indice y se mantiene con INSERT y DELETE; lo demas falla\n";
 }
 
+void prueba_parser_join() {
+    Sentencia s = motor::sql::parsear("select s.nombre, i.stock from inventario as i inner join sedes s on i.sede_id = s.id "
+                                      "where i.producto_id = 42 order by distancia(s.ubicacion, POINT(-12.0, -77.0)) limit 3");
+    assert(s.hay_join && s.tabla == "inventario" && s.alias == "i" && s.tabla_join == "sedes" && s.alias_join == "s");
+    assert(s.on_izquierda == "i.sede_id" && s.on_derecha == "s.id");
+    assert(s.items[0].columna == "s.nombre" && s.condiciones[0].columna == "i.producto_id" && s.order_by == "s.ubicacion");
+    s = motor::sql::parsear("SELECT c2.producto_id, COUNT(*) AS veces FROM compras c1 JOIN compras c2 ON c1.usuario_id = c2.usuario_id "
+                            "GROUP BY c2.producto_id ORDER BY veces DESC");
+    assert(s.items[1].alias == "veces" && s.items[1].etiqueta() == "veces" && s.order_by == "veces" && s.group_by == "c2.producto_id");
+    // sin JOIN, la tabla o su alias se quitan de las columnas
+    s = motor::sql::parsear("SELECT t.a, x.b FROM t x WHERE x.a = 1 ORDER BY t.b");
+    assert(!s.hay_join && s.alias == "x" && s.items[0].columna == "a" && s.items[1].columna == "b");
+    assert(s.condiciones[0].columna == "a" && s.order_by == "b");
+    assert(motor::sql::parsear("SELECT SUM(precio) AS total FROM t").items[0].alias == "total");
+    // el punto decimal sigue siendo un numero
+    assert(motor::sql::parsear("SELECT a FROM t WHERE b = 1.5").condiciones[0].valor.es_decimal);
+
+    assert(falla("SELECT a FROM t x WHERE y.a = 1"));                         // tabla que no esta en el FROM
+    assert(falla("SELECT a AS b FROM t"));                                    // AS en una columna
+    assert(falla("SELECT a FROM t JOIN u ON t.a > u.a"));                     // solo igualdad en el ON
+    assert(falla("SELECT a FROM t JOIN u"));                                  // falta el ON
+    assert(falla("SELECT a FROM t JOIN u ON t.a = u.a WHERE MATCH(d, 'x') USING BM25"));
+    assert(falla("SELECT a FROM t JOIN u ON t.a = u.a WHERE SIMILAR_TO(VECTOR(1, 2), k = 3)"));
+    std::cout << "parser del join: alias, INNER JOIN ... ON, columnas calificadas y alias en agregados\n";
+}
+
+// el join de fuerza bruta: cada fila de a contra cada fila de b; las filas como texto y ordenadas
+std::vector<std::string> join_fuerza_bruta(const Resultado& a, const Resultado& b, std::size_t col_a, std::size_t col_b,
+                                           const std::function<bool(const motor::sql::Fila&, const motor::sql::Fila&)>& cumple,
+                                           const std::function<std::string(const motor::sql::Fila&, const motor::sql::Fila&)>& salida) {
+    std::vector<std::string> filas;
+    for (const auto& x : a.filas) {
+        for (const auto& y : b.filas) {
+            if (x[col_a] == y[col_b] && cumple(x, y)) filas.push_back(salida(x, y));
+        }
+    }
+    std::sort(filas.begin(), filas.end());
+    return filas;
+}
+
+std::vector<std::string> ordenadas(const Resultado& r) {
+    std::vector<std::string> filas = filas_texto(r);
+    std::sort(filas.begin(), filas.end());
+    return filas;
+}
+
+void prueba_join() {
+    Catalogo catalogo(DB);
+    Ejecutor e(catalogo);
+    using motor::sql::Fila;
+    auto todas = [](const Fila&, const Fila&) { return true; };
+    auto ids = [](const Fila& x, const Fila& y) { return x[0].a_texto() + "|" + y[0].a_texto() + "|"; };
+
+    for (const std::string org : {"HEAP", "SEQUENTIAL", "BPLUS"}) {
+        for (const std::string idx : {"", "BPLUS", "HASH"}) {
+            const std::string a = "ja_" + org + idx;
+            const std::string b = "jb_" + org + idx;
+            e.ejecutar("CREATE TABLE " + a + " (id INT PRIMARY KEY, k INT, nombre VARCHAR(10), punto POINT) USING " + org);
+            e.ejecutar("CREATE TABLE " + b + " (id INT PRIMARY KEY, k INT, valor INT) USING " + org);
+            // claves repetidas en los dos lados; las k 0, 1 y 2 de a no estan en b. b es mas grande que a,
+            // asi que con indice sobre b.k conviene buscar en b por cada fila de a
+            for (int i = 1; i <= 30; ++i) {
+                char punto[48];
+                std::snprintf(punto, sizeof(punto), "POINT(%.2f, %.2f)", -12.0 - 0.01 * i, -77.0 + 0.01 * (i % 9));
+                e.ejecutar("INSERT INTO " + a + " VALUES (" + std::to_string(i) + ", " + std::to_string(i % 7) + ", 'n" + std::to_string(i) + "', " + punto + ")");
+            }
+            for (int i = 1; i <= 40; ++i) {
+                e.ejecutar("INSERT INTO " + b + " VALUES (" + std::to_string(i) + ", " + std::to_string(3 + i % 5) + ", " + std::to_string(i * 10) + ")");
+            }
+            if (!idx.empty()) e.ejecutar("CREATE INDEX " + b + "_k ON " + b + " (k) USING " + idx);
+            const Resultado ta = e.ejecutar("SELECT * FROM " + a);
+            const Resultado tb = e.ejecutar("SELECT * FROM " + b);
+            const std::string desde = " FROM " + a + " x JOIN " + b + " y ON x.k = y.k";
+            const std::string algoritmo = idx.empty() ? "hash_join" : "index_nested_loop_join";
+
+            // todas las parejas, con y sin indice
+            Resultado r = e.ejecutar("SELECT x.id, y.id" + desde);
+            assert(ordenadas(r) == join_fuerza_bruta(ta, tb, 1, 1, todas, ids));
+            assert(r.filas.size() > 30 && tiene_paso(r, algoritmo));
+            assert(r.columnas == (std::vector<std::string>{"id", "id"}));
+
+            // el WHERE de cada tabla se aplica antes del join
+            r = e.ejecutar("SELECT x.id, y.id" + desde + " WHERE x.id > 5 AND y.valor < 120");
+            assert(ordenadas(r) == join_fuerza_bruta(ta, tb, 1, 1, [](const Fila& x, const Fila& y) {
+                return x[0].entero > 5 && y[2].entero < 120;
+            }, ids));
+
+            // sin coincidencias
+            assert(e.ejecutar("SELECT x.id" + desde + " WHERE y.valor > 1000").filas.empty());
+            assert(e.ejecutar("SELECT x.id" + desde + " WHERE x.k = 1").filas.empty());
+
+            // el ON con la PK de b: index nested loop si la organizacion la ordena
+            r = e.ejecutar("SELECT x.id, y.id FROM " + a + " x JOIN " + b + " y ON x.k = y.id");
+            assert(ordenadas(r) == join_fuerza_bruta(ta, tb, 1, 0, todas, ids));
+            assert(tiene_paso(r, org == "HEAP" ? "hash_join" : "index_nested_loop_join"));
+
+            // self-join con alias distintos
+            r = e.ejecutar("SELECT x.id, z.id FROM " + a + " x JOIN " + a + " z ON x.k = z.k WHERE x.id = 3");
+            assert(ordenadas(r) == join_fuerza_bruta(ta, ta, 1, 1, [](const Fila& x, const Fila&) { return x[0].entero == 3; }, ids));
+            assert(r.filas.size() == 4);  // las k = 3: 3, 10, 17 y 24
+
+            // GROUP BY con alias del agregado, ORDER BY por el alias y SUM sobre la otra tabla
+            r = e.ejecutar("SELECT y.k, COUNT(*) AS n, SUM(x.id) AS s" + desde + " GROUP BY y.k ORDER BY n DESC");
+            std::map<long long, std::pair<long long, long long>> esperado;
+            for (const auto& x : ta.filas) {
+                for (const auto& y : tb.filas) {
+                    if (x[1] == y[1]) { ++esperado[y[1].entero].first; esperado[y[1].entero].second += x[0].entero; }
+                }
+            }
+            assert(r.columnas == (std::vector<std::string>{"k", "n", "s"}) && r.filas.size() == esperado.size());
+            for (std::size_t i = 0; i < r.filas.size(); ++i) {
+                const auto& [n, suma] = esperado.at(r.filas[i][0].entero);
+                assert(r.filas[i][1].entero == n && r.filas[i][2].entero == suma);
+                assert(i == 0 || r.filas[i - 1][1].entero >= r.filas[i][1].entero);
+            }
+
+            // ORDER BY distancia sobre una columna de la otra tabla, y LIMIT
+            r = e.ejecutar("SELECT x.id, x.punto" + desde + " WHERE y.id = 1 ORDER BY distancia(x.punto, POINT(-12.0, -77.0)) LIMIT 3");
+            assert(r.filas.size() == 3);
+            auto metros = [](const motor::sql::Valor& p) {
+                return motor::espacial::distancia_m({p.lat_e6, p.lon_e6}, {-12000000, -77000000}, motor::espacial::Metrica::HAVERSINE);
+            };
+            for (std::size_t i = 1; i < r.filas.size(); ++i) assert(metros(r.filas[i - 1][1]) <= metros(r.filas[i][1]));
+            e.ejecutar("DROP TABLE " + a);
+            e.ejecutar("DROP TABLE " + b);
+        }
+    }
+
+    // errores y EXPLAIN con dos tablas chicas
+    e.ejecutar("CREATE TABLE jt (id INT PRIMARY KEY, k INT, d VARCHAR(20)) USING BPLUS");
+    e.ejecutar("CREATE TABLE ju (id INT PRIMARY KEY, k INT, p POINT)");
+    e.ejecutar("INSERT INTO jt VALUES (1, 7, 'uno')");
+    e.ejecutar("INSERT INTO ju VALUES (1, 7, POINT(-12.0, -77.0))");
+    bool ambigua = false;
+    try {
+        e.ejecutar("SELECT id FROM jt JOIN ju ON jt.k = ju.k");
+    } catch (const std::runtime_error& error) {
+        ambigua = std::string(error.what()) == "la columna id es ambigua";
+    }
+    assert(ambigua);
+    assert(falla_ejecucion(e, "SELECT jt.id FROM jt JOIN jt ON jt.k = jt.k"));       // sin alias distintos
+    assert(falla_ejecucion(e, "SELECT x.id FROM jt x JOIN ju y ON x.k = x.id"));      // el ON con una sola tabla
+    assert(falla_ejecucion(e, "SELECT x.id FROM jt x JOIN ju y ON x.d = y.k"));       // tipos distintos
+    assert(falla_ejecucion(e, "SELECT x.id FROM jt x JOIN ju y ON x.k = y.p"));       // POINT en el ON
+    assert(falla_ejecucion(e, "SELECT z.id FROM jt x JOIN ju y ON x.k = y.k"));       // alias que no existe
+    // sin calificar vale si no es ambigua
+    assert(filas_texto(e.ejecutar("SELECT d, p FROM jt x JOIN ju y ON x.k = y.k")) ==
+           (std::vector<std::string>{"uno|POINT(-12.000000, -77.000000)|"}));
+
+    const std::string plan = texto_del_plan(e.ejecutar("EXPLAIN SELECT x.d FROM ju y JOIN jt x ON y.k = x.id WHERE y.k = 7"));
+    assert(plan.find("Index Nested Loop Join on ju JOIN jt") != std::string::npos);
+    assert(plan.find("Join Cond: y.k = x.id") != std::string::npos);
+    assert(plan.find("Clustered Index Scan on jt x") != std::string::npos);
+    const Resultado analizado = e.ejecutar("EXPLAIN ANALYZE SELECT x.d FROM jt x JOIN ju y ON x.k = y.k");
+    assert(texto_del_plan(analizado).find("Hash Join on jt JOIN ju") != std::string::npos);
+    assert(texto_del_plan(analizado).find("Hash Cond: x.k = y.k") != std::string::npos);
+    // el join cuelga del Projection y sus dos lados cuelgan del join, al mismo nivel
+    int nivel_join = -1;
+    std::vector<int> hijos;
+    for (const auto& p : analizado.plan) {
+        if (p.operacion == "hash_join") nivel_join = p.nivel;
+        else if (nivel_join >= 0 && p.nivel == nivel_join + 1) hijos.push_back(p.nivel);
+    }
+    assert(nivel_join == 1 && hijos.size() == 2);
+
+    // locks: dentro de una transaccion, el join toma las dos tablas en modo compartido
+    motor::transacciones::GestorLocks locks;
+    Ejecutor t(catalogo);
+    t.usar_locks(&locks, 7);
+    t.ejecutar("BEGIN");
+    t.ejecutar("SELECT x.d FROM jt x JOIN ju y ON x.k = y.k");
+    int compartidos = 0;
+    for (const auto& ev : locks.eventos()) {
+        if (ev.txn == 7 && ev.accion == "concede" && ev.modo == "S" && (ev.recurso == "jt" || ev.recurso == "ju")) ++compartidos;
+    }
+    assert(compartidos == 2);
+    t.ejecutar("COMMIT");
+    e.ejecutar("DROP TABLE jt");
+    e.ejecutar("DROP TABLE ju");
+    std::cout << "join: HEAP, SEQUENTIAL y BPLUS, sin indice, con B+ y con HASH, igual al nested loop de fuerza bruta;\n"
+              << "          claves repetidas, sin coincidencias, self-join, GROUP BY con alias, ORDER BY distancia,\n"
+              << "          EXPLAIN con el arbol del join, errores claros y lock compartido de las dos tablas\n";
+}
+
 }  // namespace
 
 int main() {
     std::filesystem::create_directories(".build");
     std::filesystem::remove_all(DB);
     prueba_parser();
+    prueba_parser_join();
     escribir_csv();
     {
         Catalogo catalogo(DB);
@@ -1269,6 +1457,7 @@ int main() {
     prueba_similar_to();
     prueba_espacial();
     prueba_matriz_indices();
+    prueba_join();
     prueba_busqueda_texto();
     prueba_indice_spimi();
     std::cout << "Prueba completada correctamente.\n";

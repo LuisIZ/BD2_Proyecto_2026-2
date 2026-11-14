@@ -101,6 +101,8 @@ private:
     Resultado insertar(const Sentencia& s);
     Resultado eliminar(const Sentencia& s);
     Resultado seleccionar(const Sentencia& s);
+    Resultado seleccionar_join(const Sentencia& s);
+    std::vector<PasoPlan> plan_estimado_join(const Sentencia& s);
     Resultado mostrar_tablas();
     Resultado describir(const Sentencia& s);
     // fuera de una transacción escribe enseguida; dentro, espera al COMMIT
