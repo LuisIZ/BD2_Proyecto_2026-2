@@ -1327,6 +1327,8 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
     if (!p.condicion.empty()) {
         const char* etiqueta = "Filter: ";
         if (p.operacion.find("vectorial") != std::string::npos) etiqueta = "Order By: ";
+        else if (p.operacion == "hash_join") etiqueta = "Hash Cond: ";
+        else if (p.operacion == "index_nested_loop_join") etiqueta = "Join Cond: ";
         else if (!p.indice.empty()) etiqueta = "Index Cond: ";
         else if (p.operacion == "ordenamiento") etiqueta = "Sort Key: ";
         else if (p.operacion.rfind("busqueda", 0) == 0 || p.operacion.rfind("rango", 0) == 0) etiqueta = "Key Cond: ";
@@ -1746,6 +1748,151 @@ void limitar(Etapas& e) {
     }
 }
 
+// --- INNER JOIN de dos tablas ---
+
+// un lado del JOIN: su tabla, su nombre en la consulta y las condiciones del WHERE que le tocan
+struct LadoJoin {
+    const Tabla* tabla = nullptr;
+    std::string nombre;                  // el alias, o la tabla si no tiene
+    int columna_on = -1;                 // posición en su tabla de la columna del ON
+    std::vector<Condicion> condiciones;  // sin calificar, para planificar y acceder como siempre
+    bool indexable = false;              // su PK ordenada, o un B+ o HASH, sobre la columna del ON
+    const Indice* indice = nullptr;
+    std::size_t registros = 0;
+};
+
+struct PlanJoin {
+    LadoJoin lados[2];  // 0: la tabla del FROM; 1: la del JOIN
+    bool index_nested_loop = false;
+    int interna = 1;    // index nested loop: el lado que se busca por índice
+    long long externas_estimadas = 0;
+    std::string on;        // "i.sede_id = s.id"
+    std::string relacion;  // "inventario JOIN sedes"
+};
+
+bool columna_indexable(const Tabla& tabla, int col, const Indice*& indice) {
+    indice = nullptr;
+    if (static_cast<std::size_t>(col) == tabla.pk && tabla.organizacion != Organizacion::HEAP) return true;
+    const Indice* i = tabla.indice_sobre(tabla.columnas[static_cast<std::size_t>(col)].nombre);
+    if (i && (i->tipo == "BPLUS" || i->tipo == "HASH")) indice = i;
+    return indice != nullptr;
+}
+
+Esquema esquema_join(const PlanJoin& p) {
+    Esquema e = esquema_de(*p.lados[0].tabla, p.lados[0].nombre);
+    for (const Columna& c : p.lados[1].tabla->columnas) e.columnas.push_back({p.lados[1].nombre, c});
+    return e;
+}
+
+PasoPlan paso_de_plan(const Plan& plan, const Tabla& tabla) {
+    PasoPlan p;
+    p.operacion = id_operacion(plan.via);
+    p.nodo = nombre_nodo(plan.via, tabla);
+    p.relacion = tabla.nombre;
+    p.columna = plan.columna;
+    p.condicion = plan.condicion;
+    if (plan.indice) p.indice = plan.indice->nombre;
+    return p;
+}
+
+// el ON y una clave de la otra tabla: la condición con la que se busca en la tabla interna
+std::vector<Condicion> condiciones_internas(const LadoJoin& interna, const Valor& clave) {
+    Condicion c;
+    c.columna = interna.tabla->columnas[static_cast<std::size_t>(interna.columna_on)].nombre;
+    c.op = "=";
+    c.valor = clave;
+    std::vector<Condicion> condiciones{c};
+    condiciones.insert(condiciones.end(), interna.condiciones.begin(), interna.condiciones.end());
+    return condiciones;
+}
+
+// Valida el ON, reparte el WHERE entre las dos tablas y elige el algoritmo con JoinPlanner:
+// index nested loop si una tabla tiene índice (o PK ordenada) sobre su columna del ON; si no,
+// hash join. Como el resto del planificador, no lee datos: solo cuenta los registros.
+PlanJoin planificar_join(Catalogo& catalogo, const Sentencia& s, PlanTrace* traza) {
+    PlanJoin p;
+    const std::string tablas[2] = {s.tabla, s.tabla_join};
+    const std::string alias[2] = {s.alias, s.alias_join};
+    for (int k = 0; k < 2; ++k) {
+        LadoJoin& lado = p.lados[k];
+        lado.tabla = &catalogo.tabla(tablas[k]);
+        lado.nombre = alias[k].empty() ? lado.tabla->nombre : alias[k];
+        lado.registros = Almacen(catalogo, *lado.tabla, false).registros();
+    }
+    if (minusculas(p.lados[0].nombre) == minusculas(p.lados[1].nombre)) {
+        throw std::runtime_error("las dos tablas del JOIN se llaman " + p.lados[0].nombre + "; usa alias distintos");
+    }
+    p.relacion = p.lados[0].tabla->nombre + " JOIN " + p.lados[1].tabla->nombre;
+    p.on = s.on_izquierda + " = " + s.on_derecha;
+
+    const Esquema esquema = esquema_join(p);
+    const int n0 = static_cast<int>(p.lados[0].tabla->columnas.size());
+    const int izquierda = esquema.posicion(s.on_izquierda, p.relacion);
+    const int derecha = esquema.posicion(s.on_derecha, p.relacion);
+    if ((izquierda < n0) == (derecha < n0)) throw std::runtime_error("el ON debe comparar una columna de cada tabla");
+    for (const int col : {izquierda, derecha}) {
+        const TipoColumna tipo = esquema[col].tipo;
+        if (tipo == TipoColumna::POINT || tipo == TipoColumna::VECTOR) throw std::runtime_error("el ON no compara columnas POINT ni VECTOR");
+        LadoJoin& lado = p.lados[col < n0 ? 0 : 1];
+        lado.columna_on = col < n0 ? col : col - n0;
+    }
+    if ((esquema[izquierda].tipo == TipoColumna::VARCHAR) != (esquema[derecha].tipo == TipoColumna::VARCHAR)) {
+        throw std::runtime_error("el ON compara " + s.on_izquierda + " y " + s.on_derecha + ", que son de tipos distintos");
+    }
+    // las condiciones del WHERE mencionan una sola columna: se aplican antes del join, en su tabla
+    for (Condicion c : s.condiciones) {
+        const int col = esquema.posicion(c.columna, p.relacion);
+        c.columna = esquema[col].nombre;
+        p.lados[col < n0 ? 0 : 1].condiciones.push_back(c);
+    }
+    for (LadoJoin& lado : p.lados) lado.indexable = columna_indexable(*lado.tabla, lado.columna_on, lado.indice);
+
+    // la interna es la que se busca por índice; si las dos pueden, la más grande
+    int interna = -1;
+    if (p.lados[0].indexable && p.lados[1].indexable) interna = p.lados[1].registros >= p.lados[0].registros ? 1 : 0;
+    else if (p.lados[1].indexable) interna = 1;
+    else if (p.lados[0].indexable) interna = 0;
+    if (interna >= 0) {
+        const LadoJoin& externa = p.lados[1 - interna];
+        p.externas_estimadas = filas_estimadas(planificar(*externa.tabla, externa.condiciones, true), externa.registros);
+        JoinPlanner planner(traza);
+        const std::string algoritmo = planner.choose(static_cast<std::size_t>(p.externas_estimadas), p.lados[interna].registros, true);
+        p.index_nested_loop = algoritmo == "index_nested_loop_join";
+        p.interna = interna;
+    }
+    return p;
+}
+
+// Raíz arriba: las etapas (de la última a la primera), el join y, debajo, sus dos lados, cada
+// uno con su acceso a disco al fondo. `nivel` da la sangría y quién cuelga de quién.
+std::vector<PasoPlan> armar_plan_join(std::vector<PasoPlan> etapas, PasoPlan join, std::vector<PasoPlan> izquierda,
+                                      std::vector<PasoPlan> derecha) {
+    std::vector<PasoPlan> plan;
+    std::reverse(etapas.begin(), etapas.end());
+    for (PasoPlan& p : etapas) {
+        p.nivel = static_cast<int>(plan.size());
+        plan.push_back(std::move(p));
+    }
+    join.nivel = static_cast<int>(plan.size());
+    const int nivel_join = join.nivel;
+    plan.push_back(std::move(join));
+    for (std::vector<PasoPlan>* lado : {&izquierda, &derecha}) {
+        std::reverse(lado->begin(), lado->end());
+        int nivel = nivel_join + 1;
+        for (PasoPlan& p : *lado) {
+            p.nivel = nivel++;
+            plan.push_back(std::move(p));
+        }
+    }
+    return plan;
+}
+
+Fila unir(const Fila& izquierda, const Fila& derecha) {
+    Fila fila = izquierda;
+    fila.insert(fila.end(), derecha.begin(), derecha.end());
+    return fila;
+}
+
 }  // namespace
 
 // --- Ejecutor ---
@@ -1788,9 +1935,15 @@ Resultado Ejecutor::ejecutar(const Sentencia& s) {
     const bool escribe = ddl || efectiva.tipo == TipoSentencia::INSERT || efectiva.tipo == TipoSentencia::DELETE_FROM;
     const bool lee = efectiva.tipo == TipoSentencia::SELECT || s.tipo == TipoSentencia::EXPLAIN;
 
-    if ((escribe || lee) && !efectiva.tabla.empty()) {
+    // con JOIN se leen las dos tablas: las dos en modo compartido
+    std::vector<std::string> tablas;
+    if (!efectiva.tabla.empty()) tablas.push_back(minusculas(efectiva.tabla));
+    if (lee && !efectiva.tabla_join.empty() && minusculas(efectiva.tabla_join) != minusculas(efectiva.tabla)) {
+        tablas.push_back(minusculas(efectiva.tabla_join));
+    }
+    for (const std::string& tabla : (escribe || lee) ? tablas : std::vector<std::string>{}) {
         const transacciones::ModoLock modo = escribe ? transacciones::ModoLock::EXCLUSIVO : transacciones::ModoLock::COMPARTIDO;
-        if (!locks_->adquirir(txn_, minusculas(efectiva.tabla), modo)) {
+        if (!locks_->adquirir(txn_, tabla, modo)) {
             const bool habia = en_transaccion_;
             if (habia) deshacer_cambios();
             en_transaccion_ = false;
@@ -1921,7 +2074,9 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
     const auto inicio_plan = Reloj::now();
     Resultado ejecutada;
     if (s.analyze) {
-        if (consulta) {
+        if (consulta && interna.hay_join) {
+            (void)planificar_join(catalogo_, interna, nullptr);
+        } else if (consulta) {
             const Tabla& tabla = catalogo_.tabla(interna.tabla);
             Almacen almacen(catalogo_, tabla, false);
             const Plan elegido = planificar(tabla, interna.condiciones, true, &interna);
@@ -1932,6 +2087,9 @@ Resultado Ejecutor::explicar(const Sentencia& s) {
         ejecutada = ejecutar(interna);
         r.ejecucion_ms = ejecutada.tiempo_ms;
         r.plan = ejecutada.plan;
+    } else if (interna.hay_join) {
+        r.plan = plan_estimado_join(interna);
+        r.planificacion_ms = parseo_ms_ + std::chrono::duration<double, std::milli>(Reloj::now() - inicio_plan).count();
     } else {
         const Tabla& tabla = catalogo_.tabla(interna.tabla);
         // abrir la tabla solo lee la cabecera: es lo que PostgreSQL saca de pg_class
@@ -2498,6 +2656,7 @@ std::size_t Ejecutor::anotar_vectores(const Tabla& tabla, bool inserta, std::vec
 }
 
 Resultado Ejecutor::seleccionar(const Sentencia& s) {
+    if (s.hay_join) return seleccionar_join(s);
     const Tabla& tabla = catalogo_.tabla(s.tabla);
     Almacen almacen(catalogo_, tabla, false);
     Resultado r;
@@ -2546,6 +2705,204 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
     r.mensaje = texto(r.filas.size()) + " filas";
     ordenar_como_explain(r.plan);
     return r;
+}
+
+// INNER JOIN: cada tabla se lee con su parte del WHERE (y sus índices), se unen con hash join o
+// index nested loop, y las filas unidas pasan por las mismas etapas que una tabla sola
+Resultado Ejecutor::seleccionar_join(const Sentencia& s) {
+    Resultado r;
+    r.tipo = "select";
+    PlanJoin pj = planificar_join(catalogo_, s, nullptr);
+    Almacen almacenes[2] = {Almacen(catalogo_, *pj.lados[0].tabla, false), Almacen(catalogo_, *pj.lados[1].tabla, false)};
+    std::vector<PasoPlan> planes[2];
+    std::vector<Fila> unidas;
+    PasoPlan join;
+    join.relacion = pj.relacion;
+    join.condicion = pj.on;
+
+    // lee un lado con su parte del WHERE; el nodo muestra la tabla con su alias
+    auto leer = [&](int k, std::vector<Fila>& filas) {
+        const LadoJoin& lado = pj.lados[k];
+        Acceso acceso = acceder(almacenes[k], *lado.tabla, lado.condiciones);
+        planes[k].push_back(acceso.paso);
+        filtrar(acceso, *lado.tabla, planes[k]);
+        for (PasoPlan& p : planes[k]) p.relacion = lado.tabla->nombre + (lado.nombre != lado.tabla->nombre ? " " + lado.nombre : "");
+        for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
+    };
+
+    if (pj.index_nested_loop) {
+        const int ext = 1 - pj.interna;
+        const int in = pj.interna;
+        const LadoJoin& externa = pj.lados[ext];
+        const LadoJoin& interna = pj.lados[in];
+        std::vector<Fila> externas;
+        leer(ext, externas);
+
+        // una búsqueda por índice en la interna por cada clave distinta de la externa
+        const auto inicio = Reloj::now();
+        std::unordered_map<std::string, std::vector<Fila>> vistas;
+        std::size_t busquedas = 0, encontradas = 0;
+        long long paginas = 0;
+        auto buscar = [&](const Valor& clave) -> std::vector<Fila> {
+            const auto it = vistas.find(clave.a_texto());
+            if (it != vistas.end()) return it->second;
+            Acceso acceso = acceder(almacenes[in], *interna.tabla, condiciones_internas(interna, clave));
+            std::vector<PasoPlan> descartado;
+            filtrar(acceso, *interna.tabla, descartado);
+            ++busquedas;
+            paginas += std::max<long long>(0, acceso.paso.paginas_leidas);
+            std::vector<Fila> filas;
+            for (FilaFisica& f : acceso.filas) filas.push_back(std::move(f.fila));
+            encontradas += filas.size();
+            return vistas.emplace(clave.a_texto(), std::move(filas)).first->second;
+        };
+        const auto pares = index_nested_loop_join<Fila, Fila, Valor>(
+            externas, buscar, [&](const Fila& f) { return f[static_cast<std::size_t>(externa.columna_on)]; });
+        for (const auto& [e, i] : pares) unidas.push_back(ext == 0 ? unir(e, i) : unir(i, e));
+        const double ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+
+        const Plan plan = planificar(*interna.tabla, condiciones_internas(interna, Valor::de_entero(0)), true);
+        PasoPlan paso = paso_de_plan(plan, *interna.tabla);
+        const std::string col_externa = externa.nombre + "." + externa.tabla->columnas[static_cast<std::size_t>(externa.columna_on)].nombre;
+        paso.relacion = interna.tabla->nombre + (interna.nombre != interna.tabla->nombre ? " " + interna.nombre : "");
+        paso.condicion = plan.columna + " = " + col_externa;
+        paso.filas_reales = static_cast<long long>(encontradas);
+        paso.paginas_leidas = paginas;
+        paso.tiempo_ms = ms;
+        paso.detalles = {{"busquedas", texto(busquedas)}, {"filas", texto(encontradas)}, {"paginas_leidas", texto(static_cast<std::size_t>(paginas))},
+                         {"nota", "una busqueda por cada clave distinta de " + externa.nombre}};
+        if (!interna.condiciones.empty()) {
+            std::string filtro;
+            for (const Condicion& c : interna.condiciones) filtro += (filtro.empty() ? "" : " AND ") + describir_cond(c);
+            paso.detalles.push_back({"filtro", filtro});
+        }
+        planes[in].push_back(paso);
+
+        join.operacion = "index_nested_loop_join";
+        join.nodo = "Index Nested Loop Join";
+        join.tiempo_ms = ms;
+        join.detalles = {{"algoritmo", "index_nested_loop_join"}, {"externa", externa.nombre}, {"interna", interna.nombre},
+                         {"indice_interna", interna.indice ? interna.indice->nombre : "clave primaria"},
+                         {"filas_externas", texto(externas.size())}, {"busquedas", texto(busquedas)}};
+    } else {
+        std::vector<Fila> filas[2];
+        leer(0, filas[0]);
+        leer(1, filas[1]);
+        // se construye la tabla hash con el lado más chico y se recorre el otro
+        const auto inicio = Reloj::now();
+        const int construye = filas[0].size() <= filas[1].size() ? 0 : 1;
+        const int prueba = 1 - construye;
+        auto clave = [&](int k) {
+            const std::size_t col = static_cast<std::size_t>(pj.lados[k].columna_on);
+            return [col](const Fila& f) { return f[col].a_texto(); };
+        };
+        const auto pares = hash_join<Fila, Fila, std::string>(filas[prueba], filas[construye], clave(prueba), clave(construye));
+        for (const auto& [p, c] : pares) unidas.push_back(prueba == 0 ? unir(p, c) : unir(c, p));
+        join.operacion = "hash_join";
+        join.nodo = "Hash Join";
+        join.tiempo_ms = std::chrono::duration<double, std::milli>(Reloj::now() - inicio).count();
+        join.detalles = {{"algoritmo", "hash_join"}, {"construye", pj.lados[construye].nombre}, {"recorre", pj.lados[prueba].nombre},
+                         {"filas_construye", texto(filas[construye].size())}, {"filas_recorre", texto(filas[prueba].size())}};
+        if (!pj.lados[0].indexable && !pj.lados[1].indexable) join.detalles.push_back({"nota", "ninguna tabla tiene indice sobre su columna del ON"});
+    }
+    join.filas_reales = static_cast<long long>(unidas.size());
+    join.detalles.push_back({"filas", texto(unidas.size())});
+
+    const Esquema esquema = esquema_join(pj);
+    Etapas e{esquema, s, items_de(s, esquema, true), pj.relacion, nullptr, r, PlanTrace()};
+    validar_items(e);
+    if (e.agrupa()) agrupar(e, unidas);
+    else for (const ItemSelect& item : e.items) r.columnas.push_back(etiqueta(item));
+    ordenar(e, unidas);
+    proyectar(e, unidas);
+    limitar(e);
+
+    r.plan = armar_plan_join(std::move(r.plan), std::move(join), std::move(planes[0]), std::move(planes[1]));
+    r.afectadas = r.filas.size();
+    r.mensaje = texto(r.filas.size()) + " filas";
+    return r;
+}
+
+// EXPLAIN de un JOIN sin ejecutarlo: el acceso estimado de cada lado, el join que eligió el
+// planificador y las etapas que siguen
+std::vector<PasoPlan> Ejecutor::plan_estimado_join(const Sentencia& s) {
+    const PlanJoin pj = planificar_join(catalogo_, s, nullptr);
+    std::vector<PasoPlan> planes[2];
+    long long filas[2] = {0, 0};
+    for (int k = 0; k < 2; ++k) {
+        const LadoJoin& lado = pj.lados[k];
+        Almacen almacen(catalogo_, *lado.tabla, false);
+        const bool interna = pj.index_nested_loop && k == pj.interna;
+        const Plan plan = planificar(*lado.tabla, interna ? condiciones_internas(lado, Valor::de_entero(0)) : lado.condiciones, true);
+        PasoPlan paso = paso_de_plan(plan, *lado.tabla);
+        paso.relacion = lado.tabla->nombre + (lado.nombre != lado.tabla->nombre ? " " + lado.nombre : "");
+        paso.filas_estimadas = filas_estimadas(plan, almacen.registros());
+        paso.costo = costo_estimado(plan, almacen.paginas_aprox(), almacen.registros(), paso.filas_estimadas, almacen.altura());
+        if (interna) {
+            const LadoJoin& externa = pj.lados[1 - k];
+            paso.condicion = plan.columna + " = " + externa.nombre + "." + externa.tabla->columnas[static_cast<std::size_t>(externa.columna_on)].nombre;
+            paso.detalles = {{"nota", "una busqueda por cada clave distinta de " + externa.nombre}};
+        }
+        planes[k].push_back(paso);
+        filas[k] = paso.filas_estimadas;
+        if (!interna && !plan.restantes.empty()) {
+            std::string descripcion;
+            for (const Condicion& c : plan.restantes) descripcion += (descripcion.empty() ? "" : " AND ") + describir_cond(c);
+            PasoPlan f;
+            f.operacion = "filtro";
+            f.nodo = "Filter";
+            f.relacion = paso.relacion;
+            f.condicion = descripcion;
+            f.filas_estimadas = std::max<long long>(1, filas[k] / 10);  // selectividad por omisión del filtro
+            f.detalles = {{"nota", "estimacion: 10% de las filas pasa el filtro"}};
+            planes[k].push_back(f);
+            filas[k] = f.filas_estimadas;
+        }
+    }
+    PasoPlan join;
+    join.relacion = pj.relacion;
+    join.condicion = pj.on;
+    if (pj.index_nested_loop) {
+        join.operacion = "index_nested_loop_join";
+        join.nodo = "Index Nested Loop Join";
+        join.filas_estimadas = filas[1 - pj.interna] * std::max<long long>(1, filas[pj.interna]);
+        join.detalles = {{"externa", pj.lados[1 - pj.interna].nombre}, {"interna", pj.lados[pj.interna].nombre}};
+    } else {
+        join.operacion = "hash_join";
+        join.nodo = "Hash Join";
+        join.filas_estimadas = std::max(filas[0], filas[1]);
+        join.detalles = {{"nota", "construye la tabla hash con el lado mas chico"}};
+    }
+
+    std::vector<PasoPlan> etapas;
+    long long estimadas = join.filas_estimadas;
+    const bool agrupa = !s.group_by.empty() ||
+                        std::any_of(s.items.begin(), s.items.end(), [](const ItemSelect& i) { return !i.agregado.empty(); });
+    if (agrupa) {
+        PasoPlan g{"agrupacion", {{"algoritmo", "external_hash_aggregate"}}};
+        g.nodo = "HashAggregate";
+        g.relacion = pj.relacion;
+        g.columna = s.group_by;
+        g.filas_estimadas = estimadas = s.group_by.empty() ? 1 : std::max<long long>(1, estimadas / 10);
+        etapas.push_back(g);
+    }
+    if (!s.order_by.empty()) {
+        PasoPlan o{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"orden", s.descendente ? "DESC" : "ASC"}}};
+        o.nodo = "Sort";
+        o.relacion = pj.relacion;
+        o.columna = s.order_by;
+        o.condicion = describir_orden(s);
+        o.filas_estimadas = estimadas;
+        etapas.push_back(o);
+    }
+    if (s.limite >= 0) {
+        PasoPlan l{"limite", {{"filas", std::to_string(s.limite)}}};
+        l.nodo = "Limit";
+        l.relacion = pj.relacion;
+        l.filas_estimadas = std::min(estimadas, s.limite);
+        etapas.push_back(l);
+    }
+    return armar_plan_join(std::move(etapas), std::move(join), std::move(planes[0]), std::move(planes[1]));
 }
 
 Resultado Ejecutor::mostrar_tablas() {
