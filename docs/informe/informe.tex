@@ -635,6 +635,47 @@ El script \texttt{docs/tienda.sql} crea las tablas, las carga con \texttt{COPY} 
 
 La prueba \texttt{tools/tienda/test\_generar.py} comprueba que la misma semilla da los mismos archivos, los conteos, que cada precio está en el rango de su tipo, que cada \texttt{sede\_id}, \texttt{usuario\_id} y \texttt{producto\_id} existe, y que el 80\,\% de las compras de cada usuario cae en sus tipos preferidos. Además, \texttt{tools/probar\_sql.py docs/tienda.sql} ejecuta el script contra el motor con 13 bloques que revisan sus resultados.
 
+\subsection{Interfaz de la tienda}
+
+La vista \emph{Tienda} de la web muestra lo que hace el sistema desde el punto de vista de un cliente. Solo consume los cuatro endpoints de \texttt{/api/tienda}, y cada uno devuelve también las consultas SQL que usó, para que se vea qué parte del motor responde cada cosa.
+
+\begin{itemize}
+  \item \emph{Catálogo.} Un buscador de texto, que usa \texttt{MATCH(descripcion, ...) USING BM25}, y un filtro por \texttt{tipo}. Los productos aparecen en tarjetas con foto, nombre, marca y precio, de 12 en 12 (figura~\ref{fig:tienda-catalogo}).
+  \item \emph{Ficha.} Al abrir un producto se ven su foto grande, el precio, la marca, el color, el tipo, la categoría y la descripción (figura~\ref{fig:tienda-ficha}).
+  \item \emph{Recomendaciones.} El top 10 de la fusión RRF. Cada tarjeta lleva una etiqueta de color por cada lista donde apareció: texto, imagen, metadata o compras. El desplegable ``Por qué aparece'' muestra el score RRF, el puesto en cada lista y la consulta SQL de esa lista (figura~\ref{fig:tienda-recomendaciones}). Si una fuente falla, se avisa y se fusionan las demás.
+  \item \emph{Tiendas cercanas con stock.} En un mapa de Leaflet se ven la ubicación del usuario y las 3 sedes más cercanas que tienen stock del producto, numeradas como el k-NN de la Parte 2, con su distancia y sus unidades (figura~\ref{fig:tienda-sedes}). La ubicación empieza en UTEC y cambia con un clic en el mapa. Si menos de 3 sedes tienen stock, se avisa.
+\end{itemize}
+
+Con los 10\,000 productos, una búsqueda de texto responde en unos 25\,ms, la ficha en 22\,ms, las sedes en 48\,ms y las recomendaciones en unos 260\,ms, porque juntan cuatro consultas al motor y una a FAISS. Mientras la API no tenía estos endpoints, la vista se desarrolló con \texttt{web/src/tienda/ejemplo.json}, que sigue el mismo contrato; si la ruta no existe, la vista lo usa y lo avisa. La prueba \texttt{web/tests/tienda.spec.ts} simula la API y recorre la búsqueda, el filtro, la paginación, la ficha, las 10 recomendaciones con sus fuentes, el mapa y el cambio de ubicación, además de los errores.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{img/tienda_catalogo.png}
+\caption{Catálogo: búsqueda de \emph{bar stool} con BM25, 108 resultados.}
+\label{fig:tienda-catalogo}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{img/tienda_ficha.png}
+\caption{Ficha del producto 5.}
+\label{fig:tienda-ficha}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{img/tienda_recomendaciones.png}
+\caption{Recomendaciones del producto 5, con la fuente de cada una.}
+\label{fig:tienda-recomendaciones}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{img/tienda_sedes.png}
+\caption{Las 3 sedes más cercanas a UTEC con stock del producto 5.}
+\label{fig:tienda-sedes}
+\end{figure}
+
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
 
