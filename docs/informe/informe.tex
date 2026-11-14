@@ -202,6 +202,26 @@ El hash extensible mantiene un directorio de $2^d$ punteros a buckets, donde $d$
 
 El hash responde una igualdad con una lectura del directorio y una del bucket, pero no tiene noción de orden, así que el planificador nunca lo usa para rangos.
 
+\subsection{Archivos temporales}
+\label{sec:temporales}
+
+Hasta el tercer avance, las corridas del merge sort y las particiones del hashing vivían en vectores en memoria, de modo que el presupuesto de páginas era un límite simulado y no una escritura real. Para que estos algoritmos, y también el join, puedan escribir en disco, se agregó \texttt{motor/consultas/archivo\_temporal.h} con la clase \texttt{ArchivoTemporal}. Un archivo temporal guarda filas en páginas de 4 KB, del mismo tamaño que las páginas de las tablas, con este formato:
+
+\begin{lstlisting}
+pagina := [n filas: uint16] [fila 1] [fila 2] ... [ceros hasta 4096 B]
+fila   := [n valores: uint16] y por cada valor [tipo: uint8] [datos]
+          INT: int64 | FLOAT: float32 | VARCHAR: uint16 + bytes
+          POINT: 2 int32 | VECTOR: uint16 + n float32
+\end{lstlisting}
+
+Cada valor lleva un byte con su tipo, así que el archivo no depende del esquema de una tabla. Esto importa porque las filas de un join mezclan columnas de dos tablas y no corresponden a ningún esquema guardado en el catálogo; con este formato, la misma clase sirve para las corridas de un \texttt{ORDER BY}, las particiones de un \texttt{GROUP BY} y las filas unidas. Una fila que ocupa más de 4\,094 bytes no cabe en una página y se rechaza con un error.
+
+Las filas se escriben de una en una. Cuando la página en curso se llena, se vuelca al disco, y al cerrar la escritura se guarda la última. La lectura carga una página a la vez y se puede reiniciar para hacer otra pasada, que es lo que necesita una mezcla en varias pasadas. Por eso, en memoria solo viven dos páginas por archivo: la de escritura y la de lectura.
+
+Los archivos se crean en la carpeta \texttt{tmp/} de la base y se borran en el destructor de la clase (RAII). Así se borran también cuando la consulta termina con una excepción, y una consulta que falla no deja archivos sueltos. La clase se puede mover, por ejemplo a un vector con todas las corridas, y el archivo lo borra el último dueño.
+
+Cada archivo cuenta las páginas que escribió y las que leyó. Si recibe la traza del plan, suma esas cifras a las de toda la consulta (los campos \texttt{paginas\_escritas} y \texttt{paginas\_leidas} de \texttt{PlanTrace}), y así el \texttt{EXPLAIN} muestra cuánto disco usaron los algoritmos externos. En \texttt{motor/pruebas/}, la prueba de esta clase escribe y relee 10\,000 filas con los cinco tipos del motor, que ocupan 231 páginas; compara cada fila con la original, verifica que el número de páginas coincide con el calculado a partir del formato y comprueba que el archivo desaparece al destruir el objeto. El external hashing del \texttt{GROUP BY}, descrito a continuación, guarda cada partición en uno de estos archivos.
+
 \subsection{Algoritmos externos}
 
 \paragraph{External merge sort.} Para \texttt{ORDER BY}, los registros se dividen en corridas del tamaño del presupuesto de memoria (páginas de buffer por registros por página). Cada corrida se ordena y luego se mezclan $k$ a la vez con un heap de mínimos, en $O(N \log k)$. La traza del plan reporta las corridas iniciales y las pasadas de mezcla.
@@ -237,26 +257,6 @@ Filas & Agrupa por & Grupos & Particiones & Niveles & En memoria & Escritas / le
 \end{table}
 
 Con pocos grupos alcanza un nivel: cada fila se escribe y se lee una sola vez, y en memoria hay a la vez cerca de un noveno de los grupos. Con un grupo por fila, 40\,KB de tabla no alcanzan: 10\,000 grupos necesitan 2 niveles y 100\,000 necesitan 3, y se leen más páginas de las que se escriben porque las particiones que no caben se releen para repartirlas. Ese es el costo de acotar la memoria: agrupar 100\,000 filas por \texttt{id} crea 819 archivos y tarda 3,3\,s.
-
-\subsection{Archivos temporales}
-\label{sec:temporales}
-
-Hasta el tercer avance, las corridas del merge sort y las particiones del hashing vivían en vectores en memoria, de modo que el presupuesto de páginas era un límite simulado y no una escritura real. Para que estos algoritmos, y también el join, puedan escribir en disco, se agregó \texttt{motor/consultas/archivo\_temporal.h} con la clase \texttt{ArchivoTemporal}. Un archivo temporal guarda filas en páginas de 4 KB, del mismo tamaño que las páginas de las tablas, con este formato:
-
-\begin{lstlisting}
-pagina := [n filas: uint16] [fila 1] [fila 2] ... [ceros hasta 4096 B]
-fila   := [n valores: uint16] y por cada valor [tipo: uint8] [datos]
-          INT: int64 | FLOAT: float32 | VARCHAR: uint16 + bytes
-          POINT: 2 int32 | VECTOR: uint16 + n float32
-\end{lstlisting}
-
-Cada valor lleva un byte con su tipo, así que el archivo no depende del esquema de una tabla. Esto importa porque las filas de un join mezclan columnas de dos tablas y no corresponden a ningún esquema guardado en el catálogo; con este formato, la misma clase sirve para las corridas de un \texttt{ORDER BY}, las particiones de un \texttt{GROUP BY} y las filas unidas. Una fila que ocupa más de 4\,094 bytes no cabe en una página y se rechaza con un error.
-
-Las filas se escriben de una en una. Cuando la página en curso se llena, se vuelca al disco, y al cerrar la escritura se guarda la última. La lectura carga una página a la vez y se puede reiniciar para hacer otra pasada, que es lo que necesita una mezcla en varias pasadas. Por eso, en memoria solo viven dos páginas por archivo: la de escritura y la de lectura.
-
-Los archivos se crean en la carpeta \texttt{tmp/} de la base y se borran en el destructor de la clase (RAII). Así se borran también cuando la consulta termina con una excepción, y una consulta que falla no deja archivos sueltos. La clase se puede mover, por ejemplo a un vector con todas las corridas, y el archivo lo borra el último dueño.
-
-Cada archivo cuenta las páginas que escribió y las que leyó. Si recibe la traza del plan, suma esas cifras a las de toda la consulta (los campos \texttt{paginas\_escritas} y \texttt{paginas\_leidas} de \texttt{PlanTrace}), y así el \texttt{EXPLAIN} muestra cuánto disco usaron los algoritmos externos. En \texttt{motor/pruebas/}, la prueba de esta clase escribe y relee 10\,000 filas con los cinco tipos del motor, que ocupan 231 páginas; compara cada fila con la original, verifica que el número de páginas coincide con el calculado a partir del formato y comprueba que el archivo desaparece al destruir el objeto.
 
 \subsection{Parser, planificador y EXPLAIN}
 
@@ -333,25 +333,28 @@ EXPLAIN ANALYZE SELECT c2.producto_id, COUNT(*) AS veces
   GROUP BY c2.producto_id ORDER BY veces DESC LIMIT 10;
 
 Limit on compras JOIN compras  (rows=10) (actual rows=10)
-  -> Sort on compras JOIN compras (actual time=1.220 rows=33)
+  -> Sort on compras JOIN compras (actual time=0.706 rows=33)
      Sort Key: veces DESC
-    -> HashAggregate on compras JOIN compras (actual time=0.779 rows=33)
+    -> HashAggregate on compras JOIN compras (actual time=36.473 rows=33)
        Group Key: c2.producto_id
-      -> Index Nested Loop Join on compras JOIN compras (actual time=0.550 rows=33)
+       particiones=9  niveles=1  grupos_en_memoria=7  paginas_escritas=9  paginas_leidas=9
+      -> Index Nested Loop Join on compras JOIN compras (actual time=0.515 rows=33)
          Join Cond: c1.usuario_id = c2.usuario_id
         -> Index Scan using compras_producto on compras c1 (producto_id)
-             (cost=40.00 rows=37) (actual time=0.056 rows=2 pages=4)
+             (cost=40.00 rows=37) (actual time=0.050 rows=2 pages=4)
            Index Cond: producto_id = 5
         -> Index Scan using compras_usuario on compras c2 (usuario_id)
-             (actual time=0.550 rows=33 pages=38)
+             (actual time=0.515 rows=33 pages=38)
            Index Cond: usuario_id = c1.usuario_id
            Nota: una busqueda por cada clave distinta de c1
 Rows: 10
-Planning Time: 33.154 ms
-Execution Time: 13.073 ms
+Planning Time: 21.875 ms
+Execution Time: 45.182 ms
 \end{lstlisting}
 
 El planificador estimó 37 filas para la externa, frente a los 7\,458 registros de la interna, y por eso eligió buscar por índice. En la ejecución, los 2 compradores del producto 5 generaron 2 búsquedas en el hash, que leyeron 38 páginas en total; un hash join habría tenido que leer \texttt{compras} completa para construir o recorrer su tabla. Al igual que en las consultas simples, la estimación sobre el B+ (37 filas) se aleja de lo real (2) porque el catálogo supone claves repartidas de forma pareja, pero en este caso la decisión es la correcta.
+
+El mismo plan muestra que las filas unidas pasan por el external hashing en disco del \texttt{GROUP BY}: las 33 filas se reparten en 9 particiones de una página, que se escriben y se vuelven a leer. Con tan pocos grupos, crear y borrar esos 9 archivos se lleva la mayor parte del tiempo de la consulta (36 de 45 ms), mientras que el join completo tarda medio milisegundo. Es el costo fijo de acotar la memoria, que solo se compensa cuando los grupos no caben en el presupuesto.
 
 \paragraph{Etapas del SELECT por esquema.} Para que el join, el external sort y el external hashing no se mezclaran en el mismo código, la parte final del \texttt{SELECT} se separó en cuatro etapas: \texttt{agrupar}, \texttt{ordenar}, \texttt{proyectar} y \texttt{limitar}. Antes, estas etapas recibían una tabla del catálogo; ahora reciben un esquema, que es una lista de columnas calificadas por su tabla o su alias. Una consulta sobre una sola tabla arma el esquema con las columnas de esa tabla, y un join lo arma con las columnas de las dos, primero las de la izquierda. Así las filas unidas pasan por las mismas etapas que las de una tabla sola, con \texttt{GROUP BY}, \texttt{ORDER BY} por columna, por alias o por distancia, proyección y \texttt{LIMIT}, y los algoritmos externos en disco se conectan en un solo lugar: el sort dentro de \texttt{ordenar} y el hashing dentro de \texttt{agrupar}.
 
