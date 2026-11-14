@@ -84,6 +84,12 @@ export default function SedesMapa({ id }: { id: number }) {
       {datos && !datos.sedes.length && (
         <p className="empty-small">Ninguna sede tiene stock de este producto.</p>
       )}
+      {datos && datos.sedes.length > 0 && datos.sedes.length < datos.k && (
+        <p className="empty-small">
+          Solo {datos.sedes.length === 1 ? "1 sede tiene" : `${datos.sedes.length} sedes tienen`}{" "}
+          stock de este producto.
+        </p>
+      )}
       <div className="tienda-mapa">
         <MapContainer
           className="spatial-map"
