@@ -95,6 +95,9 @@ public:
     std::vector<Registro> ordenar(std::vector<Registro> records,
                                   const KeyFunction& key,
                                   bool reverse = false) {
+        const std::size_t escritas_antes = trace_ ? trace_->paginas_escritas : 0;
+        const std::size_t leidas_antes = trace_ ? trace_->paginas_leidas : 0;
+
         // fase 1: corridas de B páginas
         const auto chunk_size = buffer_pages_ * records_per_page_;
         std::vector<Corrida> corridas;
@@ -109,27 +112,31 @@ public:
             corridas.push_back(std::move(corrida));
         }
         records.clear();
-        std::vector<std::vector<Registro>> runs;
-        for (Corrida& corrida : corridas) {
-            runs.emplace_back();
-            Registro registro;
-            while (corrida.siguiente(registro)) {
-                runs.back().push_back(registro);
-            }
-        }
-        const auto initial_runs = runs.size();
+        const auto initial_runs = corridas.size();
+
+        // fase 2: pasadas de k corridas hasta que quede una
         std::size_t merge_passes = 0;
-        while (runs.size() > k_) {
-            std::vector<std::vector<Registro>> siguiente;
-            for (std::size_t inicio = 0; inicio < runs.size(); inicio += k_) {
-                const auto fin = std::min(runs.size(), inicio + k_);
-                std::vector<std::vector<Registro>> grupo(runs.begin() + inicio, runs.begin() + fin);
-                siguiente.push_back(merge_k_way(grupo, key, reverse));
+        while (corridas.size() > 1) {
+            std::vector<Corrida> siguientes;
+            for (std::size_t inicio = 0; inicio < corridas.size(); inicio += k_) {
+                const auto fin = std::min(corridas.size(), inicio + k_);
+                std::vector<Corrida> grupo;
+                for (std::size_t i = inicio; i < fin; ++i) {
+                    grupo.push_back(std::move(corridas[i]));
+                }
+                siguientes.push_back(merge_k_way(grupo, key, reverse));
             }
-            runs = std::move(siguiente);
+            corridas = std::move(siguientes);
             ++merge_passes;
         }
-        std::vector<Registro> resultado = merge_k_way(runs, key, reverse);
+
+        // resultado
+        std::vector<Registro> resultado;
+        Registro registro;
+        while (!corridas.empty() && corridas[0].siguiente(registro)) {
+            resultado.push_back(registro);
+        }
+        corridas.clear();
         if (trace_) {
             trace_->record("external_merge_sort", {
                 {"buffer_pages", std::to_string(buffer_pages_)},
@@ -138,6 +145,8 @@ public:
                 {"initial_runs", std::to_string(initial_runs)},
                 {"merge_passes", std::to_string(merge_passes)},
                 {"records", std::to_string(resultado.size())},
+                {"paginas_escritas", std::to_string(trace_->paginas_escritas - escritas_antes)},
+                {"paginas_leidas", std::to_string(trace_->paginas_leidas - leidas_antes)},
             });
         }
         return resultado;
@@ -149,12 +158,14 @@ private:
     struct HeapEntry {
         Clave key;
         std::size_t run;
-        std::size_t position;
     };
+    // con claves iguales sale primero la corrida anterior, así el orden es estable
     struct HeapCompare {
         bool reverse;
         bool operator()(const HeapEntry& left, const HeapEntry& right) const {
-            return reverse ? left.key < right.key : left.key > right.key;
+            if (left.key < right.key) return reverse;
+            if (right.key < left.key) return !reverse;
+            return left.run > right.run;
         }
     };
 
@@ -166,24 +177,24 @@ private:
         });
     }
 
-    static std::vector<Registro> merge_k_way(const std::vector<std::vector<Registro>>& runs,
-                                             const KeyFunction& key,
-                                             bool reverse) {
+    // una página de entrada por corrida y una de salida
+    Corrida merge_k_way(std::vector<Corrida>& grupo, const KeyFunction& key, bool reverse) {
+        Corrida salida = nueva_corrida_();
+        std::vector<Registro> actuales(grupo.size());
         std::priority_queue<HeapEntry, std::vector<HeapEntry>, HeapCompare> heap{HeapCompare{reverse}};
-        for (std::size_t run = 0; run < runs.size(); ++run) {
-            if (!runs[run].empty()) heap.push({key(runs[run][0]), run, 0});
+        for (std::size_t run = 0; run < grupo.size(); ++run) {
+            if (grupo[run].siguiente(actuales[run])) heap.push({key(actuales[run]), run});
         }
-        std::vector<Registro> resultado;
         while (!heap.empty()) {
             const auto entry = heap.top();
             heap.pop();
-            resultado.push_back(runs[entry.run][entry.position]);
-            if (entry.position + 1 < runs[entry.run].size()) {
-                const auto siguiente = entry.position + 1;
-                heap.push({key(runs[entry.run][siguiente]), entry.run, siguiente});
+            salida.agregar(actuales[entry.run]);
+            if (grupo[entry.run].siguiente(actuales[entry.run])) {
+                heap.push({key(actuales[entry.run]), entry.run});
             }
         }
-        return resultado;
+        salida.cerrar_escritura();
+        return salida;
     }
 
     std::size_t buffer_pages_;
