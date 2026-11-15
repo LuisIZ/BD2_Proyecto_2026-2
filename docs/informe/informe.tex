@@ -484,7 +484,7 @@ La pertenencia se decide con \emph{ray casting}: desde el punto se traza un rayo
 
 \subsection{Estado de la Parte 2}
 
-Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST. La interfaz incluye además un panel de mapa con Leaflet que dibuja los puntos de la tabla sobre OpenStreetMap, resalta las filas que devolvió la consulta y traza el círculo de búsqueda o el polígono usado en el \texttt{WHERE}. Los límites se detallan en la sección \ref{sec:pendiente}.
+Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST y con PostGIS. La interfaz incluye además un panel de mapa con Leaflet que dibuja los puntos de la tabla sobre OpenStreetMap, resalta las filas que devolvió la consulta y traza el círculo de búsqueda o el polígono usado en el \texttt{WHERE}. Los límites se detallan en la sección \ref{sec:pendiente}.
 
 %-------------------------------------------------------------------------------
 \section{Parte 3: búsqueda de texto}
@@ -1318,6 +1318,30 @@ La búsqueda secuencial cuesta lo mismo con cualquier radio, porque siempre lee 
 
 GiST resultó unas 10 veces más rápido que el R-Tree del motor en todas las consultas, aunque su índice ocupa casi el doble. Parte de esa diferencia no viene de la estructura: cada consulta del motor abre los archivos y lee el catálogo, mientras que PostgreSQL trabaja con la tabla ya en memoria compartida. Por eso la comparación más justa es la forma en que crece cada técnica, y en eso el R-Tree y GiST se comportan igual. La construcción del R-Tree es más lenta porque inserta punto por punto leyendo cada fila del heap. El detalle completo está en \texttt{docs/comparacion\_espacial/README.md}.
 
+\paragraph{Comparación con PostGIS.} La comparación anterior usa el tipo \texttt{point} y la métrica euclidiana, mientras que el motor trabaja por defecto con haversine. Para comparar en las mismas condiciones, se repitió la medición con PostGIS 3.5.2 sobre PostgreSQL 17.5, en el contenedor Docker \texttt{postgis/postgis}. Los puntos se guardan como \texttt{geography(Point,4326)}, el radio se consulta con \texttt{ST\_DWithin(..., false)}, que mide sobre la esfera, y los k vecinos con el operador \texttt{<->}. Del lado del motor se usó \texttt{make bench-espacial-haversine}, con los mismos puntos y centros. El script \texttt{datos/resultados/postgis\_bench.sql} verifica en cada consulta que GiST devuelva los mismos identificadores que el recorrido secuencial de PostgreSQL. El promedio de filas coincide con el del motor, salvo en la segunda decimal de dos casos: el motor usa una esfera de 6\,371\,000 m y PostGIS una de 6\,371\,008,8 m, así que un punto justo en el borde del radio puede quedar de distinto lado.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Consulta & Secuencial (motor) & R-Tree & Secuencial (PostGIS) & GiST (PostGIS) \\
+\midrule
+Rango de 1 km & 140,3 ms & 5,6 ms & 160,1 ms & 1,29 ms \\
+Rango de 5 km & 174,9 ms & 30,7 ms & 159,5 ms & 8,24 ms \\
+Rango de 10 km & 96,4 ms & 88,3 ms & 163,7 ms & 31,2 ms \\
+k-NN, k = 10 & 1\,473,1 ms & 8,5 ms & 213,7 ms & 0,47 ms \\
+k-NN, k = 50 & 1\,176,5 ms & 9,4 ms & 196,7 ms & 0,69 ms \\
+k-NN, k = 100 & 1\,008,1 ms & 10,4 ms & 256,3 ms & 1,53 ms \\
+Construcción del índice & & 2\,965 ms & & 1\,178 ms \\
+Tamaño del índice & & 3\,448 KB & & 7\,288 KB \\
+\bottomrule
+\end{tabular}
+\caption{Motor y PostGIS con distancia geodésica y 100\,000 puntos.}
+\end{table}
+
+Con distancia geodésica se repite la forma de la comparación euclidiana. Con un radio de 1 km, GiST es 124 veces más rápido que el recorrido de PostgreSQL y el R-Tree 25 veces más rápido que el del motor; con 10 km la ventaja de GiST baja a 5 veces y la del R-Tree casi desaparece. En k vecinos, el recorrido del motor es el más lento porque ordena toda la tabla con el merge sort externo, mientras que PostgreSQL solo conserva los k mejores. Los dos índices casi no dependen del tamaño de la tabla: con k = 10, el R-Tree tarda entre 8 y 13 ms y GiST entre 0,22 y 0,47 ms para 1\,000, 10\,000 y 100\,000 puntos. Lo que cambia es el espacio: el GiST de \texttt{geography} ocupa 7\,288 KB, más que la propia tabla (6\,672 KB) y más del doble que el R-Tree, en parte porque guarda cajas en tres dimensiones, en coordenadas geocéntricas. También es más lento que el GiST sobre \texttt{point} (1,29 ms frente a 0,54 ms en el radio de 1 km), porque calcula distancias sobre la esfera; como las dos mediciones se hicieron en servidores distintos, esa diferencia es solo orientativa. Por último, el recorrido del motor varió entre 96 y 175 ms en las consultas por radio aunque siempre lee todas las páginas, lo que muestra el ruido de medir en una laptop.
+
 \subsection{Parte 3: TF-IDF, BM25 y GIN}
 
 Se comparó el índice invertido SPIMI del motor, con ranking TF-IDF (coseno lnc.ltc) y BM25 ($k_1 = 1{,}2$, $b = 0{,}75$), contra el índice GIN de PostgreSQL 18 con \texttt{ts\_rank}, sobre la columna \texttt{descripcion} de los productos de ABO.
@@ -1596,7 +1620,7 @@ El proyecto permitió comprobar en la práctica varias ideas que en clase se ven
 
 La Parte 1 está completa. En la Entrega Final se cerraron los pendientes del tercer avance: el \texttt{INNER JOIN} ya funciona desde SQL, con el hash join y el index nested loop join de \texttt{external\_algorithms.h} elegidos por el planificador, y existen archivos temporales paginados (\texttt{archivo\_temporal.h}), en los que el external merge sort del \texttt{ORDER BY} escribe sus corridas y el external hashing del \texttt{GROUP BY} escribe sus particiones. Quedan dos límites. El join lee sus dos lados en memoria después de filtrarlos y todavía no particiona en disco cuando no caben. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro.
 
-De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. El repositorio ya incluye \texttt{postgis\_bench.sql}, que repite la comparación con PostGIS sobre \texttt{geography} y distancia geodésica; como trabajo futuro queda ejecutarlo y comparar esos tiempos con la métrica haversine del motor.
+De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST y PostGIS. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. La repetición con PostGIS, sobre \texttt{geography} y con la métrica haversine en el motor, confirmó esa forma: GiST fue el más rápido en radios y k vecinos, aunque su índice ocupa más que la propia tabla y más del doble que el R-Tree.
 
 En las Partes 3 y 4 se repitió la misma lección con otros tipos de datos. En texto, el índice invertido del motor responde las consultas largas más rápido que GIN porque el score sale del propio índice, sin leer la tabla, y BM25 resultó claramente mejor que TF-IDF a igual costo. En vectores, los índices aproximados son entre 100 y 1\,000 veces más rápidos que el recorrido secuencial con 100\,000 vectores, a cambio de perder algunos vecinos; el IVF permite controlar esa pérdida con \texttt{nprobe} y el HNSW da mejor recall con coseno. La galería de errores mostró además el límite de la representación: con SIFT y bolsa de palabras visuales, dos objetos lisos sobre fondo blanco se parecen aunque sean de tipos distintos.
 
@@ -1604,7 +1628,7 @@ De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el tra
 
 La Parte 5 mostró que las piezas anteriores se pueden combinar desde fuera del motor: ninguna de las dos aplicaciones lee sus archivos, solo arman SQL y lo envían por la API. En la tienda, la fusión con RRF resolvió el problema de juntar scores de escalas distintas sin entrenar pesos, y el ejemplo del producto 5 mostró que el acuerdo entre fuentes pesa más que un buen puesto en una sola. Su costo es el tiempo: una recomendación junta cuatro consultas y tarda medio segundo, unas ocho veces más que la ficha, así que en una tienda real convendría calcular las recomendaciones de antemano. En el detector de copyright, la búsqueda por tramos con HNSW encontró todos los recortes y todos los cambios de volumen, y el umbral de 74\,\% dio el mejor equilibrio entre precisión (0,90) y recall (0,83). Su límite es otra vez la representación: el histograma de palabras acústicas no conserva el orden en el tiempo y junta las palabras de dos canciones superpuestas, por lo que solo detectó 5 de las 15 mezclas.
 
-En conjunto, el proyecto recorrió el camino completo de un gestor de bases de datos, desde cómo se guarda un registro en una página de 4\,KB hasta una aplicación que se usa sin escribir SQL. La lección que se repitió en todas las partes es que no existe una técnica mejor en general: cada índice conviene para un tipo de consulta y un tamaño de resultado, y la forma de saber cuál elegir es medir. Como trabajo futuro quedan los límites ya mencionados: el join en disco, los locks por registro, un planificador basado en el costo de entrada y salida en lugar de reglas, y la comparación con PostGIS.
+En conjunto, el proyecto recorrió el camino completo de un gestor de bases de datos, desde cómo se guarda un registro en una página de 4\,KB hasta una aplicación que se usa sin escribir SQL. La lección que se repitió en todas las partes es que no existe una técnica mejor en general: cada índice conviene para un tipo de consulta y un tamaño de resultado, y la forma de saber cuál elegir es medir. Como trabajo futuro quedan los límites ya mencionados: el join en disco, los locks por registro y un planificador basado en el costo de entrada y salida en lugar de reglas.
 
 \section*{Referencias}
 \begin{enumerate}

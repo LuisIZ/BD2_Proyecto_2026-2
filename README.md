@@ -142,7 +142,6 @@ de los tramos que coinciden con canciones originales.
 - El join lee sus dos lados en memoria, ya filtrados por su `WHERE`; no particiona en disco
   cuando no caben.
 - Los locks son a nivel de tabla.
-- Comparación con PostGIS: el script está listo pero no se midió (#96, opcional).
 
 Ejemplo de consultas:
 
