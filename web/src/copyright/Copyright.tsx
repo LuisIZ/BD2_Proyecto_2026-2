@@ -109,7 +109,7 @@ export default function Copyright() {
             <audio
               ref={reproductor}
               controls
-              src={url}
+              src={url || undefined}
               onTimeUpdate={(event) => setActual(event.currentTarget.currentTime)}
             />
           </div>
