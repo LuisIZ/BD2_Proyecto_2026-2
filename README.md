@@ -70,7 +70,7 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 | Intersección con polígono: `dentro(col, POLYGON((lat lon, ...)))` | listo |
 | Comparación secuencial vs R-Tree vs GiST de PostgreSQL | listo ([comparación espacial](docs/comparacion_espacial/README.md)) |
 | Panel de mapa en la interfaz (Leaflet) | listo |
-| Comparación con PostGIS (`datos/resultados/postgis_bench.sql`) | script listo, falta medir |
+| Comparación con PostGIS `geography` y GiST, distancia haversine | listo ([comparación espacial](docs/comparacion_espacial/README.md#11-comparación-adicional-con-postgis)) |
 
 ### Parte 3: búsqueda de texto
 

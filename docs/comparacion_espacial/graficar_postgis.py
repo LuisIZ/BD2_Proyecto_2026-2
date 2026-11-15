@@ -15,14 +15,17 @@ import matplotlib.pyplot as plt  # noqa: E402
 RAIZ = Path(__file__).resolve().parents[2]
 RESULTADOS = RAIZ / "datos" / "resultados"
 SALIDA = Path(__file__).resolve().parent / "graficas"
+ESTRUCTURAS = ("secuencial", "rtree", "postgis_secuencial", "postgis")
 COLORES = {
     "secuencial": "#eb6834",
     "rtree": "#2a78d6",
+    "postgis_secuencial": "#8a8985",
     "postgis": "#1baf7a",
 }
 NOMBRES = {
-    "secuencial": "Secuencial",
+    "secuencial": "Secuencial (motor)",
     "rtree": "R-Tree (motor)",
+    "postgis_secuencial": "Secuencial (PostGIS)",
     "postgis": "PostGIS GiST",
 }
 
@@ -35,6 +38,9 @@ def leer():
             raise FileNotFoundError(f"Falta {ruta}; consulta las instrucciones del README.")
         with ruta.open(newline="", encoding="utf-8-sig") as f:
             for fila in csv.DictReader(f):
+                # los dos CSV llaman "secuencial" a su recorrido completo
+                if archivo == "postgis_bench.csv" and fila["estructura"] == "secuencial":
+                    fila["estructura"] = "postgis_secuencial"
                 fila["n"] = int(fila["n"])
                 fila["parametro"] = int(fila["parametro"])
                 fila["tiempo_ms"] = float(fila["tiempo_ms"])
@@ -52,9 +58,8 @@ def graficar(filas, operacion, parametro, titulo, eje_x, nombre):
     if not datos:
         raise ValueError(f"No hay mediciones para {operacion} con parámetro {parametro}.")
     ns = sorted({fila["n"] for fila in datos})
-    estructuras = ["secuencial", "rtree", "postgis"]
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    for estructura in estructuras:
+    for estructura in ESTRUCTURAS:
         puntos = sorted(
             (fila for fila in datos if fila["estructura"] == estructura),
             key=lambda fila: fila["n"] if parametro is not None else fila["parametro"],
@@ -88,7 +93,7 @@ def main():
     }
     esperados = {
         (estructura, n, operacion, parametro)
-        for estructura in ("secuencial", "rtree", "postgis")
+        for estructura in ESTRUCTURAS
         for n in (1000, 10000, 100000)
         for operacion, parametros in (("rango", (1000, 5000, 10000)), ("knn", (10, 50, 100)))
         for parametro in parametros
