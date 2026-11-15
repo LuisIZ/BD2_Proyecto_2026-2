@@ -1,8 +1,10 @@
 #include "../consultas/external_algorithms.h"
 #include "../consultas/hash_externo.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -12,6 +14,10 @@
 
 using motor::AggregateOp;
 using motor::sql::AgregadoPedido;
+using motor::sql::ArchivoTemporal;
+using motor::sql::CABECERA_TEMPORAL;
+using motor::sql::codificar_fila;
+using motor::sql::PAGINA_TEMPORAL;
 using motor::sql::EstadisticasHash;
 using motor::sql::EstadoAgregado;
 using motor::sql::ExternalHashAggregate;
@@ -77,6 +83,71 @@ static EstadisticasHash comparar(const fs::path& base, int n, int g, std::size_t
     return stats;
 }
 
+// filas del mismo tamaño (30 bytes) con claves repetidas: INT, FLOAT y VARCHAR
+static std::vector<Fila> filas_para_ordenar(int n) {
+    std::vector<Fila> filas;
+    for (int i = 0; i < n; ++i) {
+        char texto[16];
+        std::snprintf(texto, sizeof(texto), "clave_%05d", (i * 13) % 2000);
+        filas.push_back({Valor::de_entero((i * 7919) % 1000), Valor::de_decimal(static_cast<float>((i * 31) % 500) / 4.0f),
+                         Valor::de_texto(texto)});
+    }
+    return filas;
+}
+
+// external sort en disco: mismo orden que std::stable_sort y las páginas de la fórmula de clase
+static void prueba_sort_en_disco(const fs::path& base) {
+    using Ordenador = motor::ExternalMergeSort<Fila, Valor, ArchivoTemporal>;
+    const std::size_t b = 3;
+    const int n = 20'000;
+    const auto filas = filas_para_ordenar(n);
+    const std::size_t por_pagina = (PAGINA_TEMPORAL - CABECERA_TEMPORAL) / codificar_fila(filas[0]).size();
+
+    // fórmula: 2N(1 + ⌈log_{B-1}⌈N/B⌉⌉)
+    const std::size_t paginas = (n + por_pagina - 1) / por_pagina;
+    const std::size_t corridas = (paginas + b - 1) / b;
+    std::size_t pasadas = 0;
+    for (std::size_t r = corridas; r > 1; r = (r + b - 2) / (b - 1)) ++pasadas;
+    assert(pasadas >= 2);
+
+    for (std::size_t col = 0; col < 3; ++col) {
+        for (const bool desc : {false, true}) {
+            motor::PlanTrace traza("logs/external_algorithms_cpp_test.log");
+            Ordenador ordenador(b, por_pagina, 0, &traza, [&] { return ArchivoTemporal(base, &traza); });
+            const auto ordenadas = ordenador.ordenar(filas, [&](const Fila& f) { return f[col]; }, desc);
+            auto esperado = filas;
+            std::stable_sort(esperado.begin(), esperado.end(), [&](const Fila& x, const Fila& y) {
+                return desc ? y[col] < x[col] : x[col] < y[col];
+            });
+            assert(ordenadas.size() == esperado.size());
+            for (std::size_t i = 0; i < esperado.size(); ++i) {
+                assert(ordenadas[i] == esperado[i]);
+            }
+            const auto& detalles = traza.last("external_merge_sort").details;
+            assert(detalles.at("initial_runs") == std::to_string(corridas));
+            assert(detalles.at("merge_passes") == std::to_string(pasadas));
+            assert(detalles.at("paginas_escritas") == std::to_string(paginas * (1 + pasadas)));
+            assert(detalles.at("paginas_leidas") == std::to_string(paginas * (1 + pasadas)));
+            assert(traza.paginas_escritas + traza.paginas_leidas == 2 * paginas * (1 + pasadas));
+        }
+    }
+    std::cout << "  sort en disco: " << n << " filas, B = " << b << ", " << paginas << " paginas, " << corridas
+              << " corridas, " << pasadas << " pasadas, " << 2 * paginas * (1 + pasadas) << " paginas de E/S\n";
+
+    // si una fila no cabe en una página, falla y los temporales se borran igual
+    auto con_error = filas_para_ordenar(2'000);
+    con_error[1'500][2] = Valor::de_texto(std::string(5'000, 'x'));
+    bool fallo = false;
+    try {
+        Ordenador ordenador(b, por_pagina, 0, nullptr, [&] { return ArchivoTemporal(base); });
+        ordenador.ordenar(con_error, [](const Fila& f) { return f[0]; });
+    } catch (const std::runtime_error& e) {
+        fallo = std::string(e.what()).find("no cabe en una pagina") != std::string::npos;
+    }
+    assert(fallo);
+    assert(!fs::exists(base / "tmp") || fs::is_empty(base / "tmp"));
+}
+
 int main() {
     motor::PlanTrace traza("logs/external_algorithms_cpp_test.log");
     motor::ExternalMergeSort<int, int> sort(10, 1000, 9, &traza);
@@ -90,6 +161,7 @@ int main() {
     // GROUP BY con external hashing en disco: igual que agrupar en memoria
     const fs::path base = ".build/external_hashing_test";
     fs::remove_all(base);
+    prueba_sort_en_disco(base);
     const auto uno = comparar(base, 5'000, 1, 10);
     assert(uno.niveles == 1 && uno.grupos_en_memoria == 1);
     const auto cien = comparar(base, 5'000, 100, 10);
