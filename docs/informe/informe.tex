@@ -230,7 +230,6 @@ Cada archivo cuenta las páginas que escribió y las que leyó. Si recibe la tra
 
 \subsection{Algoritmos externos}
 
-% REVISAR (Noé): texto propuesto a partir de docs/external_algorithms.md, sección 3
 \paragraph{External merge sort en disco.} El \texttt{ORDER BY} se resuelve con la plantilla \texttt{ExternalMergeSort} del archivo \texttt{external\_\allowbreak algorithms.h}. Su presupuesto es de $B = 10$ páginas de 4\,KB, fijado por la constante \texttt{PAGINAS\_SORT} de \texttt{ejecutor.cpp}, y trabaja en tres pasos:
 
 \begin{enumerate}
@@ -579,7 +578,6 @@ Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 m
 
 La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\_audio.py} usa el mismo pipeline que las imágenes, con MFCC en lugar de SIFT. \texttt{librosa} carga el audio en mono a 22\,050 Hz, hasta 30 segundos, y calcula 13 coeficientes MFCC por cada ventana de 2\,048 muestras con un salto de 512. Un clip de 30 segundos da unas 1\,290 ventanas, y cada ventana es un descriptor. K-Means aprende $K = 256$ palabras acústicas, cada ventana se asigna a su palabra más cercana y el audio queda como un histograma con TF-IDF y norma L2.
 
-% REVISAR (Noé): MFCC paso a paso, verificado con librosa 1.0.0
 \paragraph{Cómo se calculan los MFCC.} La función \texttt{librosa.feature.mfcc} se llama con \texttt{sr=22050}, \texttt{n\_mfcc=13}, \texttt{n\_fft=2048} y \texttt{hop\_length=512}, y por dentro hace los siguientes pasos:
 
 \begin{enumerate}
@@ -588,7 +586,7 @@ La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\
   \item \emph{Espectro.} A cada ventana se le aplica la transformada rápida de Fourier (FFT), que da cuánta energía hay en 1\,025 frecuencias separadas por unos 10,8\,Hz ($22\,050 / 2\,048$). Se usa la potencia, es decir, el cuadrado de la magnitud.
   \item \emph{Banco de filtros mel.} El oído distingue bien 100\,Hz de 200\,Hz, pero casi no 10\,000\,Hz de 10\,100\,Hz. La escala mel imita esa percepción: es casi lineal hasta 1\,000\,Hz y logarítmica por encima. librosa reparte 128 filtros triangulares sobre esa escala, entre 0 y 11\,025\,Hz, angostos en los graves y anchos en los agudos, y suma la energía que cae en cada uno. Así, las 1\,025 frecuencias se reducen a 128 bandas.
   \item \emph{Logaritmo.} La energía de cada banda se pasa a decibeles ($10 \log_{10}$), porque el oído percibe el volumen de forma logarítmica; además, se recorta lo que está más de 80\,dB por debajo del máximo. Este paso tiene un efecto útil: subir o bajar el volumen, que multiplica la energía por una constante, pasa a sumar una constante a todas las bandas.
-  \item \emph{Transformada discreta del coseno.} Las 128 bandas vecinas están muy correlacionadas entre sí. La DCT tipo II las expresa como una suma de cosenos y concentra la información en los primeros coeficientes. El coeficiente 0 es la energía promedio de la ventana, y los siguientes describen la forma general del espectro, que es lo que distingue el timbre de un instrumento. Se guardan los 13 primeros y se descarta el detalle fino. Como la DCT de una constante solo tiene coeficiente 0, el cambio de volumen del paso anterior afecta solo a ese coeficiente.
+  \item \emph{Transformada discreta del coseno.} Las 128 bandas vecinas están muy correlacionadas entre sí. La DCT tipo II las expresa como una suma de cosenos y concentra la información en los primeros coeficientes. El coeficiente 0 es proporcional a la energía promedio de la ventana en decibeles, y los siguientes describen la forma general del espectro, que es lo que distingue el timbre de un instrumento. Se guardan los 13 primeros y se descarta el detalle fino. Como la DCT de una constante solo tiene coeficiente 0, el cambio de volumen del paso anterior afecta solo a ese coeficiente.
 \end{enumerate}
 
 El resultado es una matriz de $13 \times 1\,292$ por clip: un descriptor de 13 números por ventana, del mismo modo que SIFT da un descriptor de 128 números por punto clave. A partir de ahí sigue la cuantización (K-Means, histograma y TF-IDF), que se desarrolla con un ejemplo numérico en la subsección \ref{sec:copyright-interfaz}.
@@ -952,7 +950,6 @@ Con los 10\,000 productos, una búsqueda de texto responde en unos 60\,ms (0,3 s
 \label{fig:tienda-sedes}
 \end{figure}
 
-% REVISAR (Noé): texto propuesto a partir de docs/copyright.md (#92 y #93)
 \subsection{Base de originales del detector de copyright}
 \label{sec:copyright-base}
 
@@ -986,7 +983,7 @@ Mezcla de dos canciones & 0,08 & 0,41 \\
 \label{tab:normalizar}
 \end{table}
 
-El script \texttt{docs/copyright.sql} crea la tabla \texttt{canciones} (\texttt{id}, \texttt{archivo}, \texttt{genero}), con 999 filas, y la tabla \texttt{segmentos} (\texttt{id}, \texttt{cancion\_id}, \texttt{inicio}, \texttt{fin}, \texttt{v VECTOR(256)}), con 4\,995. Las carga con \texttt{COPY} y crea dos índices: un HNSW sobre \texttt{segmentos(v)}, para buscar los tramos más parecidos, y un B+ sobre \texttt{segmentos(cancion\_id)}, para traer los tramos de una canción. Generar los tramos de los 999 clips con 8 procesos tarda unos 30\,s, contando el K-Means. Como control, se buscaron 20 tramos de la base tomados al azar: en los 20 el primer resultado fue el mismo tramo, con similitud 1, y el recall@5 del HNSW contra la búsqueda sin índice fue 1,000.
+El script \texttt{docs/copyright.sql} crea la tabla \texttt{canciones} (\texttt{id}, \texttt{archivo}, \texttt{genero}), con 999 filas, y la tabla \texttt{segmentos} (\texttt{id}, \texttt{cancion\_id}, \texttt{inicio}, \texttt{fin}, \texttt{v VECTOR(256)}), con 4\,995. Las carga con \texttt{COPY} y crea dos índices: un HNSW sobre \texttt{segmentos(v)}, para buscar los tramos más parecidos, y un B+ sobre \texttt{segmentos(cancion\_id)}, para traer los tramos de una canción. Generar los tramos de los 999 clips con 8 procesos, contando el K-Means, tomó unos 30\,s en una de las laptops del grupo y 137\,s en la laptop de la demo. Como control, se buscaron 20 tramos de la base tomados al azar: en los 20 el primer resultado fue el mismo tramo, con similitud 1, y el recall@5 del HNSW contra la búsqueda sin índice fue 1,000.
 
 \subsection{Detección de copyright}
 \label{sec:copyright-deteccion}
@@ -1000,12 +997,12 @@ La detección la hace \texttt{api/copyright.py} en el endpoint \texttt{POST /api
 SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos
 WHERE SIMILAR_TO(VECTOR(...), k = 5) USING HNSW;
 \end{lstlisting}
-  \texttt{SIMILARITY\_SCORE()} es la similitud coseno, que se muestra en porcentaje. Cada consulta ocupa unos 3\,000 caracteres y la API acepta lotes de hasta 64\,000, así que una canción normal cabe en un solo lote. El último lote trae además el nombre y el género de cada canción de \texttt{canciones}.
+  \texttt{SIMILARITY\_SCORE()} es la similitud coseno, que se muestra en porcentaje. Las consultas se envían en lotes a \texttt{/api/consultas}, que acepta hasta 64\,000 caracteres por petición; el detector arma lotes de hasta 60\,000 para dejar margen. Cada consulta ocupa entre 1\,400 y 2\,100 caracteres, porque el histograma tiene muchos ceros, así que en un lote caben unas 30 consultas. El último lote trae además el nombre y el género de cada canción de \texttt{canciones}.
   \item Un tramo coincide con una canción original si su similitud es mayor o igual al umbral, 74\,\%. Una canción se reporta si coincide en al menos 2 tramos; si el audio subido tiene un solo tramo, basta con ese.
   \item La respuesta trae la duración, los tramos con sus coincidencias (canción, género, tramo del original y similitud), las canciones detectadas con cuántos tramos y qué porcentaje de la canción subida cubren, el veredicto (\texttt{posible\_copyright} o \texttt{sin\_coincidencias}), el umbral y las consultas SQL usadas.
 \end{enumerate}
 
-Exigir dos tramos evita que un solo tramo parecido por casualidad dispare la alarma. Una canción de 3 minutos, con 35 tramos, se analiza en unos 3\,s.
+Exigir dos tramos evita que un solo tramo parecido por casualidad dispare la alarma. Una canción de 3 minutos tiene 35 tramos, que van en 2 lotes. En una de las laptops del grupo se analizó en unos 3\,s, y en la laptop de la demo en unos 7\,s (12\,s la primera vez, porque se cargan el vocabulario y el índice).
 
 \subsection{Evaluación y elección del umbral}
 \label{sec:copyright-evaluacion}
