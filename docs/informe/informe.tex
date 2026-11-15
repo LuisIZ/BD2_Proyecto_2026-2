@@ -14,7 +14,7 @@
 \usepackage{listings}
 \usepackage{xcolor}
 \usepackage{tikz}
-\usetikzlibrary{positioning,arrows.meta}
+\usetikzlibrary{positioning,arrows.meta,calc}
 \usepackage[hidelinks]{hyperref}
 
 \lstset{
@@ -44,7 +44,9 @@
   \vspace{3cm}
   {\LARGE Minigestor de base de datos multimodal\par}
   \vspace{0.5cm}
-  {\Large Informe del proyecto: Partes 1 a 4 (relacional, espacial, texto y multimedia)\par}
+  {\Large Informe final del proyecto: Partes 1 a 5\par}
+  \vspace{0.3cm}
+  {\large Relacional, espacial, texto, multimedia y aplicaciones\par}
   \vspace{3cm}
   {\large Integrantes\par}
   \vspace{0.3cm}
@@ -54,7 +56,7 @@
   \vspace{0.3cm}
   Participaron en avances anteriores: Jimena Huamani y Omar Chavarria\par
   \vfill
-  {\large Lima, 6 de noviembre de 2026\par}
+  {\large Lima, 15 de noviembre de 2026\par}
   \vspace{0.3cm}
   Repositorio: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}\par
 \end{titlepage}
@@ -65,11 +67,11 @@
 %-------------------------------------------------------------------------------
 \section{Introducción}
 
-El proyecto consiste en construir desde cero un gestor de bases de datos que soporte varios tipos de datos. Este informe cubre las cuatro primeras partes del enunciado. La Parte 1 corresponde a una base de datos relacional con tablas y SQL: organización de archivos en disco, índices, algoritmos externos, procesamiento de consultas, transacciones y una interfaz gráfica. La Parte 2 extiende el motor con datos espaciales: coordenadas geográficas, métricas de distancia y consultas por radio y por cercanía. La Parte 3 agrega búsqueda de texto con un índice invertido y ranking por relevancia. La Parte 4 agrega búsqueda por similitud de imágenes y audio sobre vectores de características.
+El proyecto consiste en construir desde cero un gestor de bases de datos que soporte varios tipos de datos. Este informe cubre las cinco partes del enunciado. La Parte 1 corresponde a una base de datos relacional con tablas y SQL: organización de archivos en disco, índices, algoritmos externos, procesamiento de consultas con \texttt{INNER JOIN}, transacciones y una interfaz gráfica. La Parte 2 extiende el motor con datos espaciales: coordenadas geográficas, métricas de distancia y consultas por radio y por cercanía. La Parte 3 agrega búsqueda de texto con un índice invertido y ranking por relevancia. La Parte 4 agrega búsqueda por similitud de imágenes y audio sobre vectores de características. La Parte 5 usa todo lo anterior en dos aplicaciones que consumen la API del motor: una tienda en línea con recomendaciones (opción B del Anexo A) y un detector de copyright en audio (opción C).
 
 El objetivo del curso no es competir con un motor comercial, sino entender cómo funciona por dentro. Por eso el equipo escribió cada estructura sobre páginas de 4 KB y midió cuántas páginas lee y escribe cada operación. Esa medida, más que el tiempo, es la que permite explicar por qué una técnica conviene más que otra.
 
-El informe sigue la estructura pedida en la sección de entregables: primero la arquitectura y el dominio de datos, luego la explicación de cada técnica implementada y al final la comparación experimental. La última sección resume lo que quedó pendiente. El código fuente, la documentación técnica de cada módulo y este informe están en el repositorio del proyecto: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}.
+El informe sigue la estructura pedida en la sección de entregables: primero la arquitectura y el dominio de datos, luego la explicación de cada técnica implementada, después las dos aplicaciones y al final la comparación experimental. La última sección presenta las conclusiones y los límites conocidos. El código fuente, la documentación técnica de cada módulo y este informe están en el repositorio del proyecto: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}.
 
 %-------------------------------------------------------------------------------
 \section{Arquitectura del sistema}
@@ -81,10 +83,10 @@ El sistema está dividido en capas. Cada capa solo conoce a la que tiene debajo,
 \begin{tikzpicture}[
   capa/.style={draw, rounded corners=2pt, minimum width=11cm, minimum height=0.9cm, align=center, fill=gray!8},
   flecha/.style={-{Stealth[length=2mm]}, thick}]
-\node[capa] (web) {Interfaz web (React + TypeScript): archivos, consultas, resultados, plan, mapa y galería};
-\node[capa, below=0.35cm of web] (api) {API (Python + FastAPI): SQL, extracción SIFT y MFCC, índices IVF y HNSW de FAISS};
-\node[capa, below=0.35cm of api] (sql) {Consultas (C++): parser, planificador, ejecutor, EXPLAIN, transacciones};
-\node[capa, below=0.35cm of sql] (alg) {Algoritmos externos: merge sort k-way y external hashing};
+\node[capa] (web) {Interfaz web (React): consultas, resultados, plan, mapa, galería, tienda y copyright};
+\node[capa, below=0.35cm of web] (api) {API (FastAPI): SQL, SIFT y MFCC, IVF y HNSW de FAISS, tienda y copyright};
+\node[capa, below=0.35cm of api] (sql) {Consultas (C++): parser, planificador, ejecutor, INNER JOIN, EXPLAIN, transacciones};
+\node[capa, below=0.35cm of sql] (alg) {Algoritmos externos sobre archivos temporales: merge sort, hashing y joins};
 \node[capa, below=0.35cm of alg] (txt) {Texto y vectores: SPIMI, TF-IDF, BM25, tipo VECTOR y k-NN secuencial};
 \node[capa, below=0.35cm of txt] (idx) {Índices: B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco};
 \node[capa, below=0.35cm of idx] (arc) {Archivos: Heap File con páginas slotted y archivo secuencial paginado};
@@ -104,20 +106,24 @@ motor/
   archivos/       heap_file, sequential_file, pagina_slotted
   indices/        bplus_agrupado, bplus_no_agrupado, hash_extensible_disco,
                   rtree, gestor_paginas, buffer_pool
-  consultas/      parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
+  consultas/      parser_sql, catalogo, ejecutor, external_algorithms,
+                  archivo_temporal, hash_externo, motor_sql
   espacial/       distancia.h (métricas euclidiana y haversine)
   texto/          preprocesamiento, indice_invertido (SPIMI) y ranking
   vectorial/      vector.h (tipo Vector y las tres métricas)
   transacciones/  gestor_locks.h (2PL estricto y deadlocks)
   pruebas/        una prueba por estructura y los benchmarks
-api/              API en Python que llama al motor
-  multimedia/     extraer, extraer_audio, indices (FAISS), similitud y benchmarks
-web/              interfaz React
+api/              API en Python que llama al motor; tienda.py y copyright.py
+  multimedia/     extraer, extraer_audio, segmentos_audio, indices (FAISS),
+                  similitud y benchmarks
+web/              interfaz React (src/tienda/ y src/copyright/ para la Parte 5)
+tools/            preparación del dataset, datos de la tienda, evaluación del
+                  copyright y recorridos SQL
 datos/            datasets CSV y resultados de los experimentos
 docs/             documentación técnica de cada módulo y este informe
 \end{lstlisting}
 
-Cada módulo tiene su prueba en \texttt{motor/pruebas/}, y \texttt{make test} las ejecuta todas. Al momento de entregar, los trece programas de prueba terminan sin errores. La parte en Python tiene sus propias pruebas, que usan el motor real sobre una base temporal, y \texttt{docs/pruebas\_partes\_3\_4.sql} recorre las Partes 3 y 4 a través de la API, con el resultado esperado de cada bloque.
+Cada módulo tiene su prueba en \texttt{motor/pruebas/}, y \texttt{make test} las ejecuta todas. Al momento de entregar, los catorce programas de prueba terminan sin errores. La parte en Python tiene sus propias pruebas, que usan el motor real sobre una base temporal. Además, \texttt{docs/\allowbreak pruebas\_partes\_3\_4.sql} recorre las Partes 3 y 4 a través de la API, con el resultado esperado de cada bloque, y \texttt{docs/\allowbreak pruebas\_entrega\_final.sql} hace lo mismo con el \texttt{INNER JOIN} sobre los datos de la tienda.
 
 %-------------------------------------------------------------------------------
 \section{Dominio de datos}
@@ -128,7 +134,7 @@ El conjunto principal es \texttt{organizations}, un CSV público con datos de em
 
 Para la Parte 2 se usan puntos de Lima (centro, San Isidro, Miraflores, Barranco y Callao) en las pruebas de distancia, y un archivo pequeño de alumnos sirve para probar tablas creadas a mano.
 
-Los datos de las Partes 3 y 4 se describen en la subsección \ref{sec:productos}. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales.
+Los datos de las Partes 3 y 4 se describen en la subsección \ref{sec:productos}. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales. La Parte 5 reutiliza ambos: la tienda agrega a los productos de ABO precios, sedes, inventario y compras sintéticos (subsección \ref{sec:datos-tienda}), y el detector de copyright parte cada clip de GTZAN en tramos de 10 segundos.
 
 \subsection{Tipos de datos}
 
@@ -519,6 +525,7 @@ La tabla de combinaciones está en el ejecutor y, si el usuario pide una no vál
 
 %-------------------------------------------------------------------------------
 \section{Parte 4: búsqueda multimedia}
+\label{sec:parte4}
 
 La Parte 4 busca objetos parecidos a una imagen o a un audio. Para eso cada objeto se convierte en un vector numérico y la búsqueda pasa a ser un problema de vecinos más cercanos entre vectores. El profesor autorizó usar los índices de la biblioteca FAISS en lugar de implementarlos, con la condición de explicar cómo funcionan por dentro y qué significa cada parámetro. Por eso el trabajo quedó repartido entre dos procesos. El motor en C++ guarda los vectores, resuelve el k-NN exacto y arma las respuestas. La API en Python extrae las características y mantiene los índices IVF y HNSW de FAISS.
 
@@ -701,10 +708,66 @@ El panel de resultados se adaptó para que cada tipo de consulta se muestre de l
 Las pruebas de Playwright de \texttt{web/tests/resultados.spec.ts} cubren el score y el resaltado con una respuesta simulada y con un \texttt{MATCH} real sobre \texttt{productos\_1k}, la galería de un k-NN de vectores y los ejemplos de texto, espacio y vectores del editor.
 
 %-------------------------------------------------------------------------------
-\section{Parte 5: aplicación de tienda}
-\label{sec:tienda}
+\section{Parte 5: aplicaciones}
+\label{sec:parte5}
+
+\subsection{Elección de las aplicaciones}
+
+El enunciado pide una aplicación que consuma la API del motor, integre al menos dos tipos de datos y tenga una interfaz propia, a elegir entre las cuatro opciones del Anexo A. El equipo desarrolló dos, la B y la C, porque el profesor ofreció puntos extra por una segunda aplicación y porque ambas se apoyan en datos e índices que ya estaban terminados al cierre de la Parte 4.
+
+\begin{itemize}
+  \item \emph{Opción B, tienda con recomendaciones.} Es la opción que usa más partes del motor. Los productos de ABO ya tenían texto, foto y vector desde las Partes 3 y 4, y las sedes con su ubicación usan el tipo \texttt{POINT} y el R-Tree de la Parte 2. Así, una sola pantalla combina cuatro tipos de datos (relacional, texto, imagen y espacial), el doble del mínimo pedido. Además, las tablas de inventario y compras permitieron probar el \texttt{INNER JOIN} de la Parte 1 con datos que tienen sentido.
+  \item \emph{Opción C, copyright en audio.} La Parte 4 ya extraía los MFCC de los 999 clips de GTZAN y los buscaba con HNSW. Esta aplicación cambia la unidad de búsqueda, de la canción entera a tramos de 10 segundos, y agrega lo que la Parte 4 no tenía: decidir con un umbral si una coincidencia es real y medir esa decisión con casos de prueba. Combina datos relacionales (canciones y tramos) con multimedia.
+\end{itemize}
+
+Las otras dos opciones se descartaron. La opción A (RAG) depende de un modelo de lenguaje externo, con su costo y su clave de acceso, y lo que le toca a la base de datos es casi solo la búsqueda de texto de la Parte 3. La opción D (reconocimiento facial) necesita una cámara o una Raspberry Pi, modelos preentrenados de rostros que no se vieron en el curso y fotos de personas, que son datos personales; además, su exigencia principal, responder en menos de 100\,ms, depende más del modelo que del motor.
+
+\subsection{Arquitectura de las dos aplicaciones}
+
+Las dos aplicaciones son clientes del motor y no leen sus archivos directamente. Cada una tiene un módulo en la API (\texttt{api/tienda.py} y \texttt{api/copyright.py}) que arma consultas SQL y las ejecuta por el mismo camino que la vista \emph{Consultas} de la web, y una vista propia en la interfaz que solo llama a esos endpoints. Por eso todo lo que hacen se puede repetir escribiendo el SQL a mano, y cada respuesta trae las consultas que usó.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  caja/.style={draw, rounded corners=2pt, minimum width=6.2cm, minimum height=0.9cm, align=center, fill=gray!8, font=\small},
+  ancha/.style={draw, rounded corners=2pt, minimum width=13cm, minimum height=0.9cm, align=center, fill=gray!8, font=\small},
+  flecha/.style={-{Stealth[length=2mm]}, thick}]
+\node[caja] (vt) {Vista \emph{Tienda}: catálogo, ficha,\\recomendaciones y mapa de sedes};
+\node[caja, right=0.6cm of vt] (vc) {Vista \emph{Copyright}: subir audio\\y timeline de coincidencias};
+\node[caja, below=0.6cm of vt] (at) {\texttt{api/tienda.py}: 4 listas, RRF\\y sedes cercanas con stock};
+\node[caja, below=0.6cm of vc] (ac) {\texttt{api/copyright.py}: tramos, MFCC,\\umbral de 74\,\% y veredicto};
+\node[ancha, below=1.6cm of $(at)!0.5!(ac)$] (cons) {Camino de \texttt{/api/consultas}: reescribe \texttt{SIMILAR\_TO ... USING HNSW},\\busca en FAISS y pide las filas con \texttt{CANDIDATES}};
+\node[ancha, below=0.6cm of cons] (mot) {\texttt{motor\_sql} (C++): tablas, B+, hash, R-Tree, SPIMI, \texttt{JOIN} y archivos temporales};
+\draw[flecha] (vt) -- node[left, font=\footnotesize] {GET \texttt{/api/tienda/...}} (at);
+\draw[flecha] (vc) -- node[right, font=\footnotesize] {POST \texttt{/api/copyright/analizar}} (ac);
+\draw[flecha] (at) -- (cons);
+\draw[flecha] (ac) -- (cons);
+\draw[flecha] (cons) -- (mot);
+\end{tikzpicture}
+\caption{Las dos aplicaciones sobre la misma API y el mismo motor.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{5.6cm}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{5.2cm}}
+\toprule
+Endpoint & Qué devuelve & Datos e índices \\
+\midrule
+\texttt{GET /api/tienda/\allowbreak productos?q=\&tipo=} & catálogo paginado & texto con BM25 (SPIMI) o filtro por tipo \\
+\texttt{GET /api/tienda/\allowbreak productos/\{id\}} & ficha del producto & relacional, B+ agrupado por \texttt{id} \\
+\texttt{GET /api/tienda/\allowbreak productos/\{id\}/\allowbreak recomendaciones} & top 10 con RRF & texto (SPIMI), imagen (HNSW), relacional (B+ y hash) \\
+\texttt{GET /api/tienda/\allowbreak productos/\{id\}/\allowbreak sedes?lat=\&lon=} & 3 sedes cercanas con stock & relacional (B+ en \texttt{inventario}) y espacial (R-Tree) \\
+\texttt{POST /api/copyright/\allowbreak analizar?nombre=} & tramos, coincidencias y veredicto & audio (HNSW sobre \texttt{segmentos}) y relacional (\texttt{canciones}) \\
+\bottomrule
+\end{tabular}
+\caption{Endpoints de las dos aplicaciones.}
+\end{table}
+
+Las dos aplicaciones comparten el índice HNSW de FAISS que vive en la API (sección \ref{sec:parte4}): la tienda lo usa sobre \texttt{catalogo(v)} y el detector sobre \texttt{segmentos(v)}. En ambos casos FAISS solo devuelve los \texttt{id} candidatos y el motor lee esas filas, así que el motor sigue siendo la única fuente de verdad. La API atiende una llamada al motor a la vez, y cada llamada abre y cierra los archivos de las tablas; por eso las dos aplicaciones agrupan sus consultas en lotes. La tienda hace tres llamadas por recomendación, y el detector manda todos los tramos de una canción en uno o pocos lotes.
 
 \subsection{Datos de la tienda}
+\label{sec:datos-tienda}
 
 La tienda (opción B del Anexo A) usa el catálogo de 10\,000 productos de ABO, que ya tiene texto, foto y vector. ABO no trae precios, tiendas, stock ni compras, así que esos datos se generan con \texttt{tools/tienda/generar\_datos.py}. El script usa un generador pseudoaleatorio con semilla: con \texttt{--semilla 7} siempre escribe los mismos archivos, y así los tres integrantes y la demo trabajan con los mismos datos. Los CSV están en el repositorio, en \texttt{datos/tienda/}, junto con \texttt{catalogo.csv}, que trae el vector de cada producto; así la tienda se carga sin volver a extraer las características de las fotos.
 
@@ -769,7 +832,7 @@ con el puesto contado desde 1. Se usa $k = 60$, el valor que proponen los autore
 
 \paragraph{Por qué RRF y no sumar los scores.} Los scores de las cuatro fuentes no están en la misma escala: BM25 no tiene un máximo fijo y depende de la consulta, la similitud coseno va de 0 a 1, la metadata solo distingue tres niveles y las compras son conteos enteros. Sumarlos directamente haría que BM25 decidiera casi todo. Normalizarlos, por ejemplo llevando cada lista al rango de 0 a 1, tampoco resuelve el problema, porque el resultado depende de cómo se reparten los scores en cada lista y un solo valor extremo comprime a todos los demás. RRF solo usa los puestos, que sí son comparables entre listas, y no requiere calibrar ni entrenar pesos, algo que no se podría hacer sin datos reales de clics o de compras.
 
-\paragraph{Tiempo.} Las consultas se envían al motor en tres lotes: el producto y su vector, las cuatro fuentes, y las tarjetas del top $k$. Se agrupan porque cada llamada al binario abre y cierra los archivos de las tablas. Con los 10\,000 productos, una recomendación tarda entre 0,5 y 0,6 s, y 0,7 s la primera vez, cuando la API carga el índice HNSW.
+\paragraph{Tiempo.} Las consultas se envían al motor en tres lotes: el producto y su vector, las cuatro fuentes, y las tarjetas del top $k$. Se agrupan porque cada llamada al binario abre y cierra los archivos de las tablas. Con los 10\,000 productos, una recomendación tarda entre 0,5 y 0,6 s, y hasta 0,7 s la primera vez, cuando la API carga el índice HNSW. Estos tiempos se midieron en la misma laptop que el resto de la tienda (subsección \ref{sec:interfaz-tienda}), llamando a los endpoints seis veces seguidas sobre la base cargada con \texttt{docs/tienda.sql}.
 
 \paragraph{Ejemplo real.} La tabla siguiente muestra el top 10 del producto 5, un taburete Rivet Malida de tipo \texttt{STOOL\_SEATING}. Las columnas de las fuentes dan el puesto del producto en cada lista; una celda vacía indica que no apareció en ella.
 
@@ -801,6 +864,7 @@ El primero aparece en tres listas: $1/61 + 1/63 + 1/62 \approx 0{,}0484$, y gana
 La prueba \texttt{api/test\_tienda.py} usa una base temporal de 8 productos y comprueba el RRF contra el cálculo a mano con tres listas, que se excluye el producto consultado y que el resultado sigue saliendo con una fuente vacía y con otra que falla.
 
 \subsection{Interfaz de la tienda}
+\label{sec:interfaz-tienda}
 
 La vista \emph{Tienda} de la web muestra lo que hace el sistema desde el punto de vista de un cliente. Solo consume los cuatro endpoints de \texttt{/api/tienda}, y cada uno devuelve también las consultas SQL que usó, para que se vea qué parte del motor responde cada cosa.
 
@@ -811,7 +875,7 @@ La vista \emph{Tienda} de la web muestra lo que hace el sistema desde el punto d
   \item \emph{Tiendas cercanas con stock.} En un mapa de Leaflet se ven la ubicación del usuario y las 3 sedes más cercanas que tienen stock del producto, numeradas como el k-NN de la Parte 2, con su distancia y sus unidades (figura~\ref{fig:tienda-sedes}). La ubicación empieza en UTEC y cambia con un clic en el mapa. Si menos de 3 sedes tienen stock, se avisa.
 \end{itemize}
 
-Con los 10\,000 productos, una búsqueda de texto responde en unos 25\,ms, la ficha en 22\,ms, las sedes en 48\,ms y las recomendaciones en unos 260\,ms, porque juntan cuatro consultas al motor y una a FAISS. Mientras la API no tenía estos endpoints, la vista se desarrolló con \texttt{web/src/tienda/ejemplo.json}, que sigue el mismo contrato; si la ruta no existe, la vista lo usa y lo avisa. La prueba \texttt{web/tests/tienda.spec.ts} simula la API y recorre la búsqueda, el filtro, la paginación, la ficha, las 10 recomendaciones con sus fuentes, el mapa y el cambio de ubicación, además de los errores.
+Con los 10\,000 productos, una búsqueda de texto responde en unos 60\,ms (0,3 s la primera vez), la ficha en 65\,ms, las sedes en 75\,ms y las recomendaciones entre 0,5 y 0,6 s, porque juntan cuatro consultas al motor y una a FAISS (subsección \ref{sec:recomendador}). En otra laptop del equipo, más rápida, los mismos endpoints respondieron entre 1,6 y 3 veces antes (25, 22 y 48\,ms, y 260\,ms las recomendaciones), pero en el mismo orden: las recomendaciones siguen siendo la operación más lenta. Mientras la API no tenía estos endpoints, la vista se desarrolló con \texttt{web/src/tienda/ejemplo.json}, que sigue el mismo contrato; si la ruta no existe, la vista lo usa y lo avisa. La prueba \texttt{web/tests/tienda.spec.ts} simula la API y recorre la búsqueda, el filtro, la paginación, la ficha, las 10 recomendaciones con sus fuentes, el mapa y el cambio de ubicación, además de los errores.
 
 \begin{figure}[H]
 \centering
@@ -1304,6 +1368,10 @@ De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de dis
 En las Partes 3 y 4 se repitió la misma lección con otros tipos de datos. En texto, el índice invertido del motor responde las consultas largas más rápido que GIN porque el score sale del propio índice, sin leer la tabla, y BM25 resultó claramente mejor que TF-IDF a igual costo. En vectores, los índices aproximados son entre 100 y 1\,000 veces más rápidos que el recorrido secuencial con 100\,000 vectores, a cambio de perder algunos vecinos; el IVF permite controlar esa pérdida con \texttt{nprobe} y el HNSW da mejor recall con coseno. La galería de errores mostró además el límite de la representación: con SIFT y bolsa de palabras visuales, dos objetos lisos sobre fondo blanco se parecen aunque sean de tipos distintos.
 
 De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el trabajo más delicado no fue el índice, sino mantenerlo coherente con una tabla que vive en otro proceso. El archivo de cambios y la cláusula \texttt{CANDIDATES} permitieron que el motor siga siendo la única fuente de verdad, que FAISS solo vea lo confirmado y que cada proceso haga lo que ya sabe hacer. El HNSW también mostró un costo que no aparece en la teoría de la búsqueda: un grafo no se puede borrar de forma directa, y el borrado lógico solo es sano si después se reconstruye. Como límites conocidos, una búsqueda con \texttt{USING} y filtros puede devolver menos de $k$ filas, y dentro de una transacción esa búsqueda no ve los cambios de la propia transacción.
+
+La Parte 5 mostró que las piezas anteriores se pueden combinar desde fuera del motor: ninguna de las dos aplicaciones lee sus archivos, solo arman SQL y lo envían por la API. En la tienda, la fusión con RRF resolvió el problema de juntar scores de escalas distintas sin entrenar pesos, y el ejemplo del producto 5 mostró que el acuerdo entre fuentes pesa más que un buen puesto en una sola. Su costo es el tiempo: una recomendación junta cuatro consultas y tarda medio segundo, unas ocho veces más que la ficha, así que en una tienda real convendría calcular las recomendaciones de antemano. En el detector de copyright, la búsqueda por tramos con HNSW encontró todos los recortes y todos los cambios de volumen, y el umbral de 74\,\% dio el mejor equilibrio entre precisión (0,90) y recall (0,83). Su límite es otra vez la representación: el histograma de palabras acústicas no conserva el orden en el tiempo y junta las palabras de dos canciones superpuestas, por lo que solo detectó 5 de las 15 mezclas.
+
+En conjunto, el proyecto recorrió el camino completo de un gestor de bases de datos, desde cómo se guarda un registro en una página de 4\,KB hasta una aplicación que se usa sin escribir SQL. La lección que se repitió en todas las partes es que no existe una técnica mejor en general: cada índice conviene para un tipo de consulta y un tamaño de resultado, y la forma de saber cuál elegir es medir. Como trabajo futuro quedan los límites ya mencionados: el join en disco, los locks por registro, un planificador basado en el costo de entrada y salida en lugar de reglas, y la comparación con PostGIS.
 
 \section*{Referencias}
 \begin{enumerate}
