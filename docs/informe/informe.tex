@@ -8,12 +8,13 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{float}
 \usepackage{caption}
 \usepackage{listings}
 \usepackage{xcolor}
 \usepackage{tikz}
-\usetikzlibrary{positioning,arrows.meta}
+\usetikzlibrary{positioning,arrows.meta,calc}
 \usepackage[hidelinks]{hyperref}
 
 \lstset{
@@ -43,7 +44,9 @@
   \vspace{3cm}
   {\LARGE Minigestor de base de datos multimodal\par}
   \vspace{0.5cm}
-  {\Large Informe del proyecto: Partes 1 a 4 (relacional, espacial, texto y multimedia)\par}
+  {\Large Informe final del proyecto: Partes 1 a 5\par}
+  \vspace{0.3cm}
+  {\large Relacional, espacial, texto, multimedia y aplicaciones\par}
   \vspace{3cm}
   {\large Integrantes\par}
   \vspace{0.3cm}
@@ -53,7 +56,7 @@
   \vspace{0.3cm}
   Participaron en avances anteriores: Jimena Huamani y Omar Chavarria\par
   \vfill
-  {\large Lima, 6 de noviembre de 2026\par}
+  {\large Lima, 15 de noviembre de 2026\par}
   \vspace{0.3cm}
   Repositorio: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}\par
 \end{titlepage}
@@ -64,11 +67,11 @@
 %-------------------------------------------------------------------------------
 \section{Introducción}
 
-El proyecto consiste en construir desde cero un gestor de bases de datos que soporte varios tipos de datos. Este informe cubre las cuatro primeras partes del enunciado. La Parte 1 corresponde a una base de datos relacional con tablas y SQL: organización de archivos en disco, índices, algoritmos externos, procesamiento de consultas, transacciones y una interfaz gráfica. La Parte 2 extiende el motor con datos espaciales: coordenadas geográficas, métricas de distancia y consultas por radio y por cercanía. La Parte 3 agrega búsqueda de texto con un índice invertido y ranking por relevancia. La Parte 4 agrega búsqueda por similitud de imágenes y audio sobre vectores de características.
+El proyecto consiste en construir desde cero un gestor de bases de datos que soporte varios tipos de datos. Este informe cubre las cinco partes del enunciado. La Parte 1 corresponde a una base de datos relacional con tablas y SQL: organización de archivos en disco, índices, algoritmos externos, procesamiento de consultas con \texttt{INNER JOIN}, transacciones y una interfaz gráfica. La Parte 2 extiende el motor con datos espaciales: coordenadas geográficas, métricas de distancia y consultas por radio y por cercanía. La Parte 3 agrega búsqueda de texto con un índice invertido y ranking por relevancia. La Parte 4 agrega búsqueda por similitud de imágenes y audio sobre vectores de características. La Parte 5 usa todo lo anterior en dos aplicaciones que consumen la API del motor: una tienda en línea con recomendaciones (opción B del Anexo A) y un detector de copyright en audio (opción C).
 
 El objetivo del curso no es competir con un motor comercial, sino entender cómo funciona por dentro. Por eso el equipo escribió cada estructura sobre páginas de 4 KB y midió cuántas páginas lee y escribe cada operación. Esa medida, más que el tiempo, es la que permite explicar por qué una técnica conviene más que otra.
 
-El informe sigue la estructura pedida en la sección de entregables: primero la arquitectura y el dominio de datos, luego la explicación de cada técnica implementada y al final la comparación experimental. La última sección resume lo que quedó pendiente. El código fuente, la documentación técnica de cada módulo y este informe están en el repositorio del proyecto: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}.
+El informe sigue la estructura pedida en la sección de entregables: primero la arquitectura y el dominio de datos, luego la explicación de cada técnica implementada, después las dos aplicaciones y al final la comparación experimental. La última sección presenta las conclusiones y los límites conocidos. El código fuente, la documentación técnica de cada módulo y este informe están en el repositorio del proyecto: \url{https://github.com/LuisIZ/BD2_Proyecto_2026-2}.
 
 %-------------------------------------------------------------------------------
 \section{Arquitectura del sistema}
@@ -80,10 +83,10 @@ El sistema está dividido en capas. Cada capa solo conoce a la que tiene debajo,
 \begin{tikzpicture}[
   capa/.style={draw, rounded corners=2pt, minimum width=11cm, minimum height=0.9cm, align=center, fill=gray!8},
   flecha/.style={-{Stealth[length=2mm]}, thick}]
-\node[capa] (web) {Interfaz web (React + TypeScript): archivos, consultas, resultados, plan, mapa y galería};
-\node[capa, below=0.35cm of web] (api) {API (Python + FastAPI): SQL, extracción SIFT y MFCC, índices IVF y HNSW de FAISS};
-\node[capa, below=0.35cm of api] (sql) {Consultas (C++): parser, planificador, ejecutor, EXPLAIN, transacciones};
-\node[capa, below=0.35cm of sql] (alg) {Algoritmos externos: merge sort k-way y external hashing};
+\node[capa] (web) {Interfaz web (React): consultas, resultados, plan, mapa, galería, tienda y copyright};
+\node[capa, below=0.35cm of web] (api) {API (FastAPI): SQL, SIFT y MFCC, IVF y HNSW de FAISS, tienda y copyright};
+\node[capa, below=0.35cm of api] (sql) {Consultas (C++): parser, planificador, ejecutor, INNER JOIN, EXPLAIN, transacciones};
+\node[capa, below=0.35cm of sql] (alg) {Algoritmos externos sobre archivos temporales: merge sort, hashing y joins};
 \node[capa, below=0.35cm of alg] (txt) {Texto y vectores: SPIMI, TF-IDF, BM25, tipo VECTOR y k-NN secuencial};
 \node[capa, below=0.35cm of txt] (idx) {Índices: B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco};
 \node[capa, below=0.35cm of idx] (arc) {Archivos: Heap File con páginas slotted y archivo secuencial paginado};
@@ -103,20 +106,24 @@ motor/
   archivos/       heap_file, sequential_file, pagina_slotted
   indices/        bplus_agrupado, bplus_no_agrupado, hash_extensible_disco,
                   rtree, gestor_paginas, buffer_pool
-  consultas/      parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
+  consultas/      parser_sql, catalogo, ejecutor, external_algorithms,
+                  archivo_temporal, hash_externo, motor_sql
   espacial/       distancia.h (métricas euclidiana y haversine)
   texto/          preprocesamiento, indice_invertido (SPIMI) y ranking
   vectorial/      vector.h (tipo Vector y las tres métricas)
   transacciones/  gestor_locks.h (2PL estricto y deadlocks)
   pruebas/        una prueba por estructura y los benchmarks
-api/              API en Python que llama al motor
-  multimedia/     extraer, extraer_audio, indices (FAISS), similitud y benchmarks
-web/              interfaz React
+api/              API en Python que llama al motor; tienda.py y copyright.py
+  multimedia/     extraer, extraer_audio, segmentos_audio, indices (FAISS),
+                  similitud y benchmarks
+web/              interfaz React (src/tienda/ y src/copyright/ para la Parte 5)
+tools/            preparación del dataset, datos de la tienda, evaluación del
+                  copyright y recorridos SQL
 datos/            datasets CSV y resultados de los experimentos
 docs/             documentación técnica de cada módulo y este informe
 \end{lstlisting}
 
-Cada módulo tiene su prueba en \texttt{motor/pruebas/}, y \texttt{make test} las ejecuta todas. Al momento de entregar, los trece programas de prueba terminan sin errores. La parte en Python tiene sus propias pruebas, que usan el motor real sobre una base temporal, y \texttt{docs/pruebas\_partes\_3\_4.sql} recorre las Partes 3 y 4 a través de la API, con el resultado esperado de cada bloque.
+Cada módulo tiene su prueba en \texttt{motor/pruebas/}, y \texttt{make test} las ejecuta todas. Al momento de entregar, los catorce programas de prueba terminan sin errores. La parte en Python tiene sus propias pruebas, que usan el motor real sobre una base temporal. Además, \texttt{docs/\allowbreak pruebas\_partes\_3\_4.sql} recorre las Partes 3 y 4 a través de la API, con el resultado esperado de cada bloque, y \texttt{docs/\allowbreak pruebas\_entrega\_final.sql} hace lo mismo con el \texttt{INNER JOIN} sobre los datos de la tienda.
 
 %-------------------------------------------------------------------------------
 \section{Dominio de datos}
@@ -127,7 +134,7 @@ El conjunto principal es \texttt{organizations}, un CSV público con datos de em
 
 Para la Parte 2 se usan puntos de Lima (centro, San Isidro, Miraflores, Barranco y Callao) en las pruebas de distancia, y un archivo pequeño de alumnos sirve para probar tablas creadas a mano.
 
-Los datos de las Partes 3 y 4 se describen en la subsección \ref{sec:productos}. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales.
+Los datos de las Partes 3 y 4 se describen en la subsección \ref{sec:productos}. Para audio se usa GTZAN, con 999 clips de 30 segundos de 10 géneros musicales. La Parte 5 reutiliza ambos: la tienda agrega a los productos de ABO precios, sedes, inventario y compras sintéticos (subsección \ref{sec:datos-tienda}), y el detector de copyright parte cada clip de GTZAN en tramos de 10 segundos.
 
 \subsection{Tipos de datos}
 
@@ -201,9 +208,61 @@ El hash extensible mantiene un directorio de $2^d$ punteros a buckets, donde $d$
 
 El hash responde una igualdad con una lectura del directorio y una del bucket, pero no tiene noción de orden, así que el planificador nunca lo usa para rangos.
 
+\subsection{Archivos temporales}
+\label{sec:temporales}
+
+Hasta el tercer avance, las corridas del merge sort y las particiones del hashing vivían en vectores en memoria, de modo que el presupuesto de páginas era un límite simulado y no una escritura real. Para que estos algoritmos, y también el join, puedan escribir en disco, se agregó \texttt{motor/consultas/archivo\_temporal.h} con la clase \texttt{ArchivoTemporal}. Un archivo temporal guarda filas en páginas de 4 KB, del mismo tamaño que las páginas de las tablas, con este formato:
+
+\begin{lstlisting}
+pagina := [n filas: uint16] [fila 1] [fila 2] ... [ceros hasta 4096 B]
+fila   := [n valores: uint16] y por cada valor [tipo: uint8] [datos]
+          INT: int64 | FLOAT: float32 | VARCHAR: uint16 + bytes
+          POINT: 2 int32 | VECTOR: uint16 + n float32
+\end{lstlisting}
+
+Cada valor lleva un byte con su tipo, así que el archivo no depende del esquema de una tabla. Esto importa porque las filas de un join mezclan columnas de dos tablas y no corresponden a ningún esquema guardado en el catálogo; con este formato, la misma clase sirve para las corridas de un \texttt{ORDER BY}, las particiones de un \texttt{GROUP BY} y las filas unidas. Una fila que ocupa más de 4\,094 bytes no cabe en una página y se rechaza con un error.
+
+Las filas se escriben de una en una. Cuando la página en curso se llena, se vuelca al disco, y al cerrar la escritura se guarda la última. La lectura carga una página a la vez y se puede reiniciar para hacer otra pasada, que es lo que necesita una mezcla en varias pasadas. Por eso, en memoria solo viven dos páginas por archivo: la de escritura y la de lectura.
+
+Los archivos se crean en la carpeta \texttt{tmp/} de la base y se borran en el destructor de la clase (RAII). Así se borran también cuando la consulta termina con una excepción, y una consulta que falla no deja archivos sueltos. La clase se puede mover, por ejemplo a un vector con todas las corridas, y el archivo lo borra el último dueño.
+
+Cada archivo cuenta las páginas que escribió y las que leyó. Si recibe la traza del plan, suma esas cifras a las de toda la consulta (los campos \texttt{paginas\_escritas} y \texttt{paginas\_leidas} de \texttt{PlanTrace}), y así el \texttt{EXPLAIN} muestra cuánto disco usaron los algoritmos externos. En \texttt{motor/pruebas/}, la prueba de esta clase escribe y relee 10\,000 filas con los cinco tipos del motor, que ocupan 231 páginas; compara cada fila con la original, verifica que el número de páginas coincide con el calculado a partir del formato y comprueba que el archivo desaparece al destruir el objeto. El external merge sort del \texttt{ORDER BY} y el external hashing del \texttt{GROUP BY}, descritos a continuación, guardan cada corrida y cada partición en uno de estos archivos.
+
 \subsection{Algoritmos externos}
 
-\paragraph{External merge sort.} Para \texttt{ORDER BY}, los registros se dividen en corridas del tamaño del presupuesto de memoria (páginas de buffer por registros por página). Cada corrida se ordena y luego se mezclan $k$ a la vez con un heap de mínimos, en $O(N \log k)$. La traza del plan reporta las corridas iniciales y las pasadas de mezcla.
+\paragraph{External merge sort en disco.} El \texttt{ORDER BY} se resuelve con la plantilla \texttt{ExternalMergeSort} del archivo \texttt{external\_\allowbreak algorithms.h}. Su presupuesto es de $B = 10$ páginas de 4\,KB, fijado por la constante \texttt{PAGINAS\_SORT} de \texttt{ejecutor.cpp}, y trabaja en tres pasos:
+
+\begin{enumerate}
+  \item \emph{Corridas.} Se toman las filas que caben en $B$ páginas, se ordenan en memoria y se escriben como una corrida en un archivo temporal. El orden en memoria lo hace \texttt{std::stable\_sort}. Cuántas filas caben en una página se estima con el tamaño promedio de la fila codificada.
+  \item \emph{Mezcla de $k$ vías.} Con $k = B - 1$, se mezclan $k$ corridas a la vez con un heap de mínimos (\texttt{std::priority\_queue}), usando una página de entrada por corrida y una de salida. Si hay más de $k$ corridas, cada pasada escribe corridas nuevas y borra las anteriores, hasta que queda una sola.
+  \item \emph{Resultado.} La última corrida se lee página por página hacia el resultado.
+\end{enumerate}
+
+Con claves iguales sale primero la fila de la corrida anterior, así que el orden es estable. Las corridas se borran al terminar, y también si la consulta falla, gracias al RAII de \texttt{ArchivoTemporal}. La entrada todavía llega leída del almacén, y esas páginas las cuenta el \texttt{Seq Scan}; lo que el algoritmo acota es la memoria del ordenamiento: $B$ páginas al formar cada corrida y $k + 1$ durante la mezcla. Con $N$ páginas de filas, el costo es el que se vio en clase:
+\[
+  \text{corridas} = \left\lceil \frac{N}{B} \right\rceil, \qquad
+  \text{pasadas} = \left\lceil \log_{B-1} \text{corridas} \right\rceil, \qquad
+  \text{E/S} = 2N\,(1 + \text{pasadas}).
+\]
+La fase de corridas escribe $N$ páginas y cada pasada escribe otras $N$; se leen $N$ en cada pasada y $N$ más al pasar la última corrida al resultado. Por eso el \texttt{EXPLAIN ANALYZE} reporta, junto con las corridas iniciales y las pasadas, el mismo número de páginas escritas y leídas, $N\,(1 + \text{pasadas})$. La tabla~\ref{tab:sort-externo} mide \texttt{SELECT * FROM org ORDER BY Name} sobre \texttt{organizations}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrrr}
+\toprule
+Filas & Páginas ($N$) & Corridas & Pasadas & Escritas / leídas & Tiempo \\
+\midrule
+1\,000 & 42 & 5 & 1 & 84 / 84 & 45 ms \\
+10\,000 & 412 & 42 & 2 & 1\,237 / 1\,237 & 445 ms \\
+100\,000 & 4\,111 & 417 & 3 & 16\,445 / 16\,445 & 5\,063 ms \\
+\bottomrule
+\end{tabular}
+\caption{ORDER BY con external merge sort en disco, $B = 10$. El tiempo es el del nodo \texttt{Sort}, el mejor de 3 corridas.}
+\label{tab:sort-externo}
+\end{table}
+
+Las páginas siguen la fórmula ($42 \times 2$, $412 \times 3$ y $4\,111 \times 4$), con a lo más una página de diferencia. Con 100\,000 filas salen 417 corridas y no 412, porque las filas por página se estiman con el promedio y algunas páginas guardan menos. El tiempo crece con las pasadas y con la cantidad de archivos creados, unos 470 con 100\,000 filas; con más páginas de buffer habría menos pasadas.
 
 \paragraph{External Hashing en disco.} El \texttt{GROUP BY} y los agregados usan un presupuesto de $B = 10$ páginas de 4\,KB de memoria. Lo resuelve la clase \texttt{ExternalHashAggregate} de \texttt{hash\_externo.h} en cuatro pasos:
 
@@ -256,6 +315,88 @@ Execution Time: 2.400 ms
 \end{lstlisting}
 
 El costo se expresa en páginas estimadas. Para un índice no agrupado cuenta la altura del árbol más una página de datos por fila, que es justamente lo que lo vuelve caro en rangos anchos.
+
+\subsection{INNER JOIN}
+\label{sec:join}
+
+En los avances anteriores, el hash join y el index nested loop join ya estaban escritos en \texttt{external\_algorithms.h}, pero no se podían usar desde SQL. En la Entrega Final se conectaron al parser y al ejecutor. La tienda de la Parte 5 los necesita para cruzar el inventario con las sedes y las compras de un usuario con las de otro.
+
+\paragraph{Gramática.} El motor acepta un join interno entre dos tablas por una igualdad (\texttt{INNER} es opcional):
+
+\begin{lstlisting}
+SELECT ... FROM a x [INNER] JOIN b y ON x.c = y.c
+  [WHERE ...] [GROUP BY ...] [ORDER BY ...] [LIMIT n]
+\end{lstlisting}
+
+Las columnas se pueden calificar con el nombre de la tabla o con su alias (\texttt{x.c}). Una columna sin calificar es válida si está en una sola de las dos tablas; si está en las dos, el motor responde que es ambigua. Un self-join necesita alias distintos, por ejemplo \texttt{FROM compras c1 JOIN compras c2}. El \texttt{ON} debe comparar una columna de cada tabla, del mismo tipo y que no sea \texttt{POINT} ni \texttt{VECTOR}. Junto con el join se agregaron los alias en los agregados (\texttt{COUNT(*) AS veces}), que también se pueden usar en el \texttt{ORDER BY}. Como en PostgreSQL, las columnas del resultado se muestran sin la tabla (\texttt{s.nombre} sale como \texttt{nombre}). Un join pide el lock compartido de las dos tablas, también dentro de una transacción.
+
+\paragraph{Reparto del WHERE.} En el motor, cada condición del \texttt{WHERE} menciona una sola columna, porque no hay \texttt{OR} ni comparaciones entre columnas. Por eso toda condición pertenece a una sola de las dos tablas. La función \texttt{planificar\_join} reparte las condiciones por tabla y cada lado se lee con su parte del \texttt{WHERE}, usando el mismo planificador que una consulta sobre una sola tabla. De esta forma la selección se aplica antes del join, como cuando en clase se bajan las selecciones en el árbol de álgebra relacional, y cada lado puede usar sus propios índices. En el ejemplo de más abajo, el inventario llega al join ya filtrado por su B+ sobre \texttt{producto\_id}: 2 filas de 29\,915.
+
+\paragraph{Elección del algoritmo.} Una tabla se considera indexable si su columna del \texttt{ON} tiene un índice B+ o hash, o si esa columna es su clave primaria en una tabla secuencial o B+ agrupada (en un heap la clave no tiene índice). La tabla indexable es la interna, es decir, la que se busca por índice; si las dos lo son, la interna es la más grande. Luego \texttt{JoinPlanner::choose} compara las filas estimadas de la externa, ya con su \texttt{WHERE}, con los registros de la interna, y elige el index nested loop si la externa no es más grande. En cualquier otro caso, y siempre que ninguna tabla tenga índice, usa el hash join. Igual que en una consulta simple, la decisión se toma solo con el catálogo, así que \texttt{EXPLAIN} muestra el plan sin ejecutar la consulta.
+
+\begin{itemize}
+  \item \emph{Index nested loop join.} Se lee la externa y, por cada clave distinta, se busca en la interna con \texttt{columna = clave} más la parte del \texttt{WHERE} de la interna; el planificador de esa tabla elige el índice. Las claves repetidas no se vuelven a buscar. Conviene cuando la externa trae pocas filas, porque cada búsqueda cuesta unas pocas páginas en lugar de recorrer la interna.
+  \item \emph{Hash join.} Se leen las dos tablas, cada una con su parte del \texttt{WHERE}, se construye una tabla hash con el lado que trajo menos filas y se recorre el otro. Su costo es $O(|R| + |S|)$ y la memoria es proporcional al lado más chico.
+\end{itemize}
+
+\paragraph{Plan en árbol.} Con un join, el plan deja de ser una cadena y pasa a ser un árbol: el nodo del join tiene dos hijos, cada uno con su acceso a disco. Cada paso del plan lleva un campo \texttt{nivel} que indica su profundidad, y con él la interfaz dibuja el árbol en el panel del plan. La siguiente consulta busca las sedes con stock del producto 42 ordenadas por distancia al centro de Lima. Como \texttt{sedes} no tiene índice sobre \texttt{id}, el motor elige el hash join:
+
+\begin{lstlisting}
+EXPLAIN ANALYZE SELECT s.nombre, i.stock FROM inventario i JOIN sedes s ON i.sede_id = s.id
+  WHERE i.producto_id = 42 AND i.stock > 0
+  ORDER BY distancia(s.ubicacion, POINT(-12.0464, -77.0428)) LIMIT 3;
+
+Projection on inventario JOIN sedes (actual rows=2)
+  -> Sort on inventario JOIN sedes (actual time=0.595 rows=2)
+    -> Hash Join on inventario JOIN sedes (actual time=0.054 rows=2)
+       Hash Cond: i.sede_id = s.id
+       Nota: ninguna tabla tiene indice sobre su columna del ON
+      -> Filter on inventario i (actual time=0.010 rows=2)
+         Filter: stock > 0
+        -> Index Scan using inventario_producto on inventario i (producto_id)
+             (cost=152.00 rows=149) (actual time=0.399 rows=2 pages=5)
+           Index Cond: producto_id = 42
+      -> Seq Scan on sedes s  (cost=1.00 rows=25) (actual time=0.073 rows=25 pages=1)
+Rows: 2
+Planning Time: 9.906 ms
+Execution Time: 6.776 ms
+\end{lstlisting}
+
+La respuesta es la Tienda Breña y la Tienda Ate. La tabla hash se construye con las 2 filas del inventario y se recorren las 25 sedes, que ocupan una sola página. En cambio, la consulta de ``quienes compraron X también compraron Y'' une \texttt{compras} consigo misma, y \texttt{compras} tiene un índice hash sobre \texttt{usuario\_id}, así que el motor elige el index nested loop:
+
+\begin{lstlisting}
+EXPLAIN ANALYZE SELECT c2.producto_id, COUNT(*) AS veces
+  FROM compras c1 JOIN compras c2 ON c1.usuario_id = c2.usuario_id
+  WHERE c1.producto_id = 5 AND c2.producto_id != 5
+  GROUP BY c2.producto_id ORDER BY veces DESC LIMIT 10;
+
+Limit on compras JOIN compras  (rows=10) (actual rows=10)
+  -> Sort on compras JOIN compras (actual time=0.706 rows=33)
+     Sort Key: veces DESC
+    -> HashAggregate on compras JOIN compras (actual time=36.473 rows=33)
+       Group Key: c2.producto_id
+       particiones=9  niveles=1  grupos_en_memoria=7  paginas_escritas=9  paginas_leidas=9
+      -> Index Nested Loop Join on compras JOIN compras (actual time=0.515 rows=33)
+         Join Cond: c1.usuario_id = c2.usuario_id
+        -> Index Scan using compras_producto on compras c1 (producto_id)
+             (cost=40.00 rows=37) (actual time=0.050 rows=2 pages=4)
+           Index Cond: producto_id = 5
+        -> Index Scan using compras_usuario on compras c2 (usuario_id)
+             (actual time=0.515 rows=33 pages=38)
+           Index Cond: usuario_id = c1.usuario_id
+           Nota: una busqueda por cada clave distinta de c1
+Rows: 10
+Planning Time: 21.875 ms
+Execution Time: 45.182 ms
+\end{lstlisting}
+
+El planificador estimó 37 filas para la externa, frente a los 7\,458 registros de la interna, y por eso eligió buscar por índice. En la ejecución, los 2 compradores del producto 5 generaron 2 búsquedas en el hash, que leyeron 38 páginas en total; un hash join habría tenido que leer \texttt{compras} completa para construir o recorrer su tabla. Al igual que en las consultas simples, la estimación sobre el B+ (37 filas) se aleja de lo real (2) porque el catálogo supone claves repartidas de forma pareja, pero en este caso la decisión es la correcta.
+
+El mismo plan muestra que las filas unidas pasan por el external hashing en disco del \texttt{GROUP BY}: las 33 filas se reparten en 9 particiones de una página, que se escriben y se vuelven a leer. Con tan pocos grupos, crear y borrar esos 9 archivos se lleva la mayor parte del tiempo de la consulta (36 de 45 ms), mientras que el join completo tarda medio milisegundo. Es el costo fijo de acotar la memoria, que solo se compensa cuando los grupos no caben en el presupuesto.
+
+\paragraph{Etapas del SELECT por esquema.} Para que el join, el external sort y el external hashing no se mezclaran en el mismo código, la parte final del \texttt{SELECT} se separó en cuatro etapas: \texttt{agrupar}, \texttt{ordenar}, \texttt{proyectar} y \texttt{limitar}. Antes, estas etapas recibían una tabla del catálogo; ahora reciben un esquema, que es una lista de columnas calificadas por su tabla o su alias. Una consulta sobre una sola tabla arma el esquema con las columnas de esa tabla, y un join lo arma con las columnas de las dos, primero las de la izquierda. Así las filas unidas pasan por las mismas etapas que las de una tabla sola, con \texttt{GROUP BY}, \texttt{ORDER BY} por columna, por alias o por distancia, proyección y \texttt{LIMIT}, y los algoritmos externos en disco se conectan en un solo lugar: el sort dentro de \texttt{ordenar} y el hashing dentro de \texttt{agrupar}.
+
+\paragraph{Pruebas y límites.} La prueba \texttt{sql\_test.cpp} compara el resultado del join con un nested loop de fuerza bruta en tablas heap, secuenciales y B+ agrupadas, sin índice, con B+ y con hash, e incluye claves repetidas, joins sin coincidencias, el \texttt{ON} sobre la clave primaria, el self-join, \texttt{GROUP BY} con alias, orden por distancia y \texttt{LIMIT}. También revisa los errores (columna ambigua, alias repetido, \texttt{ON} inválido), el árbol del \texttt{EXPLAIN} y el lock de las dos tablas. Además, \texttt{docs/pruebas\_entrega\_final.sql} ejecuta las consultas de la tienda con datos reales y comprueba que cada join devuelve lo mismo que las dos consultas sin join que usa la API. Como límites, el join solo une dos tablas por una igualdad, no se combina con \texttt{MATCH} ni con \texttt{SIMILAR\_TO}, y lee sus dos lados en memoria después de filtrarlos: todavía no particiona en disco con archivos temporales cuando los lados no caben, como haría un Grace hash join.
 
 \subsection{Transacciones y concurrencia}
 
@@ -342,7 +483,7 @@ La pertenencia se decide con \emph{ray casting}: desde el punto se traza un rayo
 
 \subsection{Estado de la Parte 2}
 
-Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST. La interfaz incluye además un panel de mapa con Leaflet que dibuja los puntos de la tabla sobre OpenStreetMap, resalta las filas que devolvió la consulta y traza el círculo de búsqueda o el polígono usado en el \texttt{WHERE}. Los límites se detallan en la sección \ref{sec:pendiente}.
+Están terminados el tipo \texttt{POINT}, las dos métricas, la extensión SQL, el índice R-Tree conectado al planificador, las consultas por radio, k vecinos y polígono, y la comparación experimental con GiST y con PostGIS. La interfaz incluye además un panel de mapa con Leaflet que dibuja los puntos de la tabla sobre OpenStreetMap, resalta las filas que devolvió la consulta y traza el círculo de búsqueda o el polígono usado en el \texttt{WHERE}. Los límites se detallan en la sección \ref{sec:pendiente}.
 
 %-------------------------------------------------------------------------------
 \section{Parte 3: búsqueda de texto}
@@ -416,6 +557,7 @@ La tabla de combinaciones está en el ejecutor y, si el usuario pide una no vál
 
 %-------------------------------------------------------------------------------
 \section{Parte 4: búsqueda multimedia}
+\label{sec:parte4}
 
 La Parte 4 busca objetos parecidos a una imagen o a un audio. Para eso cada objeto se convierte en un vector numérico y la búsqueda pasa a ser un problema de vecinos más cercanos entre vectores. El profesor autorizó usar los índices de la biblioteca FAISS en lugar de implementarlos, con la condición de explicar cómo funcionan por dentro y qué significa cada parámetro. Por eso el trabajo quedó repartido entre dos procesos. El motor en C++ guarda los vectores, resuelve el k-NN exacto y arma las respuestas. La API en Python extrae las características y mantiene los índices IVF y HNSW de FAISS.
 
@@ -435,6 +577,19 @@ Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 m
 \subsection{Extracción de características de audio}
 
 La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\_audio.py} usa el mismo pipeline que las imágenes, con MFCC en lugar de SIFT. \texttt{librosa} carga el audio en mono a 22\,050 Hz, hasta 30 segundos, y calcula 13 coeficientes MFCC por cada ventana de 2\,048 muestras con un salto de 512. Un clip de 30 segundos da unas 1\,290 ventanas, y cada ventana es un descriptor. K-Means aprende $K = 256$ palabras acústicas, cada ventana se asigna a su palabra más cercana y el audio queda como un histograma con TF-IDF y norma L2.
+
+\paragraph{Cómo se calculan los MFCC.} La función \texttt{librosa.feature.mfcc} se llama con \texttt{sr=22050}, \texttt{n\_mfcc=13}, \texttt{n\_fft=2048} y \texttt{hop\_length=512}, y por dentro hace los siguientes pasos:
+
+\begin{enumerate}
+  \item \emph{Carga.} \texttt{librosa.load} lee el archivo (wav, mp3, flac u ogg), promedia los canales para dejarlo en mono y lo remuestrea a 22\,050 muestras por segundo. Un clip de 30\,s queda como 661\,500 números entre $-1$ y $1$. Con esa frecuencia se representan sonidos de hasta 11\,025\,Hz, la mitad según el teorema de Nyquist, lo que alcanza para la voz y la mayoría de los instrumentos.
+  \item \emph{Ventanas.} La señal se corta en ventanas de 2\,048 muestras (93\,ms) que empiezan cada 512 muestras (23\,ms), así que dos ventanas seguidas se solapan en un 75\,\%. Se usan ventanas cortas porque en 93\,ms el sonido casi no cambia. Cada ventana se multiplica por una ventana de Hann, que baja a cero en los bordes para que el corte no agregue frecuencias que no estaban en el audio. Un clip de 30\,s da 1\,292 ventanas, y un tramo de 10\,s, 431.
+  \item \emph{Espectro.} A cada ventana se le aplica la transformada rápida de Fourier (FFT), que da cuánta energía hay en 1\,025 frecuencias separadas por unos 10,8\,Hz ($22\,050 / 2\,048$). Se usa la potencia, es decir, el cuadrado de la magnitud.
+  \item \emph{Banco de filtros mel.} El oído distingue bien 100\,Hz de 200\,Hz, pero casi no 10\,000\,Hz de 10\,100\,Hz. La escala mel imita esa percepción: es casi lineal hasta 1\,000\,Hz y logarítmica por encima. librosa reparte 128 filtros triangulares sobre esa escala, entre 0 y 11\,025\,Hz, angostos en los graves y anchos en los agudos, y suma la energía que cae en cada uno. Así, las 1\,025 frecuencias se reducen a 128 bandas.
+  \item \emph{Logaritmo.} La energía de cada banda se pasa a decibeles ($10 \log_{10}$), porque el oído percibe el volumen de forma logarítmica; además, se recorta lo que está más de 80\,dB por debajo del máximo. Este paso tiene un efecto útil: subir o bajar el volumen, que multiplica la energía por una constante, pasa a sumar una constante a todas las bandas.
+  \item \emph{Transformada discreta del coseno.} Las 128 bandas vecinas están muy correlacionadas entre sí. La DCT tipo II las expresa como una suma de cosenos y concentra la información en los primeros coeficientes. El coeficiente 0 es proporcional a la energía promedio de la ventana en decibeles, y los siguientes describen la forma general del espectro, que es lo que distingue el timbre de un instrumento. Se guardan los 13 primeros y se descarta el detalle fino. Como la DCT de una constante solo tiene coeficiente 0, el cambio de volumen del paso anterior afecta solo a ese coeficiente.
+\end{enumerate}
+
+El resultado es una matriz de $13 \times 1\,292$ por clip: un descriptor de 13 números por ventana, del mismo modo que SIFT da un descriptor de 128 números por punto clave. A partir de ahí sigue la cuantización (K-Means, histograma y TF-IDF), que se desarrolla con un ejemplo numérico en la subsección \ref{sec:copyright-interfaz}.
 
 La colección es GTZAN, con 100 clips de cada uno de 10 géneros. Se quitó \texttt{jazz.00054.wav} porque está dañado, así que son 999 audios. Para evaluar, se pidieron los 5 vecinos más cercanos de cada audio y se contó cuántos eran de su mismo género, cuando al azar sería un 10\,\%. Con $K$ = 64, 128 y 256 se obtuvo 47, 52 y 54\,\%, y entrenar el vocabulario y calcular los vectores tomó 64, 56 y 93 segundos. Se eligió $K = 256$, el mismo valor que en imágenes. Con ese valor, clásica acierta un 86\,\% y rock un 25\,\%. El histograma cuenta cuántas veces aparece cada palabra acústica, pero no cuándo, así que se pierden el ritmo y la melodía, y los géneros con instrumentos parecidos, como rock, disco y country, se confunden más.
 
@@ -598,10 +753,66 @@ El panel de resultados se adaptó para que cada tipo de consulta se muestre de l
 Las pruebas de Playwright de \texttt{web/tests/resultados.spec.ts} cubren el score y el resaltado con una respuesta simulada y con un \texttt{MATCH} real sobre \texttt{productos\_1k}, la galería de un k-NN de vectores y los ejemplos de texto, espacio y vectores del editor.
 
 %-------------------------------------------------------------------------------
-\section{Parte 5: aplicación de tienda}
-\label{sec:tienda}
+\section{Parte 5: aplicaciones}
+\label{sec:parte5}
+
+\subsection{Elección de las aplicaciones}
+
+El enunciado pide una aplicación que consuma la API del motor, integre al menos dos tipos de datos y tenga una interfaz propia, a elegir entre las cuatro opciones del Anexo A. El equipo desarrolló dos, la B y la C, porque el profesor ofreció puntos extra por una segunda aplicación y porque ambas se apoyan en datos e índices que ya estaban terminados al cierre de la Parte 4.
+
+\begin{itemize}
+  \item \emph{Opción B, tienda con recomendaciones.} Es la opción que usa más partes del motor. Los productos de ABO ya tenían texto, foto y vector desde las Partes 3 y 4, y las sedes con su ubicación usan el tipo \texttt{POINT} y el R-Tree de la Parte 2. Así, una sola pantalla combina cuatro tipos de datos (relacional, texto, imagen y espacial), el doble del mínimo pedido. Además, las tablas de inventario y compras permitieron probar el \texttt{INNER JOIN} de la Parte 1 con datos que tienen sentido.
+  \item \emph{Opción C, copyright en audio.} La Parte 4 ya extraía los MFCC de los 999 clips de GTZAN y los buscaba con HNSW. Esta aplicación cambia la unidad de búsqueda, de la canción entera a tramos de 10 segundos, y agrega lo que la Parte 4 no tenía: decidir con un umbral si una coincidencia es real y medir esa decisión con casos de prueba. Combina datos relacionales (canciones y tramos) con multimedia.
+\end{itemize}
+
+Las otras dos opciones se descartaron. La opción A (RAG) depende de un modelo de lenguaje externo, con su costo y su clave de acceso, y lo que le toca a la base de datos es casi solo la búsqueda de texto de la Parte 3. La opción D (reconocimiento facial) necesita una cámara o una Raspberry Pi, modelos preentrenados de rostros que no se vieron en el curso y fotos de personas, que son datos personales; además, su exigencia principal, responder en menos de 100\,ms, depende más del modelo que del motor.
+
+\subsection{Arquitectura de las dos aplicaciones}
+
+Las dos aplicaciones son clientes del motor y no leen sus archivos directamente. Cada una tiene un módulo en la API (\texttt{api/tienda.py} y \texttt{api/copyright.py}) que arma consultas SQL y las ejecuta por el mismo camino que la vista \emph{Consultas} de la web, y una vista propia en la interfaz que solo llama a esos endpoints. Por eso todo lo que hacen se puede repetir escribiendo el SQL a mano, y cada respuesta trae las consultas que usó.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  caja/.style={draw, rounded corners=2pt, minimum width=6.2cm, minimum height=0.9cm, align=center, fill=gray!8, font=\small},
+  ancha/.style={draw, rounded corners=2pt, minimum width=13cm, minimum height=0.9cm, align=center, fill=gray!8, font=\small},
+  flecha/.style={-{Stealth[length=2mm]}, thick}]
+\node[caja] (vt) {Vista \emph{Tienda}: catálogo, ficha,\\recomendaciones y mapa de sedes};
+\node[caja, right=0.6cm of vt] (vc) {Vista \emph{Copyright}: subir audio\\y timeline de coincidencias};
+\node[caja, below=0.6cm of vt] (at) {\texttt{api/tienda.py}: 4 listas, RRF\\y sedes cercanas con stock};
+\node[caja, below=0.6cm of vc] (ac) {\texttt{api/copyright.py}: tramos, MFCC,\\umbral de 74\,\% y veredicto};
+\node[ancha, below=1.6cm of $(at)!0.5!(ac)$] (cons) {Camino de \texttt{/api/consultas}: reescribe \texttt{SIMILAR\_TO ... USING HNSW},\\busca en FAISS y pide las filas con \texttt{CANDIDATES}};
+\node[ancha, below=0.6cm of cons] (mot) {\texttt{motor\_sql} (C++): tablas, B+, hash, R-Tree, SPIMI, \texttt{JOIN} y archivos temporales};
+\draw[flecha] (vt) -- node[left, font=\footnotesize] {GET \texttt{/api/tienda/...}} (at);
+\draw[flecha] (vc) -- node[right, font=\footnotesize] {POST \texttt{/api/copyright/analizar}} (ac);
+\draw[flecha] (at) -- (cons);
+\draw[flecha] (ac) -- (cons);
+\draw[flecha] (cons) -- (mot);
+\end{tikzpicture}
+\caption{Las dos aplicaciones sobre la misma API y el mismo motor.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{5.6cm}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{5.2cm}}
+\toprule
+Endpoint & Qué devuelve & Datos e índices \\
+\midrule
+\texttt{GET /api/tienda/\allowbreak productos?q=\&tipo=} & catálogo paginado & texto con BM25 (SPIMI) o filtro por tipo \\
+\texttt{GET /api/tienda/\allowbreak productos/\{id\}} & ficha del producto & relacional, B+ agrupado por \texttt{id} \\
+\texttt{GET /api/tienda/\allowbreak productos/\{id\}/\allowbreak recomendaciones} & top 10 con RRF & texto (SPIMI), imagen (HNSW), relacional (B+ y hash) \\
+\texttt{GET /api/tienda/\allowbreak productos/\{id\}/\allowbreak sedes?lat=\&lon=} & 3 sedes cercanas con stock & relacional (B+ en \texttt{inventario}) y espacial (R-Tree) \\
+\texttt{POST /api/copyright/\allowbreak analizar?nombre=} & tramos, coincidencias y veredicto & audio (HNSW sobre \texttt{segmentos}) y relacional (\texttt{canciones}) \\
+\bottomrule
+\end{tabular}
+\caption{Endpoints de las dos aplicaciones.}
+\end{table}
+
+Las dos aplicaciones comparten el índice HNSW de FAISS que vive en la API (sección \ref{sec:parte4}): la tienda lo usa sobre \texttt{catalogo(v)} y el detector sobre \texttt{segmentos(v)}. En ambos casos FAISS solo devuelve los \texttt{id} candidatos y el motor lee esas filas, así que el motor sigue siendo la única fuente de verdad. La API atiende una llamada al motor a la vez, y cada llamada abre y cierra los archivos de las tablas; por eso las dos aplicaciones agrupan sus consultas en lotes. La tienda hace tres llamadas por recomendación, y el detector manda todos los tramos de una canción en uno o pocos lotes.
 
 \subsection{Datos de la tienda}
+\label{sec:datos-tienda}
 
 La tienda (opción B del Anexo A) usa el catálogo de 10\,000 productos de ABO, que ya tiene texto, foto y vector. ABO no trae precios, tiendas, stock ni compras, así que esos datos se generan con \texttt{tools/tienda/generar\_datos.py}. El script usa un generador pseudoaleatorio con semilla: con \texttt{--semilla 7} siempre escribe los mismos archivos, y así los tres integrantes y la demo trabajan con los mismos datos. Los CSV están en el repositorio, en \texttt{datos/tienda/}, junto con \texttt{catalogo.csv}, que trae el vector de cada producto; así la tienda se carga sin volver a extraer las características de las fotos.
 
@@ -635,7 +846,70 @@ El script \texttt{docs/tienda.sql} crea las tablas, las carga con \texttt{COPY} 
 
 La prueba \texttt{tools/tienda/test\_generar.py} comprueba que la misma semilla da los mismos archivos, los conteos, que cada precio está en el rango de su tipo, que cada \texttt{sede\_id}, \texttt{usuario\_id} y \texttt{producto\_id} existe, y que el 80\,\% de las compras de cada usuario cae en sus tipos preferidos. Además, \texttt{tools/probar\_sql.py docs/tienda.sql} ejecuta el script contra el motor con 13 bloques que revisan sus resultados.
 
+\subsection{Recomendador híbrido}
+\label{sec:recomendador}
+
+La ficha de un producto muestra productos parecidos. Una sola técnica no basta para elegirlos: el texto encuentra productos con nombres parecidos aunque se vean distintos, la imagen encuentra productos que se ven igual aunque sean de otro tipo, y las compras capturan relaciones que no aparecen en el contenido. Por eso el recomendador (\texttt{api/tienda.py}) arma cuatro listas de hasta 20 candidatos para un producto X, cada una con una consulta al motor y un índice distinto:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{1.5cm}>{\raggedright\arraybackslash}p{9.4cm}>{\raggedright\arraybackslash}p{3.4cm}}
+\toprule
+Fuente & Consulta & Orden de la lista \\
+\midrule
+texto & \texttt{SELECT id, SCORE() AS relevancia FROM productos WHERE MATCH(descripcion, '<nombre de X>') USING BM25 ORDER BY relevancia DESC LIMIT 21} & score BM25 (SPIMI) \\
+imagen & \texttt{SELECT id, SIMILARITY\_SCORE() FROM catalogo WHERE SIMILAR\_TO(VECTOR(<vector de X>), k = 21) USING HNSW} & similitud coseno (HNSW) \\
+metadata & \texttt{SELECT id, marca, color FROM productos WHERE tipo = '<tipo de X>'} y, en Python, misma marca o mismo color & marca y color, luego marca, luego color \\
+compras & \texttt{SELECT usuario\_id FROM compras WHERE producto\_id = X} (B+) y, por cada usuario $u$, \texttt{SELECT producto\_id FROM compras WHERE usuario\_id = u} (hash) & en cuántos compradores de X aparece \\
+\bottomrule
+\end{tabular}
+\caption{Las cuatro listas del recomendador.}
+\end{table}
+
+Se pide un resultado más de los 20 porque el propio producto X suele salir primero en el texto y en la imagen, y en cada lista se quitan X y los repetidos. La metadata se filtra en Python porque el motor no tiene \texttt{OR}: una sola consulta por tipo trae los candidatos y luego se ordenan según coincidan en marca, en color o en ambos. Las compras se cuentan en Python con dos consultas en lugar del self-join de la sección \ref{sec:join}, porque el recomendador se escribió antes de que existiera el join; las dos formas dan el mismo resultado, como comprueba \texttt{docs/pruebas\_entrega\_final.sql}.
+
+\paragraph{Fusión con RRF.} Las cuatro listas se juntan con \emph{Reciprocal Rank Fusion} (Cormack, Clarke y Büttcher, 2009). Cada producto recibe un puntaje que suma, por cada lista en la que aparece, el inverso de su puesto desplazado por una constante $k$:
+\[
+  \text{RRF}(d) = \sum_{L \,\ni\, d} \frac{1}{k + \text{puesto}_L(d)}, \qquad k = 60,
+\]
+con el puesto contado desde 1. Se usa $k = 60$, el valor que proponen los autores. Con una constante grande, la diferencia entre el primer puesto y el décimo es pequeña ($1/61$ frente a $1/70$), así que aparecer en varias listas pesa más que estar arriba en una sola. Los empates se rompen por el mejor puesto y luego por \texttt{id}. Si una fuente falla o viene vacía, por ejemplo un producto que nadie compró, se fusionan las demás y la respuesta lo indica en el campo \texttt{avisos}.
+
+\paragraph{Por qué RRF y no sumar los scores.} Los scores de las cuatro fuentes no están en la misma escala: BM25 no tiene un máximo fijo y depende de la consulta, la similitud coseno va de 0 a 1, la metadata solo distingue tres niveles y las compras son conteos enteros. Sumarlos directamente haría que BM25 decidiera casi todo. Normalizarlos, por ejemplo llevando cada lista al rango de 0 a 1, tampoco resuelve el problema, porque el resultado depende de cómo se reparten los scores en cada lista y un solo valor extremo comprime a todos los demás. RRF solo usa los puestos, que sí son comparables entre listas, y no requiere calibrar ni entrenar pesos, algo que no se podría hacer sin datos reales de clics o de compras.
+
+\paragraph{Tiempo.} Las consultas se envían al motor en tres lotes: el producto y su vector, las cuatro fuentes, y las tarjetas del top $k$. Se agrupan porque cada llamada al binario abre y cierra los archivos de las tablas. Con los 10\,000 productos, una recomendación tarda entre 0,5 y 0,6 s, y hasta 0,7 s la primera vez, cuando la API carga el índice HNSW. Estos tiempos se midieron en la misma laptop que el resto de la tienda (subsección \ref{sec:interfaz-tienda}), llamando a los endpoints seis veces seguidas sobre la base cargada con \texttt{docs/tienda.sql}.
+
+\paragraph{Ejemplo real.} La tabla siguiente muestra el top 10 del producto 5, un taburete Rivet Malida de tipo \texttt{STOOL\_SEATING}. Las columnas de las fuentes dan el puesto del producto en cada lista; una celda vacía indica que no apareció en ella.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rrlrrrrr}
+\toprule
+\# & id & Producto & texto & imagen & metadata & compras & RRF \\
+\midrule
+1 & 2142 & Rivet Malida Faux Leather Bar Stool, Grey & 1 & 3 & 2 & & 0,0484 \\
+2 & 3232 & Ravenna Home Scott Tufted Back Bar Stool & 3 & 5 & & & 0,0313 \\
+3 & 7633 & Stone \& Beam Alaina High-Back Swivel Stool & 5 & 4 & & & 0,0310 \\
+4 & 2442 & Rivet Decatur Faux Leather Kitchen Bar Stool & 9 & & 3 & & 0,0304 \\
+5 & 7760 & Rivet Modern Industrial Wood and Metal Stool & 7 & & 6 & & 0,0301 \\
+6 & 123 & Rivet Decatur Faux Leather Counter Stool & 14 & & 1 & & 0,0299 \\
+7 & 6513 & Rivet Decatur Modern Counter-Height Stool & 13 & & 5 & & 0,0291 \\
+8 & 3978 & Rivet Vermont Diamond-Stitched Counter Stool & & 15 & 4 & & 0,0290 \\
+9 & 1571 & Ravenna Home Dawn Nailhead Saddle Stool & & 16 & & 7 & 0,0281 \\
+10 & 2176 & Stone \& Beam Sophia Swivel Counter Stool & 17 & 14 & & & 0,0265 \\
+\bottomrule
+\end{tabular}
+\caption{Top 10 del recomendador para el producto 5.}
+\end{table}
+
+El primero aparece en tres listas: $1/61 + 1/63 + 1/62 \approx 0{,}0484$, y gana con claridad. Los otros nueve aparecen en dos listas. Un producto que fuera primero en una sola lista sumaría $1/61 \approx 0{,}0164$, menos que el décimo, que está en los puestos 17 y 14. Esto muestra el comportamiento buscado: RRF premia el acuerdo entre fuentes más que un buen puesto en una sola. El ejemplo también muestra que cada fuente aporta algo distinto, ya que el sexto puesto llega casi solo por la metadata (misma marca y color) y el noveno es el único que aporta la lista de compras.
+
+La prueba \texttt{api/test\_tienda.py} usa una base temporal de 8 productos y comprueba el RRF contra el cálculo a mano con tres listas, que se excluye el producto consultado y que el resultado sigue saliendo con una fuente vacía y con otra que falla.
+
 \subsection{Interfaz de la tienda}
+\label{sec:interfaz-tienda}
 
 La vista \emph{Tienda} de la web muestra lo que hace el sistema desde el punto de vista de un cliente. Solo consume los cuatro endpoints de \texttt{/api/tienda}, y cada uno devuelve también las consultas SQL que usó, para que se vea qué parte del motor responde cada cosa.
 
@@ -646,7 +920,7 @@ La vista \emph{Tienda} de la web muestra lo que hace el sistema desde el punto d
   \item \emph{Tiendas cercanas con stock.} En un mapa de Leaflet se ven la ubicación del usuario y las 3 sedes más cercanas que tienen stock del producto, numeradas como el k-NN de la Parte 2, con su distancia y sus unidades (figura~\ref{fig:tienda-sedes}). La ubicación empieza en UTEC y cambia con un clic en el mapa. Si menos de 3 sedes tienen stock, se avisa.
 \end{itemize}
 
-Con los 10\,000 productos, una búsqueda de texto responde en unos 25\,ms, la ficha en 22\,ms, las sedes en 48\,ms y las recomendaciones en unos 260\,ms, porque juntan cuatro consultas al motor y una a FAISS. Mientras la API no tenía estos endpoints, la vista se desarrolló con \texttt{web/src/tienda/ejemplo.json}, que sigue el mismo contrato; si la ruta no existe, la vista lo usa y lo avisa. La prueba \texttt{web/tests/tienda.spec.ts} simula la API y recorre la búsqueda, el filtro, la paginación, la ficha, las 10 recomendaciones con sus fuentes, el mapa y el cambio de ubicación, además de los errores.
+Con los 10\,000 productos, una búsqueda de texto responde en unos 60\,ms (0,3 s la primera vez), la ficha en 65\,ms, las sedes en 75\,ms y las recomendaciones entre 0,5 y 0,6 s, porque juntan cuatro consultas al motor y una a FAISS (subsección \ref{sec:recomendador}). En otra laptop del equipo, más rápida, los mismos endpoints respondieron entre 1,6 y 3 veces antes (25, 22 y 48\,ms, y 260\,ms las recomendaciones), pero en el mismo orden: las recomendaciones siguen siendo la operación más lenta. Mientras la API no tenía estos endpoints, la vista se desarrolló con \texttt{web/src/tienda/ejemplo.json}, que sigue el mismo contrato; si la ruta no existe, la vista lo usa y lo avisa. La prueba \texttt{web/tests/tienda.spec.ts} simula la API y recorre la búsqueda, el filtro, la paginación, la ficha, las 10 recomendaciones con sus fuentes, el mapa y el cambio de ubicación, además de los errores.
 
 \begin{figure}[H]
 \centering
@@ -676,7 +950,133 @@ Con los 10\,000 productos, una búsqueda de texto responde en unos 25\,ms, la fi
 \label{fig:tienda-sedes}
 \end{figure}
 
+\subsection{Base de originales del detector de copyright}
+\label{sec:copyright-base}
+
+La opción C pide detectar si una canción contiene fragmentos de otras. Si la base guardara un vector por canción, un fragmento de 15\,s se compararía con un clip de 30\,s cuyo histograma también cuenta sonidos que el fragmento no tiene. Por eso la base guarda un vector por cada tramo: cada uno de los 999 clips de GTZAN se parte en tramos de 10\,s, uno cada 5\,s (0--10, 5--15, 10--20, 15--25 y 20--30), y quedan 4\,995 tramos. Varios clips duran 29,98\,s y no 30, así que el último tramo se acepta si le falta menos de medio segundo.
+
+\begin{itemize}
+  \item \emph{Por qué 10\,s.} Un tramo de 10\,s tiene 431 ventanas, suficientes para que su histograma sea estable. Con 5\,s serían 216 y el histograma cambiaría más con un poco de ruido.
+  \item \emph{Por qué cada 5\,s.} Con un 50\,\% de solapamiento, cualquier fragmento de 10\,s del original comparte al menos 7,5\,s con algún tramo, y cualquier fragmento de 15\,s contiene un tramo completo. Sin solapamiento, un fragmento podría caer mitad en un tramo y mitad en el siguiente.
+  \item \emph{Costo.} Son 5 tramos por clip en lugar de 3, unos 5\,000 vectores en total, que sigue siendo una base pequeña.
+\end{itemize}
+
+Cada tramo pasa por el mismo pipeline de audio de la Parte 4, con una diferencia: antes de cuantizar, los MFCC del tramo se normalizan, restando a cada coeficiente su promedio dentro del tramo y dividiendo por su desviación estándar. Sin este paso, el coeficiente 0, que mide la energía, cambia en todas las ventanas cuando se sube o se baja el volumen, el K-Means asigna esas ventanas a otras palabras y el histograma sale distinto. Como el volumen solo suma una constante a ese coeficiente, restar el promedio lo elimina. El vocabulario (K-Means de FAISS con hasta 1\,000\,000 de ventanas normalizadas) y el IDF se calculan con los propios tramos. La tabla~\ref{tab:normalizar} lo mide con 100 recortes de 15\,s tomados al azar: indica en qué fracción de los tramos de consulta el tramo más parecido es de la canción correcta.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Caso & Sin normalizar & Normalizado \\
+\midrule
+Recorte limpio & 0,96 & 0,98 \\
+Volumen $-6$\,dB & 0,07 & 0,98 \\
+Volumen $+6$\,dB & 0,06 & 0,95 \\
+Ruido blanco, SNR 20\,dB & 0,13 & 0,78 \\
+Velocidad $+5$\,\% & 0,99 & 0,97 \\
+Velocidad $-5$\,\% & 0,76 & 0,94 \\
+Mezcla de dos canciones & 0,08 & 0,41 \\
+\bottomrule
+\end{tabular}
+\caption{Efecto de normalizar los MFCC de cada tramo.}
+\label{tab:normalizar}
+\end{table}
+
+El script \texttt{docs/copyright.sql} crea la tabla \texttt{canciones} (\texttt{id}, \texttt{archivo}, \texttt{genero}), con 999 filas, y la tabla \texttt{segmentos} (\texttt{id}, \texttt{cancion\_id}, \texttt{inicio}, \texttt{fin}, \texttt{v VECTOR(256)}), con 4\,995. Las carga con \texttt{COPY} y crea dos índices: un HNSW sobre \texttt{segmentos(v)}, para buscar los tramos más parecidos, y un B+ sobre \texttt{segmentos(cancion\_id)}, para traer los tramos de una canción. Generar los tramos de los 999 clips con 8 procesos, contando el K-Means, tomó unos 30\,s en una de las laptops del grupo y 137\,s en la laptop de la demo. Como control, se buscaron 20 tramos de la base tomados al azar: en los 20 el primer resultado fue el mismo tramo, con similitud 1, y el recall@5 del HNSW contra la búsqueda sin índice fue 1,000.
+
+\subsection{Detección de copyright}
+\label{sec:copyright-deteccion}
+
+La detección la hace \texttt{api/copyright.py} en el endpoint \texttt{POST /api/copyright/analizar}, que recibe el audio crudo en el cuerpo de la petición:
+
+\begin{enumerate}
+  \item Parte la canción subida en tramos de 10\,s cada 5\,s, hasta 5 minutos, y calcula el vector de cada tramo igual que en la base: MFCC normalizados, vocabulario e IDF de copyright.
+  \item Cada tramo con sonido busca sus 5 tramos más parecidos en la base:
+\begin{lstlisting}[language=SQL]
+SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos
+WHERE SIMILAR_TO(VECTOR(...), k = 5) USING HNSW;
+\end{lstlisting}
+  \texttt{SIMILARITY\_SCORE()} es la similitud coseno, que se muestra en porcentaje. Las consultas se envían en lotes a \texttt{/api/consultas}, que acepta hasta 64\,000 caracteres por petición; el detector arma lotes de hasta 60\,000 para dejar margen. Cada consulta ocupa entre 1\,400 y 2\,100 caracteres, porque el histograma tiene muchos ceros, así que en un lote caben unas 30 consultas. El último lote trae además el nombre y el género de cada canción de \texttt{canciones}.
+  \item Un tramo coincide con una canción original si su similitud es mayor o igual al umbral, 74\,\%. Una canción se reporta si coincide en al menos 2 tramos; si el audio subido tiene un solo tramo, basta con ese.
+  \item La respuesta trae la duración, los tramos con sus coincidencias (canción, género, tramo del original y similitud), las canciones detectadas con cuántos tramos y qué porcentaje de la canción subida cubren, el veredicto (\texttt{posible\_copyright} o \texttt{sin\_coincidencias}), el umbral y las consultas SQL usadas.
+\end{enumerate}
+
+Exigir dos tramos evita que un solo tramo parecido por casualidad dispare la alarma. Una canción de 3 minutos tiene 35 tramos, que van en 2 lotes. En una de las laptops del grupo se analizó en unos 3\,s, y en la laptop de la demo en unos 7\,s (12\,s la primera vez, porque se cargan el vocabulario y el índice).
+
+\subsection{Evaluación y elección del umbral}
+\label{sec:copyright-evaluacion}
+
+El umbral no se fijó a ojo. El script \texttt{tools/copyright/evaluar.py} carga \texttt{docs/copyright.sql} en una base temporal y arma 150 casos con la semilla 2026:
+
+\begin{itemize}
+  \item \emph{100 positivos}, hechos con clips de GTZAN: 30 recortes de 10 a 20\,s, y recortes de 15\,s con el volumen bajado 6\,dB (10) o subido 6\,dB (10), con ruido blanco de SNR 20\,dB (15), acelerados un 5\,\% (10) o frenados un 5\,\% (10), más 15 mezclas de dos canciones.
+  \item \emph{50 negativos}: 20 audios sintéticos (notas al azar, ruido, barridos y acordes) y 30 recortes de 15\,s de clips de GTZAN, sacando de los resultados los tramos de su propia canción.
+\end{itemize}
+
+Cada caso se analiza una vez y luego se evalúa con cada umbral entre 50 y 99\,\%. La precisión es la fracción de canciones reportadas que eran de verdad la original; el recall, la fracción de los 100 positivos en los que se reporta la original (en una mezcla basta una de las dos); y F1, el promedio armónico de ambas.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrr}
+\toprule
+Umbral & Precisión & Recall & F1 & Negativos con alarma \\
+\midrule
+50 & 0,580 & 0,94 & 0,718 & 9 de 50 \\
+65 & 0,650 & 0,93 & 0,765 & 5 \\
+70 & 0,802 & 0,89 & 0,844 & 4 \\
+72 & 0,838 & 0,88 & 0,859 & 3 \\
+74 & 0,902 & 0,83 & 0,865 & 2 \\
+77 & 0,917 & 0,77 & 0,837 & 1 \\
+80 & 0,921 & 0,70 & 0,795 & 1 \\
+85 & 0,909 & 0,50 & 0,645 & 1 \\
+90 & 0,955 & 0,21 & 0,344 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Precisión, recall y F1 de la detección según el umbral.}
+\label{tab:umbral}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{img/copyright_evaluacion.png}
+\caption{Precisión, recall y F1 por umbral; la línea marca el umbral elegido.}
+\label{fig:copyright-evaluacion}
+\end{figure}
+
+Se eligió 74\,\% porque da el mayor F1, 0,865. Por debajo se reportan muchas canciones equivocadas, y por encima se pierden copias reales, porque un recorte con ruido o con otra velocidad rara vez pasa del 85\,\%. Con ese umbral, la tabla~\ref{tab:copyright-casos} separa los resultados por tipo de caso.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Caso & Casos & Detectados \\
+\midrule
+Recorte de 10 a 20\,s & 30 & 30 \\
+Volumen $-6$\,dB & 10 & 10 \\
+Volumen $+6$\,dB & 10 & 10 \\
+Ruido blanco, SNR 20\,dB & 15 & 10 \\
+Velocidad $+5$\,\% & 10 & 10 \\
+Velocidad $-5$\,\% & 10 & 8 \\
+Mezcla de dos canciones & 15 & 5 \\
+Sintético (negativo) & 20 & 0 alarmas \\
+Clip sin sus tramos (negativo) & 30 & 2 alarmas \\
+\bottomrule
+\end{tabular}
+\caption{Resultados con el umbral de 74\,\%.}
+\label{tab:copyright-casos}
+\end{table}
+
+\begin{itemize}
+  \item \emph{La mezcla es el caso más difícil.} El histograma junta las palabras de las dos canciones, y ninguna de las dos se parece lo suficiente al resultado.
+  \item \emph{Las 2 falsas alarmas} son \texttt{pop.00030} contra \texttt{pop.00031} y \texttt{pop.00047} contra \texttt{pop.00080}, con similitudes de hasta 88 y 91\,\%. Son clips de pop de GTZAN que suenan casi igual entre sí.
+  \item \emph{El orden no cuenta.} El histograma no mira el orden de las ventanas, así que un audio puesto al revés se sigue pareciendo a su original (entre 75 y 84\,\% en una prueba aparte). Para un detector real haría falta una huella que conserve el orden en el tiempo.
+\end{itemize}
+
 \subsection{Interfaz de copyright}
+\label{sec:copyright-interfaz}
 
 La vista \emph{Copyright} de la web recibe una canción, la manda a \texttt{POST /api/copyright/analizar} y muestra qué partes de ella se parecen a canciones de GTZAN.
 
@@ -914,6 +1314,30 @@ Tamaño del índice & & & 3\,448 KB & 6\,528 KB \\
 La búsqueda secuencial cuesta lo mismo con cualquier radio, porque siempre lee las 491 páginas del heap. El R-Tree es unas 9 veces más rápido con un radio de 1 km, pero su costo crece con el número de filas encontradas, ya que por cada una lee una página del heap. Con 10 km la consulta devuelve el 10\,\% de la tabla y el R-Tree termina siendo más lento que el recorrido, el mismo efecto que se observó con el B+ no agrupado en rangos anchos. En k vecinos la diferencia es mucho mayor: la búsqueda secuencial calcula la distancia de todos los puntos y ordena la tabla completa, mientras que el R-Tree solo baja por los nodos más cercanos y es entre 64 y 71 veces más rápido, casi sin depender de k.
 
 GiST resultó unas 10 veces más rápido que el R-Tree del motor en todas las consultas, aunque su índice ocupa casi el doble. Parte de esa diferencia no viene de la estructura: cada consulta del motor abre los archivos y lee el catálogo, mientras que PostgreSQL trabaja con la tabla ya en memoria compartida. Por eso la comparación más justa es la forma en que crece cada técnica, y en eso el R-Tree y GiST se comportan igual. La construcción del R-Tree es más lenta porque inserta punto por punto leyendo cada fila del heap. El detalle completo está en \texttt{docs/comparacion\_espacial/README.md}.
+
+\paragraph{Comparación con PostGIS.} La comparación anterior usa el tipo \texttt{point} y la métrica euclidiana, mientras que el motor trabaja por defecto con haversine. Para comparar en las mismas condiciones, se repitió la medición con PostGIS 3.5.2 sobre PostgreSQL 17.5, en el contenedor Docker \texttt{postgis/postgis}. Los puntos se guardan como \texttt{geography(Point,4326)}, el radio se consulta con \texttt{ST\_DWithin(..., false)}, que mide sobre la esfera, y los k vecinos con el operador \texttt{<->}. Del lado del motor se usó \texttt{make bench-espacial-haversine}, con los mismos puntos y centros. El script \texttt{datos/resultados/postgis\_bench.sql} verifica en cada consulta que GiST devuelva los mismos identificadores que el recorrido secuencial de PostgreSQL. El promedio de filas coincide con el del motor, salvo en la segunda decimal de dos casos: el motor usa una esfera de 6\,371\,000 m y PostGIS una de 6\,371\,008,8 m, así que un punto justo en el borde del radio puede quedar de distinto lado.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrr}
+\toprule
+Consulta & Secuencial (motor) & R-Tree & Secuencial (PostGIS) & GiST (PostGIS) \\
+\midrule
+Rango de 1 km & 140,3 ms & 5,6 ms & 160,1 ms & 1,29 ms \\
+Rango de 5 km & 174,9 ms & 30,7 ms & 159,5 ms & 8,24 ms \\
+Rango de 10 km & 96,4 ms & 88,3 ms & 163,7 ms & 31,2 ms \\
+k-NN, k = 10 & 1\,473,1 ms & 8,5 ms & 213,7 ms & 0,47 ms \\
+k-NN, k = 50 & 1\,176,5 ms & 9,4 ms & 196,7 ms & 0,69 ms \\
+k-NN, k = 100 & 1\,008,1 ms & 10,4 ms & 256,3 ms & 1,53 ms \\
+Construcción del índice & & 2\,965 ms & & 1\,178 ms \\
+Tamaño del índice & & 3\,448 KB & & 7\,288 KB \\
+\bottomrule
+\end{tabular}
+\caption{Motor y PostGIS con distancia geodésica y 100\,000 puntos.}
+\end{table}
+
+Con distancia geodésica se repite la forma de la comparación euclidiana. Con un radio de 1 km, GiST es 124 veces más rápido que el recorrido de PostgreSQL y el R-Tree 25 veces más rápido que el del motor; con 10 km la ventaja de GiST baja a 5 veces y la del R-Tree casi desaparece. En k vecinos, el recorrido del motor es el más lento porque ordena toda la tabla con el merge sort externo, mientras que PostgreSQL solo conserva los k mejores. Los dos índices casi no dependen del tamaño de la tabla: con k = 10, el R-Tree tarda entre 8 y 13 ms y GiST entre 0,22 y 0,47 ms para 1\,000, 10\,000 y 100\,000 puntos. Lo que cambia es el espacio: el GiST de \texttt{geography} ocupa 7\,288 KB, más que la propia tabla (6\,672 KB) y más del doble que el R-Tree, en parte porque guarda cajas en tres dimensiones, en coordenadas geocéntricas. También es más lento que el GiST sobre \texttt{point} (1,29 ms frente a 0,54 ms en el radio de 1 km), porque calcula distancias sobre la esfera; como las dos mediciones se hicieron en servidores distintos, esa diferencia es solo orientativa. Por último, el recorrido del motor varió entre 96 y 175 ms en las consultas por radio aunque siempre lee todas las páginas, lo que muestra el ruido de medir en una laptop.
 
 \subsection{Parte 3: TF-IDF, BM25 y GIN}
 
@@ -1191,13 +1615,17 @@ HNSW & búsqueda interactiva con coseno sobre datos que caben en memoria & const
 
 El proyecto permitió comprobar en la práctica varias ideas que en clase se ven de forma teórica. La más clara es que el número de páginas leídas explica casi todas las diferencias de rendimiento: el secuencial gana en búsquedas porque lee 35 páginas en lugar de 1\,598, y el B+ agrupado gana en rangos porque sus filas están contiguas. También quedó claro que medir bien es parte del trabajo, porque dos de las observaciones del primer avance se explicaban por qué se estaba midiendo y no por un error en las estructuras.
 
-La Parte 1 está completa, con tres límites. El motor no implementa \texttt{JOIN} aunque los algoritmos de hash join e index nested loop join ya están escritos en \texttt{external\_algorithms.h}; falta conectarlos al parser y al ejecutor. El merge sort externo modela el presupuesto de memoria, pero sus corridas todavía viven en memoria; el hashing del 	exttt{GROUP BY} ya escribe sus particiones en archivos temporales. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro. Estos pendientes quedan para la Entrega Final.
+La Parte 1 está completa. En la Entrega Final se cerraron los pendientes del tercer avance: el \texttt{INNER JOIN} ya funciona desde SQL, con el hash join y el index nested loop join de \texttt{external\_algorithms.h} elegidos por el planificador, y existen archivos temporales paginados (\texttt{archivo\_temporal.h}), en los que el external merge sort del \texttt{ORDER BY} escribe sus corridas y el external hashing del \texttt{GROUP BY} escribe sus particiones. Quedan dos límites. El join lee sus dos lados en memoria después de filtrarlos y todavía no particiona en disco cuando no caben. Los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia frente a locks por registro.
 
-De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. El repositorio ya incluye \texttt{postgis\_bench.sql}, que repite la comparación con PostGIS sobre \texttt{geography} y distancia geodésica; como trabajo futuro queda ejecutarlo y comparar esos tiempos con la métrica haversine del motor.
+De la Parte 2 están terminados el tipo \texttt{POINT}, las dos métricas de distancia, la extensión SQL, el índice R-Tree con sus tres consultas (radio, k vecinos y polígono), el panel de mapa en la interfaz y la comparación con GiST y PostGIS. La comparación dejó una lección parecida a la de la Parte 1: un índice ayuda mucho cuando la consulta devuelve pocas filas, como en k vecinos o en radios chicos, pero deja de convenir cuando devuelve una parte grande de la tabla, porque cada fila cuesta una página del heap. También mostró que una implementación propia sigue la misma forma que GiST, aunque PostgreSQL es unas 10 veces más rápido por todo lo que optimiza fuera de la estructura. La repetición con PostGIS, sobre \texttt{geography} y con la métrica haversine en el motor, confirmó esa forma: GiST fue el más rápido en radios y k vecinos, aunque su índice ocupa más que la propia tabla y más del doble que el R-Tree.
 
 En las Partes 3 y 4 se repitió la misma lección con otros tipos de datos. En texto, el índice invertido del motor responde las consultas largas más rápido que GIN porque el score sale del propio índice, sin leer la tabla, y BM25 resultó claramente mejor que TF-IDF a igual costo. En vectores, los índices aproximados son entre 100 y 1\,000 veces más rápidos que el recorrido secuencial con 100\,000 vectores, a cambio de perder algunos vecinos; el IVF permite controlar esa pérdida con \texttt{nprobe} y el HNSW da mejor recall con coseno. La galería de errores mostró además el límite de la representación: con SIFT y bolsa de palabras visuales, dos objetos lisos sobre fondo blanco se parecen aunque sean de tipos distintos.
 
 De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el trabajo más delicado no fue el índice, sino mantenerlo coherente con una tabla que vive en otro proceso. El archivo de cambios y la cláusula \texttt{CANDIDATES} permitieron que el motor siga siendo la única fuente de verdad, que FAISS solo vea lo confirmado y que cada proceso haga lo que ya sabe hacer. El HNSW también mostró un costo que no aparece en la teoría de la búsqueda: un grafo no se puede borrar de forma directa, y el borrado lógico solo es sano si después se reconstruye. Como límites conocidos, una búsqueda con \texttt{USING} y filtros puede devolver menos de $k$ filas, y dentro de una transacción esa búsqueda no ve los cambios de la propia transacción.
+
+La Parte 5 mostró que las piezas anteriores se pueden combinar desde fuera del motor: ninguna de las dos aplicaciones lee sus archivos, solo arman SQL y lo envían por la API. En la tienda, la fusión con RRF resolvió el problema de juntar scores de escalas distintas sin entrenar pesos, y el ejemplo del producto 5 mostró que el acuerdo entre fuentes pesa más que un buen puesto en una sola. Su costo es el tiempo: una recomendación junta cuatro consultas y tarda medio segundo, unas ocho veces más que la ficha, así que en una tienda real convendría calcular las recomendaciones de antemano. En el detector de copyright, la búsqueda por tramos con HNSW encontró todos los recortes y todos los cambios de volumen, y el umbral de 74\,\% dio el mejor equilibrio entre precisión (0,90) y recall (0,83). Su límite es otra vez la representación: el histograma de palabras acústicas no conserva el orden en el tiempo y junta las palabras de dos canciones superpuestas, por lo que solo detectó 5 de las 15 mezclas.
+
+En conjunto, el proyecto recorrió el camino completo de un gestor de bases de datos, desde cómo se guarda un registro en una página de 4\,KB hasta una aplicación que se usa sin escribir SQL. La lección que se repitió en todas las partes es que no existe una técnica mejor en general: cada índice conviene para un tipo de consulta y un tamaño de resultado, y la forma de saber cuál elegir es medir. Como trabajo futuro quedan los límites ya mencionados: el join en disco, los locks por registro y un planificador basado en el costo de entrada y salida en lugar de reglas.
 
 \section*{Referencias}
 \begin{enumerate}
@@ -1215,6 +1643,7 @@ De la Parte 4 quedó claro que usar una biblioteca no elimina el diseño: el tra
   \item Robertson, S. y Zaragoza, H. The Probabilistic Relevance Framework: BM25 and Beyond. \emph{Foundations and Trends in Information Retrieval}, 3(4), 2009.
   \item Jégou, H., Douze, M. y Schmid, C. Product Quantization for Nearest Neighbor Search. \emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 33(1), 2011.
   \item Porter, M. F. An algorithm for suffix stripping. \emph{Program}, 14(3), 1980.
+  \item Cormack, G. V., Clarke, C. L. A. y Büttcher, S. Reciprocal rank fusion outperforms Condorcet and individual rank learning methods. \emph{Proceedings of ACM SIGIR}, 2009.
   \item Tzanetakis, G. y Cook, P. Musical genre classification of audio signals. \emph{IEEE Transactions on Speech and Audio Processing}, 10(5), 2002.
 \end{enumerate}
 
