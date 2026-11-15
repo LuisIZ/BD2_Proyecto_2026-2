@@ -1,9 +1,10 @@
 # BD2_Proyecto_2026-2
 
 Minigestor de base de datos multimodal construido desde cero para el curso de Base de
-Datos 2 (UTEC, ciclo 2026-2). Esta entrega cubre la Parte 1 (base de datos relacional con
-tablas y SQL), la Parte 2 (datos espaciales), la Parte 3 (búsqueda de texto) y la Parte 4
-(búsqueda multimedia por similitud). La Parte 5 corresponde a la Entrega Final.
+Datos 2 (UTEC, ciclo 2026-2). Cubre la Parte 1 (base de datos relacional con tablas y SQL),
+la Parte 2 (datos espaciales), la Parte 3 (búsqueda de texto), la Parte 4 (búsqueda multimedia
+por similitud) y la Parte 5 de la Entrega Final: dos aplicaciones sobre el motor, una tienda
+con recomendaciones y una detección de copyright de audio.
 
 Stack: C++17 para el motor, Python con FastAPI para la API, FAISS y OpenCV para la búsqueda
 multimedia, y React con TypeScript para la web.
@@ -15,13 +16,15 @@ Informe del proyecto: [docs/informe/informe.pdf](docs/informe/informe.pdf).
 El sistema está organizado en capas; cada una solo usa a la que tiene debajo.
 
 ```text
-Interfaz web (React)        archivos, consultas, resultados, plan, mapa, galería y comparación
+Interfaz web (React)        archivos, consultas, resultados, plan, mapa, galería, comparación y tienda
         │  HTTP
 API (Python + FastAPI)      recibe el SQL y llama al binario motor_sql
   Multimedia (Python)       extracción SIFT y MFCC, índices IVF y HNSW de FAISS, SIMILAR_TO
+  Tienda (Python)           catálogo, ficha, recomendador con RRF y sedes cercanas con stock
         │  proceso
-Consultas (C++)             parser, planificador, ejecutor, EXPLAIN [ANALYZE], transacciones
-Algoritmos externos         external merge sort (ORDER BY) y external hashing (GROUP BY)
+Consultas (C++)             parser, planificador, ejecutor, INNER JOIN, EXPLAIN [ANALYZE], transacciones
+Algoritmos externos         merge sort (ORDER BY), hashing en disco (GROUP BY), hash join e index nested loop
+Archivos temporales         páginas de 4 KB para corridas y particiones, borradas al terminar la consulta
 Texto y vectores            SPIMI, TF-IDF y BM25; tipo VECTOR, 3 métricas y k-NN secuencial
 Índices                     B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco
 Archivos                    Heap File con páginas slotted y archivo secuencial paginado
@@ -46,8 +49,9 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 |---|---|---|
 | 2.1.1 Archivos | Heap File con páginas slotted y reutilización de espacio; archivo secuencial con área auxiliar, eliminación lazy y reorganización al 30 % | [heap](docs/heap_file_slotted_pages.md), [secuencial](docs/sequential_file_paged.md) |
 | 2.1.2 Índices | B+ agrupado, B+ no agrupado, hash extensible paginado en disco | [comparación](docs/comparacion_indices/README.md), [hash](docs/extendible_hash.md) |
-| 2.1.2 Algoritmos externos | merge sort k-way para `ORDER BY`, external hashing por particiones para `GROUP BY` | [external_algorithms](docs/external_algorithms.md) |
+| 2.1.2 Algoritmos externos | external hashing para `GROUP BY` con particiones en archivos temporales de 4 KB; merge sort k-way para `ORDER BY` (sus corridas todavía en memoria, #98 en curso) | [external_algorithms](docs/external_algorithms.md) |
 | 2.1.3 SQL | parser, planificador por reglas, `EXPLAIN` y `EXPLAIN ANALYZE` con Planning Time y Execution Time | [parser_sql](docs/parser_sql.md) |
+| 2.1.3 INNER JOIN | `FROM a x JOIN b y ON x.c = y.c` con alias; el `WHERE` se aplica en cada tabla antes del join; hash join o index nested loop según los índices; plan en árbol | [parser_sql (5.2)](docs/parser_sql.md#52-inner-join) |
 | 2.1.4 Transacciones | `BEGIN`/`END`/`ROLLBACK`, 2PL estricto, detección de deadlocks y demo con hilos | [transacciones](docs/transacciones.md) |
 | 2.1.5 Interfaz | paneles de archivos, consultas, resultados y plan (árbol y grafo) | [web/INSTRUCTIVO.md](web/INSTRUCTIVO.md) |
 | 2.1.6 Comparación | Heap vs Secuencial y B+ agrupado vs no agrupado vs hash | [informe](docs/informe/informe.pdf) |
@@ -90,6 +94,46 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 | Comparación IVF vs HNSW y euclidiana vs coseno con 1k, 10k y 100k imágenes | listo ([comparación vectorial](docs/comparacion_vectorial/README.md)) |
 | Galería de imágenes y reproductor de audio en la interfaz | listo |
 | Subir la imagen o el audio de consulta desde la interfaz | listo |
+
+### Parte 5: aplicaciones
+
+| Sección | Estado |
+|---|---|
+| Tienda: datos sintéticos reproducibles (precios, 25 sedes en Lima, inventario, usuarios y compras) | listo ([tienda](docs/tienda.md)) |
+| Tienda: API de catálogo, ficha y sedes más cercanas con stock (B+ y R-Tree) | listo |
+| Tienda: recomendador híbrido (texto BM25, imagen HNSW, metadata y compras) fusionado con RRF | listo ([recomendador](docs/tienda.md#recomendador)) |
+| Tienda: vista en la web con catálogo, ficha, recomendaciones y mapa de sedes | listo |
+| Copyright: base de originales con tramos de audio de GTZAN e índice HNSW | listo ([copyright](docs/copyright.md)) |
+| Copyright: detección por tramos, umbral y evaluación con remixes | en curso (#93) |
+| Copyright: interfaz con timeline de coincidencias | en curso (#94) |
+
+La tienda se carga ejecutando [docs/tienda.sql](docs/tienda.sql) entero desde la vista
+**Consultas** de la web; los CSV ya están en `datos/tienda/`. Después, la vista **Tienda** usa
+esas tablas. Si las tablas ya existen, primero se borran con los `DROP TABLE` comentados al final
+del script. Las consultas del `INNER JOIN` con estos datos están en
+[docs/pruebas_entrega_final.sql](docs/pruebas_entrega_final.sql), por ejemplo:
+
+```sql
+SELECT s.nombre, i.stock FROM inventario i JOIN sedes s ON i.sede_id = s.id
+  WHERE i.producto_id = 42 AND i.stock > 0
+  ORDER BY distancia(s.ubicacion, POINT(-12.0464, -77.0428)) LIMIT 3;
+```
+
+Para comprobar los dos scripts sobre una base temporal (11 y 13 bloques):
+
+```bash
+python tools/probar_sql.py docs/pruebas_entrega_final.sql
+python tools/probar_sql.py docs/tienda.sql
+```
+
+### Pendientes de las Partes 1 y 2
+
+- External sort en disco para `ORDER BY` (#98, en curso): hoy el merge sort tiene sus corridas en
+  memoria.
+- El join lee sus dos lados en memoria, ya filtrados por su `WHERE`; no particiona en disco
+  cuando no caben.
+- Los locks son a nivel de tabla.
+- Comparación con PostGIS: el script está listo pero no se midió (#96, opcional).
 
 Ejemplo de consultas:
 
@@ -138,16 +182,16 @@ BD2_Proyecto_2026-2/
 │   ├── comun/            interfaz IFileOrganization y Registro
 │   ├── archivos/         heap_file, sequential_file, pagina_slotted
 │   ├── indices/          bplus_agrupado, bplus_no_agrupado, hash_extensible_disco, rtree, buffer_pool
-│   ├── consultas/        parser_sql, catalogo, ejecutor, external_algorithms, motor_sql
+│   ├── consultas/        parser_sql, catalogo, ejecutor, external_algorithms, archivo_temporal, hash_externo, motor_sql
 │   ├── espacial/         distancia.h (euclidiana y haversine)
 │   ├── texto/            preprocesamiento, indice_invertido (SPIMI) y ranking
 │   ├── vectorial/        vector.h (tipo Vector y las 3 métricas)
 │   ├── transacciones/    gestor_locks.h (2PL estricto y deadlocks)
 │   └── pruebas/          pruebas de cada módulo y benchmarks
-├── api/                  Python: conecta el motor con la web
+├── api/                  Python: conecta el motor con la web; tienda.py es la API de la tienda
 │   └── multimedia/       extraer, extraer_audio, indices (FAISS), similitud y benchmarks
-├── web/                  React: la interfaz
-├── tools/                comando motor, preparación del dataset y recorrido SQL
+├── web/                  React: la interfaz (src/tienda/ es la vista de la tienda)
+├── tools/                comando motor, preparación del dataset, datos de la tienda y recorrido SQL
 ├── datos/                datasets CSV y resultados de los experimentos
 └── docs/                 documentación técnica e informe
 ```
@@ -256,8 +300,10 @@ probar la búsqueda de texto. Lo demás pesa demasiado y se genera o se copia ap
 ```bash
 make test                                            # motor C++
 cd web && npx playwright test                        # interfaz
-cd api && python -m unittest multimedia.test_similitud multimedia.test_indices multimedia.test_extraer multimedia.test_extraer_audio multimedia.test_bench_vectorial
+cd api && python -m unittest multimedia.test_similitud multimedia.test_indices multimedia.test_extraer multimedia.test_extraer_audio multimedia.test_bench_vectorial test_tienda
+python -m unittest tools.tienda.test_generar             # datos de la tienda
 python tools/probar_sql.py docs/pruebas_partes_3_4.sql   # recorrido SQL por la API
+python tools/probar_sql.py docs/pruebas_entrega_final.sql   # INNER JOIN con los datos de la tienda
 ```
 
 Cada línea se corre desde la raíz. Python tiene que ser el del entorno virtual.
