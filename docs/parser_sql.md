@@ -50,9 +50,12 @@ CREATE INDEX nombre ON t (col) USING IVF | HNSW [WITH (parametro = valor, ...)]
 DROP TABLE t
 INSERT INTO t VALUES (v1, v2, ...)
 DELETE FROM t [WHERE cond]
-SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
-  FROM t [WHERE cond [AND cond]...] [GROUP BY col]
-  [ORDER BY col | distancia(col, POINT(lat, lon) | VECTOR(x1, ..., xk) [, metrica]) [ASC|DESC]] [LIMIT n]
+SELECT * | col, COUNT(*) [AS alias], SUM(col) [AS alias], AVG(col), MIN(col), MAX(col)
+  FROM t [[AS] alias] [WHERE cond [AND cond]...] [GROUP BY col]
+  [ORDER BY col | alias | distancia(col, POINT(lat, lon) | VECTOR(x1, ..., xk) [, metrica]) [ASC|DESC]] [LIMIT n]
+SELECT * | x.col, y.col, COUNT(*) [AS alias], ...
+  FROM a [AS] x [INNER] JOIN b [AS] y ON x.col = y.col
+  [WHERE cond [AND cond]...] [GROUP BY col] [ORDER BY ...] [LIMIT n]
 SELECT * | col, SCORE() [AS alias] FROM t
   WHERE MATCH(columna_texto, 'consulta') [AND cond]
   USING TF_IDF|BM25 [ORDER BY alias [ASC|DESC]] [LIMIT n]
@@ -154,7 +157,8 @@ sola página.
 
 El plan se arma en orden de ejecución y se invierte al final, así que se lee como en
 PostgreSQL: el nodo 0 es la raíz (lo último que corre) y el más profundo es el acceso a
-disco. Como el motor no hace `JOIN`, el árbol siempre es una cadena.
+disco. Sin `JOIN` el árbol es una cadena; con `JOIN`, los dos accesos a disco cuelgan del
+nodo `Hash Join` o `Index Nested Loop Join` (ver la sección 5.2).
 
 ```
 EXPLAIN SELECT Index, Name FROM org_idx WHERE Index BETWEEN 10000 AND 13000;
@@ -207,6 +211,41 @@ porque el plan de un DDL es lo que hace al ejecutarse. `EXPLAIN` abre la tabla p
 sus estadísticas, igual que PostgreSQL consulta `pg_class`; en un heap eso implica leer su
 directorio de páginas, y por eso el `Planning Time` de un heap grande no es cero.
 
+## 5.2. INNER JOIN
+
+`SELECT ... FROM a x JOIN b y ON x.c = y.c` une dos tablas por una igualdad (`INNER` es
+opcional). Las columnas se pueden calificar con la tabla o su alias (`x.c`); una columna sin
+calificar vale si está en una sola de las dos tablas, y si está en las dos se responde
+`la columna id es ambigua`. Un self-join necesita alias distintos
+(`FROM compras c1 JOIN compras c2 ON c1.usuario_id = c2.usuario_id`). Sin `JOIN`, `t.col` o
+`x.col` es la columna `col` de la única tabla.
+
+Cada condición del `WHERE` menciona una sola columna, así que se aplica en su tabla antes del
+join y usa los índices de esa tabla como cualquier `SELECT`. Después el planificador elige:
+
+| Situación | Algoritmo |
+|---|---|
+| una tabla tiene un índice B+ o HASH sobre su columna del `ON`, o esa columna es su PK en `SEQUENTIAL` o `BPLUS`, y la otra trae menos filas estimadas | `index_nested_loop_join`: por cada clave distinta de la externa, una búsqueda por índice en la interna |
+| ninguna tabla tiene índice, o la externa es más grande que la interna | `hash_join`: tabla hash con el lado que trajo menos filas y recorrido del otro |
+
+Las filas unidas pasan por las mismas etapas que una tabla sola: `GROUP BY` (con alias en los
+agregados, como `COUNT(*) AS veces`), `ORDER BY` (por columna, por alias o por
+`distancia(y.ubicacion, POINT(...))`), proyección y `LIMIT`. Las columnas del resultado se
+llaman sin la tabla (`s.nombre` sale como `nombre`), como en PostgreSQL. Con `JOIN` se toma
+el lock compartido de las dos tablas, también dentro de `BEGIN ... COMMIT`. `MATCH` y
+`SIMILAR_TO` no se combinan con `JOIN`.
+
+```sql
+SELECT s.nombre, i.stock FROM inventario i JOIN sedes s ON i.sede_id = s.id
+  WHERE i.producto_id = 42 AND i.stock > 0
+  ORDER BY distancia(s.ubicacion, POINT(-12.0464, -77.0428)) LIMIT 3;
+```
+
+`sedes` es un heap sin índice sobre `id`, así que es un hash join; el inventario llega ya
+filtrado por su B+ sobre `producto_id`. Más detalles y un `EXPLAIN ANALYZE` en
+[external_algorithms.md](external_algorithms.md); las consultas de aceptación están en
+[pruebas_entrega_final.sql](pruebas_entrega_final.sql).
+
 ## 6. Formato JSON
 
 ```json
@@ -233,7 +272,9 @@ columnas e índices para el panel de archivos.
 
 ## 7. Límites conocidos
 
-- Sin `UPDATE`, sin `JOIN`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
+- Sin `UPDATE`, sin `OR`, sin subconsultas. `WHERE` solo une con `AND`.
+- `JOIN`: solo `INNER JOIN` de dos tablas con una igualdad en el `ON`; no se combina con
+  `MATCH` ni con `SIMILAR_TO`.
 - Agregados solo sobre columnas `INT` o `FLOAT`; `AVG` devuelve texto con dos decimales.
 - `VECTOR` no tiene índice propio en el motor: `CREATE INDEX ... USING IVF | HNSW` solo lo
   anota en el catálogo y FAISS lo construye y lo mantiene en la API (ver

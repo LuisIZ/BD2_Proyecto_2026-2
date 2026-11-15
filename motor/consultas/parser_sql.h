@@ -23,7 +23,11 @@ namespace sql {
 //   SELECT * | col, COUNT(*), SUM(col), AVG(col), MIN(col), MAX(col)
 //     FROM t [WHERE cond [AND cond]... [AND MATCH(columna, 'consulta')]]
 //     [USING TF_IDF|BM25] [GROUP BY col] [ORDER BY col [ASC|DESC]] [LIMIT n]
-//   SCORE() se proyecta como columna; admite AS alias.
+//   SCORE() se proyecta como columna; admite AS alias. Los agregados también admiten AS alias,
+//   y ORDER BY puede usar ese alias.
+//   SELECT ... FROM a [AS] x [INNER] JOIN b [AS] y ON x.col = y.col [WHERE ...] [GROUP BY ...]
+//     [ORDER BY ...] [LIMIT n]
+//   Las columnas se pueden calificar (x.col); sin calificar valen si no son ambiguas.
 //   SELECT ... FROM t WHERE SIMILAR_TO([col,] 'archivo' | VECTOR(...) [, k = n]) [AND cond]...
 //     [USING IVF|HNSW [CANDIDATES (pk, ...)]] [WITH METRIC = euclidiana|producto_punto|coseno]
 //   SIMILARITY_SCORE() se proyecta como columna (mayor = más parecido); admite AS alias.
@@ -101,6 +105,14 @@ struct ItemSelect {
 struct Sentencia {
     TipoSentencia tipo = TipoSentencia::SHOW_TABLES;
     std::string tabla;
+    std::string alias;         // FROM tabla [AS] alias
+
+    // INNER JOIN de dos tablas con igualdad en el ON; las columnas quedan calificadas
+    bool hay_join = false;
+    std::string tabla_join;
+    std::string alias_join;
+    std::string on_izquierda;  // x.col
+    std::string on_derecha;    // y.col
     std::string organizacion;  // HEAP | SEQUENTIAL | BPLUS (vacía = por defecto)
     std::string archivo_csv;
     std::string pk;            // PRIMARY KEY col en FROM FILE

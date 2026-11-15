@@ -14,6 +14,12 @@ SELECT * | col, ... | COUNT(*) | SUM(col) | AVG(col) | MIN(col) | MAX(col)
   FROM t
   [WHERE col = v AND col BETWEEN a AND b AND col >= v ...]
   [GROUP BY col] [ORDER BY col ASC | DESC] [LIMIT n];
+SELECT col, COUNT(*) AS n FROM t GROUP BY col ORDER BY n DESC;   -- alias en agregados
+
+SELECT x.col, y.col, ... FROM a [AS] x [INNER] JOIN b [AS] y ON x.col = y.col
+  [WHERE x.col = v AND y.col > v ...]   -- cada condición se aplica en su tabla, antes del join
+  [GROUP BY x.col] [ORDER BY y.col | distancia(y.lugar, POINT(lat, lon))] [LIMIT n];
+  -- index nested loop si una tabla tiene índice sobre su columna del ON; si no, hash join
 
 SELECT *, SCORE() AS relevancia FROM t
   WHERE MATCH(texto, 'consulta') [AND col < v] USING TF_IDF | BM25

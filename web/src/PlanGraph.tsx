@@ -3,8 +3,9 @@ import type { PlanStep } from "./types";
 
 /**
  * Dibuja el plan como el grafo de nodos que muestra PostgreSQL: la raíz arriba,
- * el acceso a disco abajo, y una flecha por cada paso que alimenta al anterior.
- * El motor no hace joins, así que el árbol siempre es una cadena.
+ * el acceso a disco abajo, y una flecha por cada paso que alimenta a su padre.
+ * El padre de un nodo es el anterior con un nivel menos: sin JOIN el árbol es una
+ * cadena; con JOIN, los dos lados cuelgan del nodo del join, uno al lado del otro.
  *
  * El ancho de la barra de cada nodo es su parte del tiempo total, para que el
  * paso caro salte a la vista sin leer los números.
@@ -13,7 +14,33 @@ import type { PlanStep } from "./types";
 const nodeWidth = 260;
 const nodeHeight = 64;
 const gapY = 34;
+const gapX = 24;
 const padding = 16;
+
+/** Padre y columna de cada nodo; las hojas van de izquierda a derecha y cada padre al centro de sus hijos. */
+function layout(plan: PlanStep[]) {
+  const level = (i: number) => plan[i].nivel ?? i;
+  const parents = plan.map((_, i) => {
+    for (let j = i - 1; j >= 0; j--) if (level(j) === level(i) - 1) return j;
+    return undefined;
+  });
+  const children = plan.map(() => [] as number[]);
+  parents.forEach((parent, i) => {
+    if (parent !== undefined) children[parent].push(i);
+  });
+  const column: number[] = [];
+  let next = 0;
+  const place = (i: number): number => {
+    if (!children[i].length) return (column[i] = next++);
+    const xs = children[i].map(place);
+    return (column[i] = (xs[0] + xs[xs.length - 1]) / 2);
+  };
+  plan.forEach((_, i) => {
+    if (parents[i] === undefined) place(i);
+  });
+  const levels = plan.map((_, i) => level(i));
+  return { parents, column, levels, columns: Math.max(1, next), depth: Math.max(0, ...levels) + 1 };
+}
 
 /** Páginas leídas por el nodo, contando las del índice y las de datos. */
 export function stepPages(step: PlanStep) {
@@ -38,6 +65,8 @@ const hints: Record<string, string> = {
   rango_por_clave: "Se posiciona y recorre en orden físico",
   busqueda_por_indice: "Busca en el índice y va al dato",
   rango_por_indice: "Una página de datos por cada fila hallada",
+  hash_join: "Arma una tabla hash con la tabla más chica y recorre la otra",
+  index_nested_loop_join: "Por cada fila de una tabla, busca sus pares con el índice de la otra",
   busqueda_texto: "Recorre los postings de los términos y ordena por score",
   knn_vectorial: "Mide la distancia a cada vector y guarda los k mejores en un heap",
   knn_vectorial_indice: "Lee por clave los candidatos de FAISS y recalcula la distancia",
@@ -71,8 +100,11 @@ export default function PlanGraph({
 
   // el motor ya ordena de raíz a hoja; si no hay niveles, se respeta el orden
   const steps = plan;
-  const height = steps.length * nodeHeight + (steps.length - 1) * gapY + padding * 2;
-  const width = nodeWidth + padding * 2;
+  const { parents, column, levels, columns, depth } = layout(steps);
+  const height = depth * nodeHeight + (depth - 1) * gapY + padding * 2;
+  const width = columns * nodeWidth + (columns - 1) * gapX + padding * 2;
+  const left = (i: number) => padding + column[i] * (nodeWidth + gapX);
+  const top = (i: number) => padding + levels[i] * (nodeHeight + gapY);
   const totalTime = steps.reduce((sum, step) => sum + stepTime(step), 0);
   const maxPages = Math.max(1, ...steps.map(stepPages));
 
@@ -98,7 +130,9 @@ export default function PlanGraph({
           </marker>
         </defs>
         {steps.map((step, i) => {
-          const y = padding + i * (nodeHeight + gapY);
+          const x = left(i);
+          const y = top(i);
+          const parent = parents[i];
           const pages = stepPages(step);
           const ms = stepTime(step);
           const share = totalTime > 0 ? ms / totalTime : 0;
@@ -112,18 +146,18 @@ export default function PlanGraph({
               onPointerEnter={() => setActive(i)}
               onPointerLeave={() => setActive(undefined)}
             >
-              {i > 0 && (
+              {parent !== undefined && (
                 <line
                   className="plan-edge"
-                  x1={padding + nodeWidth / 2}
-                  x2={padding + nodeWidth / 2}
+                  x1={x + nodeWidth / 2}
+                  x2={left(parent) + nodeWidth / 2}
                   y1={y}
-                  y2={y - gapY}
+                  y2={top(parent) + nodeHeight}
                   markerEnd="url(#plan-arrow)"
                 />
               )}
               <rect
-                x={padding}
+                x={x}
                 y={y}
                 width={nodeWidth}
                 height={nodeHeight}
@@ -133,7 +167,7 @@ export default function PlanGraph({
               {/* barra de tiempo: cuánto del total se fue en este nodo */}
               {analyzed && totalTime > 0 && (
                 <rect
-                  x={padding}
+                  x={x}
                   y={y + nodeHeight - 4}
                   width={Math.max(2, nodeWidth * share)}
                   height={4}
@@ -141,21 +175,21 @@ export default function PlanGraph({
                   className="plan-share"
                 />
               )}
-              <text x={padding + 12} y={y + 22} className="plan-title">
+              <text x={x + 12} y={y + 22} className="plan-title">
                 {label(step)}
               </text>
               {!!step.indice && (
-                <text x={padding + 12} y={y + 38} className="plan-sub">
+                <text x={x + 12} y={y + 38} className="plan-sub">
                   using {step.indice}
                   {step.columna_indice ? ` (${step.columna_indice})` : ""}
                 </text>
               )}
               {!step.indice && !!step.relacion && (
-                <text x={padding + 12} y={y + 38} className="plan-sub">
+                <text x={x + 12} y={y + 38} className="plan-sub">
                   on {step.relacion}
                 </text>
               )}
-              <text x={padding + 12} y={y + 54} className="plan-metrics">
+              <text x={x + 12} y={y + 54} className="plan-metrics">
                 {rows >= 0 ? `${rows.toLocaleString("es-PE")} filas` : null}
                 {rows < 0 && estimated >= 0
                   ? `~${estimated.toLocaleString("es-PE")} filas`

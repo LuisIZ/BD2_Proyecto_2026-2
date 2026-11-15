@@ -1,4 +1,4 @@
-# Tienda (Parte 5): datos
+# Tienda (Parte 5): datos, API y recomendador
 
 La tienda (opción B del Anexo A) trabaja sobre los 10 000 productos de `productos_10k.csv`, que ya
 tienen texto, foto y vector (ver [dataset.md](dataset.md)). ABO no trae precios, tiendas, stock ni
@@ -110,3 +110,76 @@ también tiende a ser muebles.
 Además, los bloques `[10]` a `[13]` de [tienda.sql](tienda.sql) prueban las consultas que usa el
 recomendador: texto con el precio, el stock de un producto, las 3 sedes más cercanas a UTEC
 (Barranco, Miraflores y Surquillo) y las compras de un usuario.
+
+## API de la tienda
+
+[api/tienda.py](../api/tienda.py) es un router de FastAPI incluido en `web_api.py`. Sus
+respuestas siguen el contrato de la interfaz, `web/src/tienda/types.ts`. Cada endpoint devuelve
+también las consultas SQL que corrió, para mostrarlas en la web.
+
+| Endpoint | Qué hace |
+|---|---|
+| `GET /api/tienda/productos?q=&tipo=&pagina=` | busca con `MATCH(descripcion, q) USING BM25` (con `AND tipo = ...` si hay tipo), o lista por tipo; 12 por página |
+| `GET /api/tienda/productos/{id}` | la ficha: nombre, descripción, categoría, precio y foto |
+| `GET /api/tienda/productos/{id}/recomendaciones?k=10` | el top k del recomendador, con la fuente y el puesto de cada producto |
+| `GET /api/tienda/productos/{id}/sedes?lat=&lon=&k=3` | las k sedes más cercanas que tienen stock |
+
+El motor no tiene `OR` ni `OFFSET`, así que la API cruza los resultados en Python. Tampoco usa
+el `JOIN` del motor, que llegó después; [pruebas_entrega_final.sql](pruebas_entrega_final.sql)
+comprueba que el `JOIN` da lo mismo que estas consultas cruzadas en Python:
+- **Páginas:** pide todas las coincidencias y corta la página; sin filtros pagina con
+  `id BETWEEN a AND b` (los `id` van de 1 a 10 000). Los tipos del filtro salen de un
+  `GROUP BY tipo` que se calcula una vez por base.
+- **Sedes:** `inventario WHERE producto_id = X AND stock > 0` (B+) y
+  `sedes ORDER BY distancia(ubicacion, POINT(lat, lon))` (R-Tree). Se recorren las sedes de la
+  más cercana a la más lejana y se quedan las k primeras con stock. La distancia en metros es la
+  de Haversine, la misma del motor.
+
+## Recomendador
+
+Para un producto X se arman 4 listas de hasta 20 candidatos, cada una con su consulta:
+
+| Fuente | Consulta | Orden de la lista |
+|---|---|---|
+| texto | `SELECT id, SCORE() AS relevancia FROM productos WHERE MATCH(descripcion, '<nombre de X>') USING BM25 ORDER BY relevancia DESC LIMIT 21` | score BM25 |
+| imagen | `SELECT id, SIMILARITY_SCORE() FROM catalogo WHERE SIMILAR_TO(VECTOR(<vector de X>), k = 21) USING HNSW` | similitud coseno (FAISS) |
+| metadata | `SELECT id, marca, color FROM productos WHERE tipo = '<tipo de X>'`, y en Python misma marca o mismo color | primero marca y color, luego marca, luego color |
+| compras | `SELECT usuario_id FROM compras WHERE producto_id = X` (B+) y, por cada usuario u, `SELECT producto_id FROM compras WHERE usuario_id = u` (HASH) | en cuántos compradores de X aparece |
+
+En cada lista se quita X y los repetidos. Las listas se juntan con Reciprocal Rank Fusion
+(Cormack, Clarke y Büttcher, 2009):
+
+$$\text{score}(d) = \sum_{\text{listas } L \ni d} \frac{1}{60 + \text{puesto}_L(d)}$$
+
+con el puesto desde 1. RRF solo usa los puestos, así que no hay que calibrar entre sí los scores
+de BM25, del coseno y de los conteos. Los empates se rompen por el mejor puesto y luego por `id`.
+Si una fuente falla o viene vacía (por ejemplo, un producto que nadie compró), se fusionan las
+demás y la respuesta lo dice en `avisos`.
+
+Las consultas se mandan al motor en 3 lotes (el producto y su vector, las 4 fuentes y las tarjetas
+del top k), porque cada llamada al binario abre y cierra los archivos. Con los 10 000 productos,
+las recomendaciones tardan entre 0,5 y 0,6 s (0,7 s la primera vez, cuando se carga el HNSW).
+
+Ejemplo real, el top 10 del producto 5 (taburete Rivet Malida, tipo `STOOL_SEATING`); las
+columnas de las fuentes dan el puesto en cada lista:
+
+| # | id | Producto | texto | imagen | metadata | compras | score |
+|---:|---:|---|---:|---:|---:|---:|---:|
+| 1 | 2142 | Rivet Malida Faux Leather Bar Stool, Grey | 1 | 3 | 2 | | 0,0484 |
+| 2 | 3232 | Ravenna Home Scott Tufted Back Bar Stool | 3 | 5 | | | 0,0313 |
+| 3 | 7633 | Stone & Beam Alaina High-Back Swivel Stool | 5 | 4 | | | 0,0310 |
+| 4 | 2442 | Rivet Decatur Faux Leather Kitchen Bar Stool | 9 | | 3 | | 0,0304 |
+| 5 | 7760 | Rivet Modern Industrial Wood and Metal Stool | 7 | | 6 | | 0,0301 |
+| 6 | 123 | Rivet Decatur Faux Leather Counter Stool | 14 | | 1 | | 0,0299 |
+| 7 | 6513 | Rivet Decatur Modern Counter-Height Stool | 13 | | 5 | | 0,0291 |
+| 8 | 3978 | Rivet Vermont Diamond-Stitched Counter Stool | | 15 | 4 | | 0,0290 |
+| 9 | 1571 | Ravenna Home Dawn Nailhead Saddle Stool | | 16 | | 7 | 0,0281 |
+| 10 | 2176 | Stone & Beam Sophia Swivel Counter Stool | 17 | 14 | | | 0,0265 |
+
+El primero aparece en tres listas y gana con claridad; los otros nueve aparecen en dos. RRF
+premia que un producto salga en varias fuentes más que un buen puesto en una sola.
+
+Pruebas: `python -m unittest test_tienda -v` (desde `api/`) usa una base temporal de 8 productos y
+comprueba RRF contra el cálculo a mano con 3 listas, que se excluye el producto consultado, una
+fuente vacía y otra que falla, las sedes ordenadas por distancia y con stock, y el catálogo con sus
+páginas.
