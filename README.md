@@ -11,6 +11,8 @@ multimedia, y React con TypeScript para la web.
 
 Informe del proyecto: [docs/informe/informe.pdf](docs/informe/informe.pdf).
 
+Guía de consultas que acepta el gestor: [docs/guia_consultas.md](docs/guia_consultas.md).
+
 ## Arquitectura
 
 El sistema está organizado en capas; cada una solo usa a la que tiene debajo.

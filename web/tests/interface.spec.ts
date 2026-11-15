@@ -87,7 +87,7 @@ test("CSV, consultas reales, plan, paginación, errores y pantalla móvil", asyn
     .selectOption("heap_bench.csv");
   await expect(page.getByLabel(/Gráfica de/)).toBeVisible();
   await page.getByRole("button", { name: "Sintaxis", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Sentencias" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Cómo leer la guía" })).toBeVisible();
   await page.getByRole("button", { name: "Consultas", exact: true }).click();
   await execute("SELECT Index, Name FROM organizaciones LIMIT 10;");
   await page.setViewportSize({ width: 390, height: 844 });

@@ -241,6 +241,7 @@ test("ejemplos y sintaxis de texto, espacial y vectores", async ({ page }) => {
   await ejemplos.selectOption("knnVectorial");
   await expect(editor).toHaveValue(/distancia\(\w+, VECTOR\((1, ){255}1\), 'coseno'\) LIMIT 10/);
   await page.getByRole("button", { name: "Sintaxis", exact: true }).click();
-  await expect(page.getByText(/USING RTREE/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Multimedia", exact: true })).toBeVisible();
+  await expect(page.getByRole("cell", { name: "RTREE", exact: true })).toBeVisible();
   await expect(page.getByRole("cell", { name: "ORDER BY distancia(VECTOR) LIMIT k" })).toBeVisible();
 });
