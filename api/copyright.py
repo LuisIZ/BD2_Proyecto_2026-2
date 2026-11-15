@@ -45,7 +45,7 @@ def tramos_del_audio(ruta):
     return librosa.get_duration(path=str(ruta)), [(i, f, v) for (i, f, _), v in zip(lista, matriz)]
 
 
-def agrupar(tramos, umbral=UMBRAL, minimos=TRAMOS_MINIMOS):
+def agrupar(tramos, minimos=TRAMOS_MINIMOS):
     # cuenta en cuantos tramos aparece cada cancion por encima del umbral
     por_cancion = {}
     for tramo in tramos:
@@ -105,7 +105,7 @@ def analizar_audio(ruta, umbral=UMBRAL):
         coincidencias.sort(key=lambda c: -c["similitud"])
         tramos.append({"inicio": round(inicio, 2), "fin": round(fin, 2), "coincidencias": coincidencias})
 
-    detectadas, veredicto = agrupar(tramos, umbral)
+    detectadas, veredicto = agrupar(tramos)
     return {
         "duracion": round(duracion, 2), "umbral": umbral, "veredicto": veredicto,
         "tramos": tramos, "canciones": detectadas, "consultas": consultas,
