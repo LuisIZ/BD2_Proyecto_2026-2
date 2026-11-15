@@ -61,7 +61,7 @@ Lee `datos/audios_1k.csv` y los audios de `C:\datos_bd2\audio\genres_original` (
 | `canciones.csv` | `id, archivo, genero` | 999 |
 | `segmentos.csv` | `id, cancion_id, inicio, fin, v` | 4 995 |
 
-`v` va en el formato `VECTOR(...)` que acepta `COPY`. `segmentos.csv` pesa 8,9 MB. También quedan `vocabulario_copyright_256.npy` (si ya existe, se reutiliza) e `idf_copyright_256.npy`. Con 8 procesos los 999 clips tardaron **30 s**, contando el K-Means. Cada proceso usa un solo hilo: con varios hilos cada uno se estorbaban y tardaba 704 s. La carpeta `datos/audio/` no se versiona.
+`v` va en el formato `VECTOR(...)` que acepta `COPY`. `segmentos.csv` pesa 8,9 MB. También quedan `vocabulario_copyright_256.npy` (si ya existe, se reutiliza) e `idf_copyright_256.npy`. Con 8 procesos los 999 clips tardaron **30 s**, contando el K-Means (137 s en la laptop de la demo). Cada proceso usa un solo hilo: con varios hilos cada uno se estorbaban y tardaba 704 s. La carpeta `datos/audio/` no se versiona.
 
 ## Cargar en el motor
 
@@ -95,11 +95,11 @@ Los otros vecinos suelen ser los tramos de al lado de la misma canción, porque 
    WHERE SIMILAR_TO(VECTOR(...), k = 5) USING HNSW;
    ```
 
-   `SIMILARITY_SCORE()` es la similitud del coseno y se muestra en porcentaje. Las consultas van en lotes a `/api/consultas`. Normalmente cabe todo en un lote, pero cada consulta ocupa unos 3 000 caracteres y la API acepta 64 000, así que una canción larga se manda en varios. El último lote trae el nombre y el género de `canciones`.
+   `SIMILARITY_SCORE()` es la similitud del coseno y se muestra en porcentaje. Las consultas van en lotes a `/api/consultas`, que acepta 64 000 caracteres por petición; `copyright.py` arma lotes de hasta 60 000 para dejar margen. Cada consulta ocupa entre 1 400 y 2 100 caracteres (el histograma tiene muchos ceros), así que caben unas 30 por lote y una canción de 3 minutos va en 2. El último lote trae el nombre y el género de `canciones`.
 3. Un tramo coincide con una canción original si su similitud es mayor o igual al umbral (**74 %**). Una canción se reporta si coincide en al menos 2 tramos. Si el audio subido tiene un solo tramo, basta ese.
 4. La respuesta trae la `duracion`, los `tramos` con sus coincidencias (canción, género, inicio y fin en el original, similitud y si supera el umbral), las `canciones` detectadas con cuántos tramos y qué porcentaje de la canción subida cubren, el `veredicto` (`posible_copyright` o `sin_coincidencias`), el `umbral` y las `consultas` SQL usadas.
 
-Una canción de 3 minutos (35 tramos) se analiza en unos 3 s.
+Una canción de 3 minutos (35 tramos) se analizó en unos 3 s en una laptop y en unos 7 s en la laptop de la demo (12 s la primera vez, porque se cargan el vocabulario y el índice).
 
 ### Respuesta
 
