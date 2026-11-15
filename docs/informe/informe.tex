@@ -226,11 +226,44 @@ Las filas se escriben de una en una. Cuando la página en curso se llena, se vue
 
 Los archivos se crean en la carpeta \texttt{tmp/} de la base y se borran en el destructor de la clase (RAII). Así se borran también cuando la consulta termina con una excepción, y una consulta que falla no deja archivos sueltos. La clase se puede mover, por ejemplo a un vector con todas las corridas, y el archivo lo borra el último dueño.
 
-Cada archivo cuenta las páginas que escribió y las que leyó. Si recibe la traza del plan, suma esas cifras a las de toda la consulta (los campos \texttt{paginas\_escritas} y \texttt{paginas\_leidas} de \texttt{PlanTrace}), y así el \texttt{EXPLAIN} muestra cuánto disco usaron los algoritmos externos. En \texttt{motor/pruebas/}, la prueba de esta clase escribe y relee 10\,000 filas con los cinco tipos del motor, que ocupan 231 páginas; compara cada fila con la original, verifica que el número de páginas coincide con el calculado a partir del formato y comprueba que el archivo desaparece al destruir el objeto. El external hashing del \texttt{GROUP BY}, descrito a continuación, guarda cada partición en uno de estos archivos.
+Cada archivo cuenta las páginas que escribió y las que leyó. Si recibe la traza del plan, suma esas cifras a las de toda la consulta (los campos \texttt{paginas\_escritas} y \texttt{paginas\_leidas} de \texttt{PlanTrace}), y así el \texttt{EXPLAIN} muestra cuánto disco usaron los algoritmos externos. En \texttt{motor/pruebas/}, la prueba de esta clase escribe y relee 10\,000 filas con los cinco tipos del motor, que ocupan 231 páginas; compara cada fila con la original, verifica que el número de páginas coincide con el calculado a partir del formato y comprueba que el archivo desaparece al destruir el objeto. El external merge sort del \texttt{ORDER BY} y el external hashing del \texttt{GROUP BY}, descritos a continuación, guardan cada corrida y cada partición en uno de estos archivos.
 
 \subsection{Algoritmos externos}
 
-\paragraph{External merge sort.} Para \texttt{ORDER BY}, los registros se dividen en corridas del tamaño del presupuesto de memoria (páginas de buffer por registros por página). Cada corrida se ordena y luego se mezclan $k$ a la vez con un heap de mínimos, en $O(N \log k)$. La traza del plan reporta las corridas iniciales y las pasadas de mezcla.
+% REVISAR (Noé): texto propuesto a partir de docs/external_algorithms.md, sección 3
+\paragraph{External merge sort en disco.} El \texttt{ORDER BY} se resuelve con la plantilla \texttt{ExternalMergeSort} del archivo \texttt{external\_\allowbreak algorithms.h}. Su presupuesto es de $B = 10$ páginas de 4\,KB, fijado por la constante \texttt{PAGINAS\_SORT} de \texttt{ejecutor.cpp}, y trabaja en tres pasos:
+
+\begin{enumerate}
+  \item \emph{Corridas.} Se toman las filas que caben en $B$ páginas, se ordenan en memoria y se escriben como una corrida en un archivo temporal. El orden en memoria lo hace \texttt{std::stable\_sort}. Cuántas filas caben en una página se estima con el tamaño promedio de la fila codificada.
+  \item \emph{Mezcla de $k$ vías.} Con $k = B - 1$, se mezclan $k$ corridas a la vez con un heap de mínimos (\texttt{std::priority\_queue}), usando una página de entrada por corrida y una de salida. Si hay más de $k$ corridas, cada pasada escribe corridas nuevas y borra las anteriores, hasta que queda una sola.
+  \item \emph{Resultado.} La última corrida se lee página por página hacia el resultado.
+\end{enumerate}
+
+Con claves iguales sale primero la fila de la corrida anterior, así que el orden es estable. Las corridas se borran al terminar, y también si la consulta falla, gracias al RAII de \texttt{ArchivoTemporal}. La entrada todavía llega leída del almacén, y esas páginas las cuenta el \texttt{Seq Scan}; lo que el algoritmo acota es la memoria del ordenamiento: $B$ páginas al formar cada corrida y $k + 1$ durante la mezcla. Con $N$ páginas de filas, el costo es el que se vio en clase:
+\[
+  \text{corridas} = \left\lceil \frac{N}{B} \right\rceil, \qquad
+  \text{pasadas} = \left\lceil \log_{B-1} \text{corridas} \right\rceil, \qquad
+  \text{E/S} = 2N\,(1 + \text{pasadas}).
+\]
+La fase de corridas escribe $N$ páginas y cada pasada escribe otras $N$; se leen $N$ en cada pasada y $N$ más al pasar la última corrida al resultado. Por eso el \texttt{EXPLAIN ANALYZE} reporta, junto con las corridas iniciales y las pasadas, el mismo número de páginas escritas y leídas, $N\,(1 + \text{pasadas})$. La tabla~\ref{tab:sort-externo} mide \texttt{SELECT * FROM org ORDER BY Name} sobre \texttt{organizations}.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrrr}
+\toprule
+Filas & Páginas ($N$) & Corridas & Pasadas & Escritas / leídas & Tiempo \\
+\midrule
+1\,000 & 42 & 5 & 1 & 84 / 84 & 45 ms \\
+10\,000 & 412 & 42 & 2 & 1\,237 / 1\,237 & 445 ms \\
+100\,000 & 4\,111 & 417 & 3 & 16\,445 / 16\,445 & 5\,063 ms \\
+\bottomrule
+\end{tabular}
+\caption{ORDER BY con external merge sort en disco, $B = 10$. El tiempo es el del nodo \texttt{Sort}, el mejor de 3 corridas.}
+\label{tab:sort-externo}
+\end{table}
+
+Las páginas siguen la fórmula ($42 \times 2$, $412 \times 3$ y $4\,111 \times 4$), con a lo más una página de diferencia. Con 100\,000 filas salen 417 corridas y no 412, porque las filas por página se estiman con el promedio y algunas páginas guardan menos. El tiempo crece con las pasadas y con la cantidad de archivos creados, unos 470 con 100\,000 filas; con más páginas de buffer habría menos pasadas.
 
 \paragraph{External Hashing en disco.} El \texttt{GROUP BY} y los agregados usan un presupuesto de $B = 10$ páginas de 4\,KB de memoria. Lo resuelve la clase \texttt{ExternalHashAggregate} de \texttt{hash\_externo.h} en cuatro pasos:
 
@@ -545,6 +578,20 @@ Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 m
 \subsection{Extracción de características de audio}
 
 La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\_audio.py} usa el mismo pipeline que las imágenes, con MFCC en lugar de SIFT. \texttt{librosa} carga el audio en mono a 22\,050 Hz, hasta 30 segundos, y calcula 13 coeficientes MFCC por cada ventana de 2\,048 muestras con un salto de 512. Un clip de 30 segundos da unas 1\,290 ventanas, y cada ventana es un descriptor. K-Means aprende $K = 256$ palabras acústicas, cada ventana se asigna a su palabra más cercana y el audio queda como un histograma con TF-IDF y norma L2.
+
+% REVISAR (Noé): MFCC paso a paso, verificado con librosa 1.0.0
+\paragraph{Cómo se calculan los MFCC.} La función \texttt{librosa.feature.mfcc} se llama con \texttt{sr=22050}, \texttt{n\_mfcc=13}, \texttt{n\_fft=2048} y \texttt{hop\_length=512}, y por dentro hace los siguientes pasos:
+
+\begin{enumerate}
+  \item \emph{Carga.} \texttt{librosa.load} lee el archivo (wav, mp3, flac u ogg), promedia los canales para dejarlo en mono y lo remuestrea a 22\,050 muestras por segundo. Un clip de 30\,s queda como 661\,500 números entre $-1$ y $1$. Con esa frecuencia se representan sonidos de hasta 11\,025\,Hz, la mitad según el teorema de Nyquist, lo que alcanza para la voz y la mayoría de los instrumentos.
+  \item \emph{Ventanas.} La señal se corta en ventanas de 2\,048 muestras (93\,ms) que empiezan cada 512 muestras (23\,ms), así que dos ventanas seguidas se solapan en un 75\,\%. Se usan ventanas cortas porque en 93\,ms el sonido casi no cambia. Cada ventana se multiplica por una ventana de Hann, que baja a cero en los bordes para que el corte no agregue frecuencias que no estaban en el audio. Un clip de 30\,s da 1\,292 ventanas, y un tramo de 10\,s, 431.
+  \item \emph{Espectro.} A cada ventana se le aplica la transformada rápida de Fourier (FFT), que da cuánta energía hay en 1\,025 frecuencias separadas por unos 10,8\,Hz ($22\,050 / 2\,048$). Se usa la potencia, es decir, el cuadrado de la magnitud.
+  \item \emph{Banco de filtros mel.} El oído distingue bien 100\,Hz de 200\,Hz, pero casi no 10\,000\,Hz de 10\,100\,Hz. La escala mel imita esa percepción: es casi lineal hasta 1\,000\,Hz y logarítmica por encima. librosa reparte 128 filtros triangulares sobre esa escala, entre 0 y 11\,025\,Hz, angostos en los graves y anchos en los agudos, y suma la energía que cae en cada uno. Así, las 1\,025 frecuencias se reducen a 128 bandas.
+  \item \emph{Logaritmo.} La energía de cada banda se pasa a decibeles ($10 \log_{10}$), porque el oído percibe el volumen de forma logarítmica; además, se recorta lo que está más de 80\,dB por debajo del máximo. Este paso tiene un efecto útil: subir o bajar el volumen, que multiplica la energía por una constante, pasa a sumar una constante a todas las bandas.
+  \item \emph{Transformada discreta del coseno.} Las 128 bandas vecinas están muy correlacionadas entre sí. La DCT tipo II las expresa como una suma de cosenos y concentra la información en los primeros coeficientes. El coeficiente 0 es la energía promedio de la ventana, y los siguientes describen la forma general del espectro, que es lo que distingue el timbre de un instrumento. Se guardan los 13 primeros y se descarta el detalle fino. Como la DCT de una constante solo tiene coeficiente 0, el cambio de volumen del paso anterior afecta solo a ese coeficiente.
+\end{enumerate}
+
+El resultado es una matriz de $13 \times 1\,292$ por clip: un descriptor de 13 números por ventana, del mismo modo que SIFT da un descriptor de 128 números por punto clave. A partir de ahí sigue la cuantización (K-Means, histograma y TF-IDF), que la Parte 5 desarrolla con un ejemplo numérico.
 
 La colección es GTZAN, con 100 clips de cada uno de 10 géneros. Se quitó \texttt{jazz.00054.wav} porque está dañado, así que son 999 audios. Para evaluar, se pidieron los 5 vecinos más cercanos de cada audio y se contó cuántos eran de su mismo género, cuando al azar sería un 10\,\%. Con $K$ = 64, 128 y 256 se obtuvo 47, 52 y 54\,\%, y entrenar el vocabulario y calcular los vectores tomó 64, 56 y 93 segundos. Se eligió $K = 256$, el mismo valor que en imágenes. Con ese valor, clásica acierta un 86\,\% y rock un 25\,\%. El histograma cuenta cuántas veces aparece cada palabra acústica, pero no cuándo, así que se pierden el ritmo y la melodía, y los géneros con instrumentos parecidos, como rock, disco y country, se confunden más.
 
@@ -904,6 +951,132 @@ Con los 10\,000 productos, una búsqueda de texto responde en unos 60\,ms (0,3 s
 \caption{Las 3 sedes más cercanas a UTEC con stock del producto 5.}
 \label{fig:tienda-sedes}
 \end{figure}
+
+% REVISAR (Noé): texto propuesto a partir de docs/copyright.md (#92 y #93)
+\subsection{Base de originales del detector de copyright}
+\label{sec:copyright-base}
+
+La opción C pide detectar si una canción contiene fragmentos de otras. Si la base guardara un vector por canción, un fragmento de 15\,s se compararía con un clip de 30\,s cuyo histograma también cuenta sonidos que el fragmento no tiene. Por eso la base guarda un vector por cada tramo: cada uno de los 999 clips de GTZAN se parte en tramos de 10\,s, uno cada 5\,s (0--10, 5--15, 10--20, 15--25 y 20--30), y quedan 4\,995 tramos. Varios clips duran 29,98\,s y no 30, así que el último tramo se acepta si le falta menos de medio segundo.
+
+\begin{itemize}
+  \item \emph{Por qué 10\,s.} Un tramo de 10\,s tiene 431 ventanas, suficientes para que su histograma sea estable. Con 5\,s serían 216 y el histograma cambiaría más con un poco de ruido.
+  \item \emph{Por qué cada 5\,s.} Con un 50\,\% de solapamiento, cualquier fragmento de 10\,s del original comparte al menos 7,5\,s con algún tramo, y cualquier fragmento de 15\,s contiene un tramo completo. Sin solapamiento, un fragmento podría caer mitad en un tramo y mitad en el siguiente.
+  \item \emph{Costo.} Son 5 tramos por clip en lugar de 3, unos 5\,000 vectores en total, que sigue siendo una base pequeña.
+\end{itemize}
+
+Cada tramo pasa por el mismo pipeline de audio de la Parte 4, con una diferencia: antes de cuantizar, los MFCC del tramo se normalizan, restando a cada coeficiente su promedio dentro del tramo y dividiendo por su desviación estándar. Sin este paso, el coeficiente 0, que mide la energía, cambia en todas las ventanas cuando se sube o se baja el volumen, el K-Means asigna esas ventanas a otras palabras y el histograma sale distinto. Como el volumen solo suma una constante a ese coeficiente, restar el promedio lo elimina. El vocabulario (K-Means de FAISS con hasta 1\,000\,000 de ventanas normalizadas) y el IDF se calculan con los propios tramos. La tabla~\ref{tab:normalizar} lo mide con 100 recortes de 15\,s tomados al azar: indica en qué fracción de los tramos de consulta el tramo más parecido es de la canción correcta.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Caso & Sin normalizar & Normalizado \\
+\midrule
+Recorte limpio & 0,96 & 0,98 \\
+Volumen $-6$\,dB & 0,07 & 0,98 \\
+Volumen $+6$\,dB & 0,06 & 0,95 \\
+Ruido blanco, SNR 20\,dB & 0,13 & 0,78 \\
+Velocidad $+5$\,\% & 0,99 & 0,97 \\
+Velocidad $-5$\,\% & 0,76 & 0,94 \\
+Mezcla de dos canciones & 0,08 & 0,41 \\
+\bottomrule
+\end{tabular}
+\caption{Efecto de normalizar los MFCC de cada tramo.}
+\label{tab:normalizar}
+\end{table}
+
+El script \texttt{docs/copyright.sql} crea la tabla \texttt{canciones} (\texttt{id}, \texttt{archivo}, \texttt{genero}), con 999 filas, y la tabla \texttt{segmentos} (\texttt{id}, \texttt{cancion\_id}, \texttt{inicio}, \texttt{fin}, \texttt{v VECTOR(256)}), con 4\,995. Las carga con \texttt{COPY} y crea dos índices: un HNSW sobre \texttt{segmentos(v)}, para buscar los tramos más parecidos, y un B+ sobre \texttt{segmentos(cancion\_id)}, para traer los tramos de una canción. Generar los tramos de los 999 clips con 8 procesos tarda unos 30\,s, contando el K-Means. Como control, se buscaron 20 tramos de la base tomados al azar: en los 20 el primer resultado fue el mismo tramo, con similitud 1, y el recall@5 del HNSW contra la búsqueda sin índice fue 1,000.
+
+\subsection{Detección de copyright}
+\label{sec:copyright-deteccion}
+
+La detección la hace \texttt{api/copyright.py} en el endpoint \texttt{POST /api/copyright/analizar}, que recibe el audio crudo en el cuerpo de la petición:
+
+\begin{enumerate}
+  \item Parte la canción subida en tramos de 10\,s cada 5\,s, hasta 5 minutos, y calcula el vector de cada tramo igual que en la base: MFCC normalizados, vocabulario e IDF de copyright.
+  \item Cada tramo con sonido busca sus 5 tramos más parecidos en la base:
+\begin{lstlisting}[language=SQL]
+SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos
+WHERE SIMILAR_TO(VECTOR(...), k = 5) USING HNSW;
+\end{lstlisting}
+  \texttt{SIMILARITY\_SCORE()} es la similitud coseno, que se muestra en porcentaje. Cada consulta ocupa unos 3\,000 caracteres y la API acepta lotes de hasta 64\,000, así que una canción normal cabe en un solo lote. El último lote trae además el nombre y el género de cada canción de \texttt{canciones}.
+  \item Un tramo coincide con una canción original si su similitud es mayor o igual al umbral, 74\,\%. Una canción se reporta si coincide en al menos 2 tramos; si el audio subido tiene un solo tramo, basta con ese.
+  \item La respuesta trae la duración, los tramos con sus coincidencias (canción, género, tramo del original y similitud), las canciones detectadas con cuántos tramos y qué porcentaje de la canción subida cubren, el veredicto (\texttt{posible\_copyright} o \texttt{sin\_coincidencias}), el umbral y las consultas SQL usadas.
+\end{enumerate}
+
+Exigir dos tramos evita que un solo tramo parecido por casualidad dispare la alarma. Una canción de 3 minutos, con 35 tramos, se analiza en unos 3\,s.
+
+\subsection{Evaluación y elección del umbral}
+\label{sec:copyright-evaluacion}
+
+El umbral no se fijó a ojo. El script \texttt{tools/copyright/evaluar.py} carga \texttt{docs/copyright.sql} en una base temporal y arma 150 casos con la semilla 2026:
+
+\begin{itemize}
+  \item \emph{100 positivos}, hechos con clips de GTZAN: 30 recortes de 10 a 20\,s, y recortes de 15\,s con el volumen bajado 6\,dB (10) o subido 6\,dB (10), con ruido blanco de SNR 20\,dB (15), acelerados un 5\,\% (10) o frenados un 5\,\% (10), más 15 mezclas de dos canciones.
+  \item \emph{50 negativos}: 20 audios sintéticos (notas al azar, ruido, barridos y acordes) y 30 recortes de 15\,s de clips de GTZAN, sacando de los resultados los tramos de su propia canción.
+\end{itemize}
+
+Cada caso se analiza una vez y luego se evalúa con cada umbral entre 50 y 99\,\%. La precisión es la fracción de canciones reportadas que eran de verdad la original; el recall, la fracción de los 100 positivos en los que se reporta la original (en una mezcla basta una de las dos); y F1, el promedio armónico de ambas.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{rrrrr}
+\toprule
+Umbral & Precisión & Recall & F1 & Negativos con alarma \\
+\midrule
+50 & 0,580 & 0,94 & 0,718 & 9 de 50 \\
+65 & 0,650 & 0,93 & 0,765 & 5 \\
+70 & 0,802 & 0,89 & 0,844 & 4 \\
+72 & 0,838 & 0,88 & 0,859 & 3 \\
+74 & 0,902 & 0,83 & 0,865 & 2 \\
+77 & 0,917 & 0,77 & 0,837 & 1 \\
+80 & 0,921 & 0,70 & 0,795 & 1 \\
+85 & 0,909 & 0,50 & 0,645 & 1 \\
+90 & 0,955 & 0,21 & 0,344 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Precisión, recall y F1 de la detección según el umbral.}
+\label{tab:umbral}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{img/copyright_evaluacion.png}
+\caption{Precisión, recall y F1 por umbral; la línea marca el umbral elegido.}
+\label{fig:copyright-evaluacion}
+\end{figure}
+
+Se eligió 74\,\% porque da el mayor F1, 0,865. Por debajo se reportan muchas canciones equivocadas, y por encima se pierden copias reales, porque un recorte con ruido o con otra velocidad rara vez pasa del 85\,\%. Con ese umbral, la tabla~\ref{tab:copyright-casos} separa los resultados por tipo de caso.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrr}
+\toprule
+Caso & Casos & Detectados \\
+\midrule
+Recorte de 10 a 20\,s & 30 & 30 \\
+Volumen $-6$\,dB & 10 & 10 \\
+Volumen $+6$\,dB & 10 & 10 \\
+Ruido blanco, SNR 20\,dB & 15 & 10 \\
+Velocidad $+5$\,\% & 10 & 10 \\
+Velocidad $-5$\,\% & 10 & 8 \\
+Mezcla de dos canciones & 15 & 5 \\
+Sintético (negativo) & 20 & 0 alarmas \\
+Clip sin sus tramos (negativo) & 30 & 2 alarmas \\
+\bottomrule
+\end{tabular}
+\caption{Resultados con el umbral de 74\,\%.}
+\label{tab:copyright-casos}
+\end{table}
+
+\begin{itemize}
+  \item \emph{La mezcla es el caso más difícil.} El histograma junta las palabras de las dos canciones, y ninguna de las dos se parece lo suficiente al resultado.
+  \item \emph{Las 2 falsas alarmas} son \texttt{pop.00030} contra \texttt{pop.00031} y \texttt{pop.00047} contra \texttt{pop.00080}, con similitudes de hasta 88 y 91\,\%. Son clips de pop de GTZAN que suenan casi igual entre sí.
+  \item \emph{El orden no cuenta.} El histograma no mira el orden de las ventanas, así que un audio puesto al revés se sigue pareciendo a su original (entre 75 y 84\,\% en una prueba aparte). Para un detector real haría falta una huella que conserve el orden en el tiempo.
+\end{itemize}
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
