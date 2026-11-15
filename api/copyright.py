@@ -3,7 +3,7 @@ from fastapi.concurrency import run_in_threadpool
 
 router = APIRouter()
 
-UMBRAL = 90.0
+UMBRAL = 74.0
 TRAMOS_MINIMOS = 2
 K_TRAMO = 5
 HOP = 5.0
