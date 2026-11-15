@@ -32,13 +32,13 @@ test("sube un audio y muestra el veredicto, el timeline y las canciones", async 
   let pedido = "";
   await page.route("**/api/copyright/analizar*", (route) => {
     pedido = route.request().url();
-    return route.fulfill({ json: { ...ejemplo, nombre: "remix.wav" } });
+    return route.fulfill({ json: ejemplo });
   });
   await subir(page);
   expect(pedido).toContain("nombre=remix.wav");
 
   await expect(page.getByRole("region", { name: "Veredicto" })).toContainText("Posible uso no autorizado");
-  await expect(page.getByRole("region", { name: "Veredicto" })).toContainText("80 %");
+  await expect(page.getByRole("region", { name: "Veredicto" })).toContainText("74 %");
 
   // 8 tramos de 10 s cada 5 s; los 4 primeros son de pop.00011
   const tramos = page.locator(".timeline-tramo");
@@ -54,7 +54,7 @@ test("sube un audio y muestra el veredicto, el timeline y las canciones", async 
 
   // pasar el mouse muestra la coincidencia; un clic reproduce desde ese segundo
   await tramos.nth(1).hover();
-  await expect(page.locator(".timeline-detalle")).toContainText("pop.00011 (pop), desde el 0:10 del original · 91.2 %");
+  await expect(page.locator(".timeline-detalle")).toContainText("pop.00011 (pop), del 0:10 al 0:20 del original · 91.2 %");
   await tramos.nth(6).click();
   await expect
     .poll(() => page.locator(".copyright-audio audio").evaluate((a: HTMLAudioElement) => Math.round(a.currentTime)))
@@ -64,7 +64,12 @@ test("sube un audio y muestra el veredicto, el timeline y las canciones", async 
   const canciones = page.getByRole("list", { name: "Canciones detectadas" });
   await expect(canciones.getByRole("listitem")).toHaveCount(2);
   await expect(canciones.getByRole("listitem").first()).toContainText("pop.00011");
-  await expect(canciones.getByRole("listitem").first()).toContainText("89.4 %");
+  await expect(canciones.getByRole("listitem").first()).toContainText("50 % de los tramos");
+  await expect(canciones.getByRole("listitem").first()).toContainText("similitud máxima 93.8 %");
+  // una consulta por tramo, con el vector recortado
+  await page.getByText("Consultas SQL").click();
+  await expect(page.getByText("Una por cada tramo con sonido (8)")).toBeVisible();
+  await expect(page.locator(".copyright-sql code").first()).toContainText("VECTOR(0.081200001,0,0.1423, ...)");
   await canciones.getByRole("button", { name: "Escuchar original" }).first().click();
   await expect(page.getByLabel("Original pop.00011")).toHaveAttribute("src", "/api/audios/711");
   await page.screenshot({ path: "test-results/copyright.png", fullPage: true });
@@ -76,11 +81,12 @@ test("una canción sin coincidencias", async ({ page }) => {
     route.fulfill({
       json: {
         ...ejemplo,
-        veredicto: "sin coincidencias",
+        veredicto: "sin_coincidencias",
         canciones: [],
-        tramos: ejemplo.tramos.map((t) => ({
+        tramos: ejemplo.tramos.map((t, i) => ({
           ...t,
-          coincidencias: t.coincidencias.map((c) => ({ ...c, similitud: 60 })),
+          // el último tramo es silencio: la API lo trae sin coincidencias
+          coincidencias: i === 7 ? [] : t.coincidencias.map((c) => ({ ...c, similitud: 60, supera_umbral: false })),
         })),
       },
     }),
@@ -90,22 +96,20 @@ test("una canción sin coincidencias", async ({ page }) => {
   await expect(page.getByText("Ningún tramo supera el umbral.")).toBeVisible();
   await expect(page.locator(".timeline-tramo")).toHaveCount(8);
   await expect(page.locator('.timeline-tramo[aria-label*="sin coincidencias"]')).toHaveCount(8);
+  await page.locator(".timeline-tramo").nth(7).hover();
+  await expect(page.locator(".timeline-detalle")).toContainText("silencio, sin coincidencias");
 });
 
-test("sin el endpoint de #93 usa el ejemplo, y los errores se muestran", async ({ page }) => {
+test("los errores de la API y un archivo que no es audio se muestran", async ({ page }) => {
   await page.route("**/api/copyright/analizar*", (route) =>
-    route.fulfill({ status: 404, json: { detail: "Not Found" } }),
+    route.fulfill({
+      status: 400,
+      json: { detail: "no existe la tabla segmentos. Corre docs/copyright.sql antes de analizar." },
+    }),
   );
   await subir(page);
-  await expect(page.getByRole("note")).toContainText("Datos de ejemplo");
-  await expect(page.locator(".timeline-tramo")).toHaveCount(8);
-
-  await page.unrouteAll();
-  await page.route("**/api/copyright/analizar*", (route) =>
-    route.fulfill({ status: 413, json: { detail: "el audio pesa mas de 50 MB" } }),
-  );
-  await page.getByLabel("Audio a analizar").setInputFiles({ name: "otro.mp3", mimeType: "audio/mpeg", buffer: wav(1) });
-  await expect(page.getByRole("alert")).toContainText("el audio pesa mas de 50 MB");
+  await expect(page.getByRole("alert")).toContainText("Corre docs/copyright.sql antes de analizar.");
+  await expect(page.getByRole("region", { name: "Veredicto" })).toHaveCount(0);
 
   await page.getByLabel("Audio a analizar").setInputFiles({ name: "notas.txt", mimeType: "text/plain", buffer: Buffer.from("hola") });
   await expect(page.getByRole("alert")).toContainText("Sube un audio wav, mp3, flac u ogg.");
