@@ -1341,10 +1341,11 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
         if (k == "nota") s += "\n" + sangria + "Nota: " + v;
         if (analizado && k == "postings_leidos") s += "\n" + sangria + "Postings leidos: " + v;
     }
-    // external hashing: cuanto se repartio a disco, como los Batches y Disk Usage de PostgreSQL
-    if (analizado && p.operacion == "agrupacion") {
+    // external hashing y external sort: cuanto se escribio a disco, como los Batches y Disk Usage de PostgreSQL
+    if (analizado && (p.operacion == "agrupacion" || p.operacion == "ordenamiento")) {
         std::string medidas;
-        for (const char* clave : {"particiones", "niveles", "grupos_en_memoria", "paginas_escritas", "paginas_leidas"}) {
+        for (const char* clave : {"particiones", "niveles", "grupos_en_memoria", "initial_runs", "merge_passes",
+                                  "paginas_escritas", "paginas_leidas"}) {
             for (const auto& [k, v] : p.detalles) {
                 if (k == clave) medidas += (medidas.empty() ? "" : "  ") + k + "=" + v;
             }
@@ -1682,6 +1683,9 @@ void agrupar(Etapas& e, const std::vector<Fila>& filas) {
     r.plan.push_back(paso);
 }
 
+// páginas de memoria del ORDER BY (B): corridas de B páginas y merge de B - 1 corridas
+constexpr std::size_t PAGINAS_SORT = 10;
+
 // ORDER BY: por score (MATCH y SIMILAR_TO) o con external merge sort (k-way), sobre las filas
 // del esquema o, si hubo GROUP BY, sobre los grupos (por su etiqueta, alias incluido)
 void ordenar(Etapas& e, std::vector<Fila>& filas) {
@@ -1722,7 +1726,13 @@ void ordenar(Etapas& e, std::vector<Fila>& filas) {
     }
     const auto inicio = Reloj::now();
     const std::size_t c = static_cast<std::size_t>(col);
-    ExternalMergeSort<Fila, Valor> ordenador(10, 100, 0, &e.traza);
+    // filas por página según el tamaño promedio de la fila en el archivo temporal
+    std::size_t bytes = 0;
+    for (const Fila& f : objetivo) bytes += codificar_fila(f).size();
+    const std::size_t por_fila = objetivo.empty() ? 1 : (bytes + objetivo.size() - 1) / objetivo.size();
+    const std::size_t filas_por_pagina = std::max<std::size_t>(1, (PAGINA_TEMPORAL - CABECERA_TEMPORAL) / por_fila);
+    ExternalMergeSort<Fila, Valor, ArchivoTemporal> ordenador(PAGINAS_SORT, filas_por_pagina, 0, &e.traza,
+                                                              [&] { return ArchivoTemporal(e.base, &e.traza); });
     objetivo = ordenador.ordenar(std::move(objetivo), [&](const Fila& f) {
         if (!por_distancia) return f[c];
         if (s.order_by_punto.es_vector) return Valor::de_decimal(static_cast<float>(distancia_valores(f[c], s.order_by_punto, s.order_by_metrica)));
@@ -1730,7 +1740,7 @@ void ordenar(Etapas& e, std::vector<Fila>& filas) {
     }, s.descendente);
     PasoPlan paso{"ordenamiento", {{"algoritmo", "external_merge_sort"}, {"columna", s.order_by}, {"orden", s.descendente ? "DESC" : "ASC"}}};
     if (por_distancia) paso.detalles.push_back({"clave", s.order_by_punto.es_vector ? "distancia " + minusculas(s.order_by_metrica) : "distancia en milimetros"});
-    for (const auto& [k, v] : e.traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k") paso.detalles.push_back({k, v});
+    for (const auto& [k, v] : e.traza.last("external_merge_sort").details) if (k == "initial_runs" || k == "merge_passes" || k == "k" || k == "paginas_escritas" || k == "paginas_leidas") paso.detalles.push_back({k, v});
     paso.nodo = "Sort";
     paso.relacion = e.relacion;
     paso.columna = s.order_by;
