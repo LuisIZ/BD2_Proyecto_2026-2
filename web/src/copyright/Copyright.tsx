@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Timeline, { COLORES, nombreCancion, segundos } from "./Timeline";
 import { analizarAudio } from "./api";
-import type { Analisis } from "./types";
+import { TRAMOS_MINIMOS, type Analisis } from "./types";
+
+/** El VECTOR(...) de 256 números de una consulta, recortado a los 3 primeros. */
+const recortarVector = (sql: string) =>
+  sql.replace(/VECTOR\(([^,)]*,[^,)]*,[^,)]*),[^)]*\)/g, "VECTOR($1, ...)");
 
 /** Vista "Copyright" (#94): sube un audio y muestra qué tramos coinciden con canciones originales. */
 export default function Copyright() {
@@ -10,7 +14,7 @@ export default function Copyright() {
   const [archivo, setArchivo] = useState<File>();
   const [url, setUrl] = useState("");
   const [analisis, setAnalisis] = useState<Analisis>();
-  const [ejemplo, setEjemplo] = useState(false);
+  const [tiempo, setTiempo] = useState(0);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
   const [actual, setActual] = useState(0);
@@ -31,10 +35,10 @@ export default function Copyright() {
     setActual(0);
     setEscuchando(undefined);
     setCargando(true);
+    const inicio = performance.now();
     try {
-      const respuesta = await analizarAudio(nuevo);
-      setAnalisis(respuesta.datos);
-      setEjemplo(respuesta.ejemplo);
+      setAnalisis(await analizarAudio(nuevo));
+      setTiempo(performance.now() - inicio);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -60,16 +64,13 @@ export default function Copyright() {
       ),
     [analisis],
   );
-  const sospechoso = analisis?.veredicto === "posible uso no autorizado";
+  const sospechoso = analisis?.veredicto === "posible_copyright";
+  // una consulta SIMILAR_TO por tramo y la última trae los nombres de las canciones
+  const porTramo = analisis?.consultas.filter((c) => /SIMILAR_TO/i.test(c)) ?? [];
+  const otras = analisis?.consultas.filter((c) => !/SIMILAR_TO/i.test(c)) ?? [];
 
   return (
     <div className="copyright">
-      {ejemplo && (
-        <p className="panel-note warn" role="note">
-          Datos de ejemplo: la API todavía no tiene /api/copyright/analizar (#93), así que se
-          muestra web/src/copyright/ejemplo.json.
-        </p>
-      )}
       <section className="panel" aria-labelledby="copyright-titulo">
         <div className="panel-heading">
           <h2 id="copyright-titulo">Detección de copyright</h2>
@@ -115,7 +116,8 @@ export default function Copyright() {
         )}
         {cargando && (
           <p className="empty-small" role="status">
-            Extrayendo los MFCC de cada tramo y buscando coincidencias…
+            Extrayendo los MFCC de cada tramo y buscando coincidencias… (unos segundos por
+            minuto de audio)
           </p>
         )}
         {error && (
@@ -133,10 +135,10 @@ export default function Copyright() {
           >
             <strong>{sospechoso ? "Posible uso no autorizado" : "Sin coincidencias"}</strong>
             <span>
-              Umbral: similitud de {analisis.umbral} % o más en al menos{" "}
-              {analisis.minimo_tramos} tramos de la misma canción ·{" "}
-              {analisis.tramos.length} tramos de {analisis.duracion_tramo} s en{" "}
-              {segundos(analisis.duracion)} · {analisis.tiempo_ms.toLocaleString("es-PE")} ms
+              Umbral: similitud de {analisis.umbral} % o más en al menos {TRAMOS_MINIMOS} tramos
+              de la misma canción · {analisis.tramos.length} tramos de 10 s en{" "}
+              {segundos(analisis.duracion)} ·{" "}
+              {(tiempo / 1000).toLocaleString("es-PE", { maximumFractionDigits: 1 })} s
             </span>
           </section>
 
@@ -173,11 +175,16 @@ export default function Copyright() {
                     <strong>{nombreCancion(cancion.archivo)}</strong>
                     <span className="muted small">
                       {cancion.genero} · {cancion.tramos}{" "}
-                      {cancion.tramos === 1 ? "tramo" : "tramos"}
-                      {cancion.coincide ? "" : " · no alcanza el mínimo de tramos"}
+                      {cancion.tramos === 1 ? "tramo" : "tramos"} · similitud máxima{" "}
+                      {cancion.similitud_maxima} %
                     </span>
                   </div>
-                  <span className="copyright-porcentaje">{cancion.porcentaje} %</span>
+                  <span
+                    className="copyright-porcentaje"
+                    title="parte de los tramos de la canción subida donde aparece"
+                  >
+                    {cancion.porcentaje} %<small> de los tramos</small>
+                  </span>
                   <button
                     aria-pressed={escuchando === cancion.cancion_id}
                     onClick={() =>
@@ -202,7 +209,15 @@ export default function Copyright() {
             </ul>
             <details className="copyright-sql">
               <summary>Consultas SQL</summary>
-              {analisis.consultas.map((consulta) => (
+              {porTramo.length > 0 && (
+                <>
+                  <p className="small">
+                    Una por cada tramo con sonido ({porTramo.length}), en lotes:
+                  </p>
+                  <code>{recortarVector(porTramo[0])}</code>
+                </>
+              )}
+              {otras.map((consulta) => (
                 <code key={consulta}>{consulta}</code>
               ))}
             </details>

@@ -1,27 +1,26 @@
 /**
- * Contrato de POST /api/copyright/analizar?nombre= (#93). ejemplo.json tiene una respuesta
- * con canciones de GTZAN (datos/audios_1k.csv). Tiempos en segundos; similitud en %.
+ * Respuesta de POST /api/copyright/analizar?nombre= (api/copyright.py, #93; ver docs/copyright.md).
+ * Tiempos en segundos; similitud y porcentaje en %.
  */
 
 /** Un tramo de la base de originales (tabla segmentos) parecido a un tramo de la subida. */
 export interface Coincidencia {
-  segmento_id: number;
   cancion_id: number;
   archivo: string;
   genero: string;
   /** dónde empieza y termina el tramo dentro de la canción original */
-  inicio: number;
-  fin: number;
+  inicio_original: number;
+  fin_original: number;
   /** SIMILARITY_SCORE() con coseno, en % */
   similitud: number;
+  supera_umbral: boolean;
 }
 
 /** Un tramo de 10 s de la canción subida, con sus k = 5 tramos más parecidos. */
 export interface Tramo {
-  indice: number;
   inicio: number;
   fin: number;
-  /** ordenadas de mayor a menor similitud */
+  /** de mayor a menor similitud; vacía si el tramo es silencio */
   coincidencias: Coincidencia[];
 }
 
@@ -29,24 +28,24 @@ export interface CancionDetectada {
   cancion_id: number;
   archivo: string;
   genero: string;
-  /** tramos de la subida cuyo mejor resultado es esta canción con similitud >= umbral */
+  /** tramos de la subida donde aparece por encima del umbral */
   tramos: number;
-  /** similitud promedio de esos tramos, en % */
+  /** parte de los tramos de la subida donde aparece, en % */
   porcentaje: number;
-  /** true si tiene al menos minimo_tramos tramos */
-  coincide: boolean;
+  similitud_maxima: number;
 }
 
 export interface Analisis {
-  nombre: string;
+  /** nombre con que se guardó la subida: /api/multimedia/subidas/{archivo} */
+  archivo: string;
   duracion: number;
-  duracion_tramo: number;
-  hop: number;
   umbral: number;
-  minimo_tramos: number;
-  veredicto: "posible uso no autorizado" | "sin coincidencias";
+  veredicto: "posible_copyright" | "sin_coincidencias";
   tramos: Tramo[];
+  /** solo las que aparecen en al menos 2 tramos */
   canciones: CancionDetectada[];
   consultas: string[];
-  tiempo_ms: number;
 }
+
+/** Lo que exige api/copyright.py (TRAMOS_MINIMOS) para reportar una canción. */
+export const TRAMOS_MINIMOS = 2;
