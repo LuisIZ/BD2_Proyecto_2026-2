@@ -39,28 +39,32 @@ Para medir PostGIS con coordenadas geográficas y una métrica comparable a la p
 del motor, se incluye `datos/resultados/postgis_bench.sql`:
 
 ```bash
-make bench-espacial-haversine
-# En pgAdmin, ejecutar datos/resultados/postgis_bench.sql en PostgreSQL con PostGIS.
-# Exportar el resultado de postgis_resultados como datos/resultados/postgis_bench.csv.
-python docs/comparacion_espacial/graficar_postgis.py
+make bench-espacial-haversine   # motor con haversine: datos/resultados/espacial_haversine_bench.csv
+# PostGIS en Docker (imagen postgis/postgis); se midió con PostgreSQL 17.5 y PostGIS 3.5.2
+docker exec -i postgis psql -U postgres -d bd2_bench -v ON_ERROR_STOP=1 < datos/resultados/postgis_bench.sql
+docker exec -i postgis psql -U postgres -d bd2_bench -c "\copy (SELECT estructura, n, operacion, parametro, round(tiempo_ms, 4) AS tiempo_ms, round(filas, 2) AS filas, paginas, bytes FROM postgis_resultados ORDER BY n, operacion, parametro, estructura) TO STDOUT WITH (FORMAT csv, HEADER)" > datos/resultados/postgis_bench.csv
+python docs/comparacion_espacial/graficar_postgis.py   # graficas/postgis_*.png
 ```
 
 El SQL crea `geography(Point,4326)`, un índice `GiST`, y usa `ST_DWithin(..., false)` para
 radios geodésicos y `<->` para k-NN. Ambas estrategias PostGIS (secuencial y GiST) se
 comparan con los mismos puntos generados con semilla 42 que el R-Tree del motor; se miden
 100 consultas por combinación de tamaño y parámetro. Antes de terminar, el script verifica
-que los IDs devueltos por secuencial y GiST coincidan en cada consulta.
+que los IDs devueltos por secuencial y GiST coincidan en cada consulta. La corrida completa
+tarda unos 28 minutos, casi todo en esas verificaciones con 100 000 puntos.
+
+El motor usa una esfera de 6 371 000 m y PostGIS una de 6 371 008,8 m, así que un punto que
+cae justo en el borde del radio puede quedar de distinto lado. Por eso, con 100 000 puntos,
+el promedio de filas difiere en la segunda decimal en 5 y 10 km; en los otros 16 casos
+coincide exactamente.
 
 El archivo adicional de almacenamiento `postgis_almacenamiento` registra por separado los
 bytes del heap y del índice. `postgis_resultados.bytes` contiene el tamaño del índice en la
 fila de construcción. Las mediciones de espacio son persistentes; no se reporta memoria
 residente del servidor. El tiempo absoluto tampoco es una comparación directa de motores:
 el motor y PostgreSQL/PostGIS tienen distinta caché, almacenamiento y sobrecarga de consulta.
-
-El benchmark necesita una instalación PostgreSQL con la extensión PostGIS disponible; no
-instala ni inicia el servidor. No se deben presentar mediciones como reales hasta ejecutar
-el SQL y exportar sus resultados. Las figuras existentes de GiST nativo se conservan aparte
-de las nuevas figuras PostGIS.
+Las figuras de GiST nativo se conservan aparte de las de PostGIS; los resultados están en la
+sección [2.1](#21-postgis-con-distancia-haversine).
 
 ## 2. Resultados
 
@@ -111,6 +115,61 @@ puntos y ordena todo con el merge sort externo antes de cortar en k. El R-Tree b
 por los nodos más prometedores (unas 14 páginas entre nodos y heap para k = 10) y su tiempo
 casi no depende de k: es entre 64 y 71 veces más rápido que el secuencial.
 
+### 2.1 PostGIS con distancia haversine
+
+Las mismas consultas, ahora en metros sobre la esfera: el motor con `distancia(..., 'haversine')`
+y PostGIS con `geography`. Cada lado tiene su propio recorrido secuencial.
+
+| n | R-Tree: tiempo | R-Tree: tamaño | PostGIS GiST: tiempo | PostGIS GiST: tamaño | Heap de PostGIS |
+|---:|---:|---:|---:|---:|---:|
+| 1 000 | 14,1 ms | 40 KB | 4,2 ms | 72 KB | 72 KB |
+| 10 000 | 137,7 ms | 356 KB | 61,5 ms | 664 KB | 672 KB |
+| 100 000 | 2 965 ms | 3 448 KB | 1 178 ms | 7 288 KB | 6 672 KB |
+
+El GiST de `geography` ocupa más que la propia tabla y más del doble que el R-Tree, en parte
+porque guarda cajas en tres dimensiones (coordenadas geocéntricas) en vez del MBR de latitud y
+longitud. Sigue construyéndose unas 2,5 veces más rápido que el R-Tree.
+
+Rango por radio, 100 000 puntos:
+
+| Radio | Filas | Secuencial (motor) | R-Tree | Secuencial (PostGIS) | PostGIS GiST |
+|---:|---:|---:|---:|---:|---:|
+| 1 km | 129 | 140,3 ms | 5,6 ms | 160,1 ms | 1,29 ms |
+| 5 km | 2 955 | 174,9 ms | 30,7 ms | 159,5 ms | 8,24 ms |
+| 10 km | 10 575 | 96,4 ms | 88,3 ms | 163,7 ms | 31,2 ms |
+
+![rango 1 km](graficas/postgis_rango_1000.png)
+![rango 10 km](graficas/postgis_rango_10000.png)
+
+La forma es la misma que con la métrica euclidiana. El secuencial de PostGIS cuesta unos
+160 ms con cualquier radio; el del motor varía entre 96 y 175 ms por ruido de la laptop,
+aunque siempre lee todas las páginas. Con 1 km el GiST es 124 veces más rápido que su
+secuencial y el R-Tree 25 veces más rápido que el suyo; con 10 km la ventaja baja a 5 veces
+en PostGIS y prácticamente desaparece en el motor, que lee una página del heap por cada
+fila encontrada.
+
+k vecinos más cercanos, 100 000 puntos:
+
+| k | Secuencial (motor) | R-Tree | Secuencial (PostGIS) | PostGIS GiST |
+|---:|---:|---:|---:|---:|
+| 10 | 1 473,1 ms | 8,5 ms | 213,7 ms | 0,47 ms |
+| 50 | 1 176,5 ms | 9,4 ms | 196,7 ms | 0,69 ms |
+| 100 | 1 008,1 ms | 10,4 ms | 256,3 ms | 1,53 ms |
+
+![knn k = 10](graficas/postgis_knn_10.png)
+
+El secuencial del motor es el más lento porque ordena los 100 000 puntos con el merge sort
+externo; PostgreSQL ordena con un top-k en memoria. Los dos índices casi no dependen de n:
+el R-Tree tarda entre 8 y 13 ms con 1 000, 10 000 y 100 000 puntos, y el GiST entre 0,22 y
+0,47 ms con k = 10. Frente a su propio secuencial, el GiST es entre 168 y 458 veces más
+rápido y el R-Tree entre 97 y 174 veces.
+
+Comparado con el GiST sobre `point` de la sección anterior, el de `geography` es más lento
+(1,29 ms contra 0,54 ms en 1 km y 0,47 ms contra 0,19 ms en k-NN con k = 10), porque calcula
+distancias sobre la esfera en vez de euclidianas en grados. Las dos mediciones se hicieron en
+servidores distintos (PostgreSQL 18 instalado y PostgreSQL 17.5 en Docker), así que esa
+diferencia es solo orientativa.
+
 ## 3. Cuándo usar cada técnica
 
 | Técnica | Conviene | No conviene |
@@ -118,6 +177,8 @@ casi no depende de k: es entre 64 y 71 veces más rápido que el secuencial.
 | Búsqueda secuencial | tablas chicas, o radios que devuelven una parte grande de la tabla | k-NN y radios chicos sobre tablas grandes |
 | R-Tree del motor | k-NN y radios chicos o medianos; ocupa la mitad que GiST | radios que devuelven más del 5 al 10 % de la tabla; construcción por inserciones |
 | GiST de PostgreSQL | lo mismo que el R-Tree, con construcción más rápida y un motor mucho más optimizado | sin PostGIS solo ofrece distancia euclidiana en grados |
+| GiST de PostGIS (`geography`) | distancias reales en metros; el más rápido en rango y k-NN | el índice ocupa más que la tabla; hay que instalar la extensión |
 
-Los resultados crudos están en `datos/resultados/espacial_bench.csv` y
-`datos/resultados/gist_bench.csv`.
+Los resultados crudos están en `datos/resultados/espacial_bench.csv`,
+`datos/resultados/gist_bench.csv`, `datos/resultados/espacial_haversine_bench.csv` y
+`datos/resultados/postgis_bench.csv`.
