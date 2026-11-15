@@ -101,6 +101,38 @@ Los otros vecinos suelen ser los tramos de al lado de la misma canción, porque 
 
 Una canción de 3 minutos (35 tramos) se analiza en unos 3 s.
 
+### Respuesta
+
+Ejemplo real, recortado: un audio de 40 s cuyos últimos 20 s son `blues.00000` (de 5 a 25 s) a la mitad del volumen. Trae 7 tramos con 5 coincidencias cada uno; aquí se muestran 2.
+
+```json
+{
+  "archivo": "296cf3f9f4c52e22.wav",
+  "duracion": 40.0,
+  "umbral": 74.0,
+  "veredicto": "posible_copyright",
+  "tramos": [
+    {"inicio": 0.0, "fin": 10.0, "coincidencias": [
+      {"cancion_id": 112, "archivo": "classical/classical.00011.wav", "genero": "classical",
+       "inicio_original": 20.0, "fin_original": 30.0, "similitud": 28.1, "supera_umbral": false}]},
+    {"inicio": 20.0, "fin": 30.0, "coincidencias": [
+      {"cancion_id": 1, "archivo": "blues/blues.00000.wav", "genero": "blues",
+       "inicio_original": 5.0, "fin_original": 15.0, "similitud": 100.0, "supera_umbral": true}]}
+  ],
+  "canciones": [
+    {"cancion_id": 1, "archivo": "blues/blues.00000.wav", "genero": "blues",
+     "tramos": 3, "porcentaje": 42.9, "similitud_maxima": 100.0}
+  ],
+  "consultas": ["SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(...), k = 5) USING HNSW;",
+                "SELECT id, archivo, genero FROM canciones;"]
+}
+```
+
+- `archivo` es el nombre con que se guardó la subida. Se puede reproducir con `GET /api/multimedia/subidas/{archivo}`.
+- `coincidencias` va de mayor a menor similitud y puede repetir la misma canción con tramos vecinos. Un tramo en silencio la trae vacía.
+- `porcentaje` es la parte de los tramos del audio subido donde aparece la canción.
+- Si algo falla, responde 400 con `{"detail": "..."}`: el archivo no es audio, pesa más de 50 MB o falta cargar `docs/copyright.sql`.
+
 ### Evaluación y umbral
 
 ```powershell
