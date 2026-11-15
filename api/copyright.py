@@ -8,6 +8,8 @@ TRAMOS_MINIMOS = 2
 K_TRAMO = 5
 HOP = 5.0
 DURACION_TRAMO = 10.0
+DURACION_CONSULTA = 300.0
+MAX_CARACTERES_LOTE = 60000
 
 
 def literal(vector):
@@ -19,13 +21,26 @@ def consulta_de_tramo(vector):
             f"WHERE SIMILAR_TO({literal(vector)}, k = {K_TRAMO}) USING HNSW;")
 
 
+def lotes(consultas, limite=MAX_CARACTERES_LOTE):
+    # junta consultas seguidas sin pasar el limite de caracteres de /api/consultas
+    lote, largo = [], 0
+    for consulta in consultas:
+        if lote and largo + len(consulta) + 1 > limite:
+            yield "\n".join(lote)
+            lote, largo = [], 0
+        lote.append(consulta)
+        largo += len(consulta) + 1
+    if lote:
+        yield "\n".join(lote)
+
+
 def tramos_del_audio(ruta):
     import librosa
 
     from multimedia.segmentos_audio import cargar_vocabulario, descriptores_de_tramos, vectores
 
     indice, idf, k = cargar_vocabulario()
-    lista = descriptores_de_tramos(ruta, DURACION_TRAMO, HOP)
+    lista = descriptores_de_tramos(ruta, DURACION_TRAMO, HOP, maximo=DURACION_CONSULTA)
     matriz = vectores([d for *_, d in lista], indice, idf, k)
     return librosa.get_duration(path=str(ruta)), [(i, f, v) for (i, f, _), v in zip(lista, matriz)]
 
@@ -56,15 +71,17 @@ def agrupar(tramos, umbral=UMBRAL, minimos=TRAMOS_MINIMOS):
 
 
 def analizar_audio(ruta, umbral=UMBRAL):
-    # un lote con un SIMILAR_TO por tramo y al final los nombres de las canciones
+    # un SIMILAR_TO por tramo y al final los nombres de las canciones, en lotes
     from api import web_api
 
     duracion, vectores = tramos_del_audio(ruta)
     con_sonido = [i for i, (_, _, v) in enumerate(vectores) if v.any()]
     consultas = [consulta_de_tramo(vectores[i][2]) for i in con_sonido]
     consultas.append("SELECT id, archivo, genero FROM canciones;")
+    resultados = []
     try:
-        resultados = web_api.consultas(web_api.Consulta(sql="\n".join(consultas)))["resultados"]
+        for lote in lotes(consultas):
+            resultados += web_api.consultas(web_api.Consulta(sql=lote))["resultados"]
     except HTTPException as error:
         raise HTTPException(400, f"{error.detail}. Corre docs/copyright.sql antes de analizar.") from error
     fallidas = [r["error"] for r in resultados if not r.get("ok")]
