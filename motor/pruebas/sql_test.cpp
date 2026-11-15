@@ -1501,6 +1501,64 @@ static void prueba_group_by_externo() {
     std::cout << "GROUP BY externo: particiones en disco, todos los agregados en una pasada, segundo nivel y EXPLAIN ANALYZE\n";
 }
 
+// ORDER BY con external sort en disco: igual que std::sort por la clave, en ASC y DESC,
+// con corridas en <base>/tmp y sus medidas en EXPLAIN ANALYZE
+static void prueba_order_by_externo() {
+    const std::string db = ".build/db_order_by_test";
+    const std::string csv = ".build/order_by_test.csv";
+    std::filesystem::remove_all(db);
+    const int n = 20000;
+    std::vector<long long> enteros;
+    std::vector<double> decimales;
+    std::vector<std::string> textos;
+    {
+        std::ofstream f(csv);
+        f << "id,tipo,v,f\n";
+        for (int i = 1; i <= n; ++i) {
+            const std::string tipo = "tipo_" + std::to_string((i * 7) % 137);
+            const int v = (i * 13) % 500 - 100;
+            const double x = (i % 40) * 0.25;
+            f << i << ',' << tipo << ',' << v << ',' << x << '\n';
+            enteros.push_back(v);
+            decimales.push_back(x);
+            textos.push_back(tipo);
+        }
+    }
+    Catalogo catalogo(db);
+    Ejecutor e(catalogo);
+    e.ejecutar("CREATE TABLE o (id INT PRIMARY KEY, tipo VARCHAR(20), v INT, f FLOAT)");
+    assert(e.ejecutar("COPY o FROM FILE '" + csv + "'").afectadas == n);
+
+    for (const bool desc : {false, true}) {
+        const std::string orden = desc ? " DESC" : " ASC";
+        auto ordenar = [&](auto valores) {
+            std::sort(valores.begin(), valores.end());
+            if (desc) std::reverse(valores.begin(), valores.end());
+            return valores;
+        };
+        const auto v = ordenar(enteros);
+        const auto x = ordenar(decimales);
+        const auto t = ordenar(textos);
+        Resultado r = e.ejecutar("SELECT * FROM o ORDER BY v" + orden);
+        assert(r.filas.size() == static_cast<std::size_t>(n));
+        for (int i = 0; i < n; ++i) assert(r.filas[i][2].entero == v[i]);
+        assert(std::stoi(detalle_paso(r, "ordenamiento", "merge_passes")) >= 1);
+        r = e.ejecutar("SELECT * FROM o ORDER BY f" + orden);
+        for (int i = 0; i < n; ++i) assert(r.filas[i][3].decimal == static_cast<float>(x[i]));
+        r = e.ejecutar("SELECT * FROM o ORDER BY tipo" + orden);
+        for (int i = 0; i < n; ++i) assert(r.filas[i][1].texto == t[i]);
+    }
+
+    // EXPLAIN ANALYZE muestra las corridas, las pasadas y las páginas del sort
+    const std::string plan = texto_del_plan(e.ejecutar("EXPLAIN ANALYZE SELECT * FROM o ORDER BY tipo"));
+    for (const char* dato : {"Sort", "initial_runs", "merge_passes", "paginas_escritas", "paginas_leidas"}) {
+        assert(plan.find(dato) != std::string::npos);
+    }
+    // las corridas se borran al terminar
+    assert(!std::filesystem::exists(db + "/tmp") || std::filesystem::is_empty(db + "/tmp"));
+    std::cout << "ORDER BY externo: corridas en disco, INT, FLOAT y VARCHAR en ASC y DESC y EXPLAIN ANALYZE\n";
+}
+
 int main() {
     std::filesystem::create_directories(".build");
     std::filesystem::remove_all(DB);
@@ -1530,6 +1588,7 @@ int main() {
     prueba_matriz_indices();
     prueba_join();
     prueba_group_by_externo();
+    prueba_order_by_externo();
     prueba_busqueda_texto();
     prueba_indice_spimi();
     std::cout << "Prueba completada correctamente.\n";

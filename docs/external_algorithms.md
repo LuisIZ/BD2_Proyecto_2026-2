@@ -21,9 +21,8 @@ motor::ExternalMergeSort<int, int> sort(10, 1000, 9, &traza);
 ## 2. Paginas y presupuesto
 
 El sort modela el presupuesto mediante `buffer_pages`, `records_per_page` y
-`k`: sus runs todavia viven en `std::vector`, asi que `records_per_page` es un
-limite de memoria reproducible, no una serializacion real. El GROUP BY ya
-escribe sus particiones en paginas de 4 KB con `ArchivoTemporal` (seccion 4).
+`k`. El `ORDER BY` escribe sus corridas y el GROUP BY sus particiones en
+paginas de 4 KB con `ArchivoTemporal` (secciones 3 y 4).
 
 Para el CSV de prueba:
 
@@ -81,40 +80,74 @@ run.reiniciar_lectura();                              // otra pasada desde el in
 5 tipos (231 paginas), compara cada fila, cuenta las paginas contra el calculo
 esperado y comprueba que el archivo se borra y que los errores son claros.
 
-## 3. External Merge Sort
+## 3. External Merge Sort en disco
 
-`ExternalMergeSort<Registro, Clave>` calcula:
+`ORDER BY` usa `ExternalMergeSort<Fila, Valor, ArchivoTemporal>` con **B**
+paginas de memoria (`PAGINAS_SORT = 10` en `ejecutor.cpp`):
+
+1. **Corridas.** Se toman B paginas de filas, se ordenan en memoria con
+   `std::stable_sort` y cada corrida se escribe en un `ArchivoTemporal`. Las
+   filas por pagina salen del tamano promedio de la fila codificada.
+2. **Merge k-way.** Con k = B - 1, se mezclan k corridas a la vez con un heap
+   de minimos (`std::priority_queue`): una pagina de entrada por corrida y una
+   de salida. Si hay mas de k corridas, cada pasada escribe corridas nuevas y
+   borra las anteriores, hasta que queda una.
+3. **Resultado.** La ultima corrida se lee pagina por pagina hacia el
+   resultado.
+
+Con claves iguales sale primero la fila de la corrida anterior, asi que el
+orden es estable. Los temporales se borran al terminar y tambien si la consulta
+falla (RAII de `ArchivoTemporal`).
+
+La entrada llega ya leida del almacen: el `Seq Scan` cuenta esas paginas. Lo
+que se limita es la memoria del ordenamiento: B paginas en cada corrida y k + 1
+paginas en el merge.
+
+Sin el tercer parametro, `ExternalMergeSort<Registro, Clave>` guarda las
+corridas en memoria (`CorridaEnMemoria`); asi lo usan la prueba de enteros y
+los benchmarks.
+
+### Costo
+
+Con N paginas de filas:
 
 ```text
-chunk_size = buffer_pages * records_per_page
+corridas = ⌈N / B⌉
+pasadas  = ⌈log_{B-1}(corridas)⌉
+E/S      = 2N(1 + pasadas)
 ```
 
-Cada chunk se ordena con `std::sort` y se convierte en un run logico. En la
-prueba de 100 000 enteros:
+El sort escribe N paginas en la fase 1 y N en cada pasada; lee N en cada pasada
+y N al pasar la ultima corrida al resultado. Por eso
+`paginas_escritas = paginas_leidas = N(1 + pasadas)`.
+
+`EXPLAIN ANALYZE SELECT * FROM productos ORDER BY nombre;` con
+`productos_10k.csv`:
 
 ```text
-buffer_pages = 10
-records_per_page = 1000
-chunk_size = 10000
-initial_runs = ceil(100000 / 10000) = 10
-k = 9
+Sort on productos (actual time=3104.937 rows=10000)
+Sort Key: nombre ASC
+initial_runs=200  merge_passes=3  paginas_escritas=8009  paginas_leidas=8009
+  -> Seq Scan on productos  (cost=1939.00 rows=10000) (actual time=17.471 rows=10000 pages=1939)
 ```
 
-Como 10 runs superan `k`, se realiza una pasada intermedia y luego el merge
-final.
+### Medicion
 
-El merge usa `std::priority_queue` como heap de minimos. Cada entrada guarda
-clave, indice del run y posicion dentro del run. El costo esperado es:
+`EXPLAIN ANALYZE SELECT * FROM org ORDER BY Name;` con
+`organizations-*.csv` cargados con `CREATE TABLE ... FROM FILE` (heap), B = 10,
+el mejor de 3 corridas, en Windows. El tiempo es el del nodo `Sort`.
 
-```text
-O(N log k)
-```
+| Filas | Paginas (N) | Corridas | Pasadas | Paginas escritas | Paginas leidas | Tiempo |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 000 | 42 | 5 | 1 | 84 | 84 | 45 ms |
+| 10 000 | 412 | 42 | 2 | 1 237 | 1 237 | 445 ms |
+| 100 000 | 4 111 | 417 | 3 | 16 445 | 16 445 | 5 063 ms |
 
-El heap usa aproximadamente `O(k)` elementos, sin contar los vectores de runs
-que esta version conserva en memoria.
-
-La traza registra `buffer_pages`, `records_per_page`, `k`, `initial_runs`,
-`merge_passes` y `records`.
+- Las paginas siguen la formula: 42 x 2, 412 x 3 y 4 111 x 4.
+- Con 100 000 filas hay 417 corridas y no 412, porque las filas por pagina
+  salen del promedio y algunas paginas guardan menos.
+- El tiempo crece con las pasadas y con los archivos creados (unos 470 con
+  100 000 filas). Con mas paginas de buffer habria menos pasadas.
 
 ## 4. External Hash Aggregation en disco
 
@@ -287,7 +320,7 @@ logs/external_algorithms_cpp.log
 Ejemplo:
 
 ```text
-INFO Plan externo: external_merge_sort buffer_pages=10 records_per_page=1000 k=9 initial_runs=10 merge_passes=1 records=100000
+INFO Plan externo: external_merge_sort buffer_pages=10 initial_runs=42 k=9 merge_passes=2 paginas_escritas=1237 paginas_leidas=1237 records=10000 records_per_page=24
 ```
 
 Tambien se registran `external_hash_aggregate` (con `buffer_pages`,
@@ -299,9 +332,11 @@ Tambien se registran `external_hash_aggregate` (con `buffer_pages`,
 
 `external_algorithms_test.cpp` verifica:
 
-1. Ordenamiento de 100 000 registros.
-2. 10 runs con 10 paginas y 1 000 registros por pagina.
-3. Merge k-way con `k=9`.
+1. Ordenamiento de 100 000 enteros con corridas en memoria y `k=9`.
+2. Sort en disco de 20 000 filas con B = 3: claves INT, FLOAT y VARCHAR
+   repetidas, en ASC y DESC, igual que `std::stable_sort`. Hay 50 corridas y
+   6 pasadas, y las paginas escritas y leidas suman 2N(1 + pasadas) = 2 072.
+3. Si una fila no cabe en una pagina, el sort falla y borra sus temporales.
 4. GROUP BY en disco con 1, 100 y 50 000 grupos: `COUNT`, `SUM`, `AVG`,
    `MIN` y `MAX` iguales a agrupar en memoria, y cada grupo emitido una vez.
 5. Con B = 3 y 200 grupos, la particion no cabe y se vuelve a particionar
@@ -315,7 +350,9 @@ Tambien se registran `external_hash_aggregate` (con `buffer_pages`,
 `sql_test.cpp` (`prueba_group_by_externo`) lo prueba por SQL: 20 000 filas con
 137 tipos y los cinco agregados en una consulta, `GROUP BY id` con 20 000
 grupos (2 niveles), agregados sin `GROUP BY` y las medidas del `EXPLAIN
-ANALYZE`.
+ANALYZE`. `prueba_order_by_externo` ordena 20 000 filas por INT, FLOAT y
+VARCHAR en ASC y DESC, revisa las medidas del nodo `Sort` y que `tmp` quede
+vacio.
 
 Compilacion:
 
@@ -332,12 +369,9 @@ Ejecucion:
 
 ## 8. Limitaciones
 
-El GROUP BY ya particiona en disco. El sort y el join todavia trabajan con
-vectores en memoria; para llevarlos al modelo externo completo se necesita:
+El GROUP BY y el ORDER BY ya trabajan en disco. Faltan:
 
-- formato de pagina de 4 KiB u 8 KiB;
-- administrador de paginas temporales;
-- serializacion de registros variables;
-- lectura por streams en vez de vectores completos;
-- conteo de lecturas y escrituras de pagina;
-- planner basado en costo de I/O.
+- el join, que todavia lee las dos tablas en memoria;
+- recibir la entrada del sort pagina por pagina, en vez de un vector ya leido
+  del almacen;
+- un planner basado en costo de I/O.
