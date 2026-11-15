@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -1430,6 +1431,76 @@ void prueba_join() {
 
 }  // namespace
 
+// GROUP BY con external hashing en disco: todos los agregados en una pasada, igual que
+// calcularlos en memoria, con particiones en <base>/tmp y sus medidas en EXPLAIN ANALYZE
+static void prueba_group_by_externo() {
+    const std::string db = ".build/db_group_by_test";
+    const std::string csv = ".build/group_by_test.csv";
+    std::filesystem::remove_all(db);
+    const int n = 20000;
+    struct Esperado { long long count = 0, sum = 0, min = LLONG_MAX; double max_f = -1; };
+    std::map<std::string, Esperado> esperado;
+    {
+        std::ofstream f(csv);
+        f << "id,tipo,v,f\n";
+        for (int i = 1; i <= n; ++i) {
+            const std::string tipo = "tipo_" + std::to_string((i * 7) % 137);
+            const int v = (i * 13) % 500 - 100;
+            const double x = (i % 40) * 0.25;
+            f << i << ',' << tipo << ',' << v << ',' << x << '\n';
+            Esperado& e = esperado[tipo];
+            ++e.count;
+            e.sum += v;
+            e.min = std::min<long long>(e.min, v);
+            e.max_f = std::max(e.max_f, x);
+        }
+    }
+    Catalogo catalogo(db);
+    Ejecutor e(catalogo);
+    e.ejecutar("CREATE TABLE g (id INT PRIMARY KEY, tipo VARCHAR(20), v INT, f FLOAT)");
+    assert(e.ejecutar("COPY g FROM FILE '" + csv + "'").afectadas == n);
+
+    // 137 grupos, los cinco agregados en la misma consulta
+    Resultado r = e.ejecutar("SELECT tipo, COUNT(*), SUM(v), AVG(v), MIN(v), MAX(f) FROM g GROUP BY tipo");
+    assert(r.filas.size() == esperado.size());
+    std::size_t i = 0;
+    for (const auto& [tipo, x] : esperado) {  // sin ORDER BY salen ordenados por el grupo, como antes
+        const auto& fila = r.filas[i++];
+        assert(fila[0].texto == tipo);
+        assert(fila[1].entero == x.count && fila[2].entero == x.sum && fila[4].entero == x.min);
+        char avg[32];
+        std::snprintf(avg, sizeof(avg), "%.2f", static_cast<double>(x.sum) / static_cast<double>(x.count));
+        assert(fila[3].texto == avg);
+        assert(std::fabs(fila[5].decimal - x.max_f) < 1e-6);
+    }
+    assert(detalle_paso(r, "agrupacion", "particiones") == "9" && "P = B - 1 con B = 10");
+    assert(detalle_paso(r, "agrupacion", "niveles") == "1");
+    assert(std::stoi(detalle_paso(r, "agrupacion", "paginas_escritas")) > 0);
+    assert(std::stoi(detalle_paso(r, "agrupacion", "grupos_en_memoria")) < 137 && "cada particion tiene solo una parte");
+
+    // 20 000 grupos no caben en 9 particiones de 10 paginas: hay que volver a particionar
+    r = e.ejecutar("SELECT id, COUNT(*) FROM g GROUP BY id");
+    assert(r.filas.size() == static_cast<std::size_t>(n));
+    assert(r.filas.front()[0].entero == 1 && r.filas.front()[1].entero == 1);
+    assert(detalle_paso(r, "agrupacion", "niveles") == "2");
+    assert(std::stoi(detalle_paso(r, "agrupacion", "particiones")) > 9);
+
+    // sin GROUP BY, un solo grupo; y con 0 filas, COUNT(*) es 0
+    r = e.ejecutar("SELECT COUNT(*), SUM(v) FROM g WHERE id <= 10");
+    assert(r.filas.size() == 1 && r.filas[0][0].entero == 10);
+    r = e.ejecutar("SELECT COUNT(*) FROM g WHERE id > 99999");
+    assert(r.filas.size() == 1 && r.filas[0][0].entero == 0);
+
+    // EXPLAIN ANALYZE muestra cuanto se escribio y leyo de las particiones
+    const std::string plan = texto_del_plan(e.ejecutar("EXPLAIN ANALYZE SELECT tipo, COUNT(*) FROM g GROUP BY tipo"));
+    for (const char* dato : {"HashAggregate", "particiones", "grupos_en_memoria", "paginas_escritas", "paginas_leidas"}) {
+        assert(plan.find(dato) != std::string::npos);
+    }
+    // las particiones se borran al terminar
+    assert(!std::filesystem::exists(db + "/tmp") || std::filesystem::is_empty(db + "/tmp"));
+    std::cout << "GROUP BY externo: particiones en disco, todos los agregados en una pasada, segundo nivel y EXPLAIN ANALYZE\n";
+}
+
 int main() {
     std::filesystem::create_directories(".build");
     std::filesystem::remove_all(DB);
@@ -1458,6 +1529,7 @@ int main() {
     prueba_espacial();
     prueba_matriz_indices();
     prueba_join();
+    prueba_group_by_externo();
     prueba_busqueda_texto();
     prueba_indice_spimi();
     std::cout << "Prueba completada correctamente.\n";

@@ -1,6 +1,7 @@
 #include "ejecutor.h"
 
 #include "external_algorithms.h"
+#include "hash_externo.h"
 #include "../archivos/heap_file.h"
 #include "../archivos/sequential_file.h"
 #include "../espacial/distancia.h"
@@ -1340,6 +1341,16 @@ std::string linea_explain(const PasoPlan& p, bool analizado) {
         if (k == "nota") s += "\n" + sangria + "Nota: " + v;
         if (analizado && k == "postings_leidos") s += "\n" + sangria + "Postings leidos: " + v;
     }
+    // external hashing: cuanto se repartio a disco, como los Batches y Disk Usage de PostgreSQL
+    if (analizado && p.operacion == "agrupacion") {
+        std::string medidas;
+        for (const char* clave : {"particiones", "niveles", "grupos_en_memoria", "paginas_escritas", "paginas_leidas"}) {
+            for (const auto& [k, v] : p.detalles) {
+                if (k == clave) medidas += (medidas.empty() ? "" : "  ") + k + "=" + v;
+            }
+        }
+        if (!medidas.empty()) s += "\n" + sangria + medidas;
+    }
     return s;
 }
 
@@ -1537,6 +1548,7 @@ struct Etapas {
     std::function<double(const Fila&)> score;  // MATCH y SIMILAR_TO: el score de una fila
     Resultado& r;
     PlanTrace traza;
+    std::filesystem::path base;        // carpeta de la base: los temporales van a <base>/tmp
 
     bool agrupa() const {
         return !s.group_by.empty() ||
@@ -1579,72 +1591,89 @@ void validar_items(const Etapas& e) {
     }
 }
 
-// GROUP BY con external hashing: una pasada por cada agregado sobre columna
+// páginas de memoria del GROUP BY (B): P = B - 1 particiones en disco
+constexpr std::size_t PAGINAS_GROUP_BY = 10;
+
+// GROUP BY con external hashing en disco (hash_externo.h): las filas se reparten en P = B - 1
+// archivos temporales y cada partición se agrega por separado, con todos los agregados del
+// SELECT en la misma pasada
 void agrupar(Etapas& e, const std::vector<Fila>& filas) {
     const Sentencia& s = e.s;
     Resultado& r = e.r;
     const auto inicio = Reloj::now();
     const int gcol = s.group_by.empty() ? -1 : e.esquema.buscar(s.group_by);
     if (!s.group_by.empty() && gcol < 0) throw std::runtime_error("la columna " + s.group_by + " no existe");
-    for (const ItemSelect& item : e.items) {
+    std::vector<AgregadoPedido> pedidos;
+    std::vector<int> pedido_de_item(e.items.size(), -1);  // item del SELECT -> su agregado
+    std::vector<bool> es_float(e.items.size(), false);
+    for (std::size_t i = 0; i < e.items.size(); ++i) {
+        const ItemSelect& item = e.items[i];
         if (item.agregado.empty() && (gcol < 0 || e.esquema.buscar(item.columna) != gcol)) {
             throw std::runtime_error("la columna " + item.columna + " debe estar en GROUP BY o dentro de un agregado");
         }
-        if (!item.agregado.empty() && !item.columna.empty()) {
-            const TipoColumna tipo = e.esquema[e.esquema.posicion(item.columna, e.relacion)].tipo;
+        if (item.agregado.empty()) continue;
+        AgregadoPedido pedido;
+        if (!item.columna.empty()) {
+            pedido.columna = e.esquema.posicion(item.columna, e.relacion);
+            const TipoColumna tipo = e.esquema[pedido.columna].tipo;
             if (tipo != TipoColumna::INT && tipo != TipoColumna::FLOAT) {
                 throw std::runtime_error(item.agregado + " solo se aplica a columnas INT o FLOAT");
             }
+            es_float[i] = tipo == TipoColumna::FLOAT;
         }
-    }
-    auto clave_grupo = [&](const Fila& f) { return gcol < 0 ? std::string() : f[static_cast<std::size_t>(gcol)].a_texto(); };
-    std::map<std::string, Valor> valor_grupo;
-    for (const Fila& f : filas) valor_grupo.emplace(clave_grupo(f), gcol < 0 ? Valor::de_texto("") : f[static_cast<std::size_t>(gcol)]);
-
-    std::vector<std::unordered_map<std::string, AggregateResult>> resultados;
-    for (const ItemSelect& item : e.items) {
-        if (item.agregado.empty()) { resultados.emplace_back(); continue; }
-        const int col = item.columna.empty() ? -1 : e.esquema.posicion(item.columna, e.relacion);
-        ExternalHashAggregate<Fila, std::string> agregador(10, 100, &e.traza);
-        resultados.push_back(agregador.agrupar(filas, clave_grupo,
-                                               [&](const Fila& f) { return col < 0 ? 0.0 : f[static_cast<std::size_t>(col)].numero(); },
-                                               {AggregateOp::COUNT}));
+        pedido.op = item.agregado == "SUM" ? AggregateOp::SUM
+                  : item.agregado == "AVG" ? AggregateOp::AVG
+                  : item.agregado == "MIN" ? AggregateOp::MIN
+                  : item.agregado == "MAX" ? AggregateOp::MAX
+                                           : AggregateOp::COUNT;
+        pedido_de_item[i] = static_cast<int>(pedidos.size());
+        pedidos.push_back(pedido);
     }
     for (const ItemSelect& item : e.items) r.columnas.push_back(etiqueta(item));
-    for (const auto& [clave, valor] : valor_grupo) {
-        Fila fila;
-        for (std::size_t i = 0; i < e.items.size(); ++i) {
-            const ItemSelect& item = e.items[i];
-            if (item.agregado.empty()) { fila.push_back(valor); continue; }
-            const AggregateResult& a = resultados[i].at(clave);
-            const bool es_float = !item.columna.empty() && e.esquema[e.esquema.posicion(item.columna, e.relacion)].tipo == TipoColumna::FLOAT;
-            auto numero = [&](double x) {
-                return es_float ? Valor::de_decimal(static_cast<float>(x)) : Valor::de_entero(static_cast<long long>(x));
-            };
-            if (item.agregado == "COUNT") fila.push_back(Valor::de_entero(static_cast<long long>(a.count)));
-            else if (item.agregado == "SUM") fila.push_back(numero(a.sum));
-            else if (item.agregado == "MIN") fila.push_back(numero(a.minimum));
-            else if (item.agregado == "MAX") fila.push_back(numero(a.maximum));
-            else {
-                char buf[32];
-                std::snprintf(buf, sizeof(buf), "%.2f", a.average);
-                fila.push_back(Valor::de_texto(buf));
+
+    // cada grupo sale de su partición con su valor y el estado de cada agregado
+    std::vector<std::pair<std::string, Fila>> grupos;
+    ExternalHashAggregate agregador(e.base, PAGINAS_GROUP_BY, &e.traza);
+    const EstadisticasHash stats = agregador.agrupar(filas, gcol, pedidos,
+        [&](const Valor& grupo, const std::vector<EstadoAgregado>& estados) {
+            Fila fila;
+            for (std::size_t i = 0; i < e.items.size(); ++i) {
+                const ItemSelect& item = e.items[i];
+                if (item.agregado.empty()) { fila.push_back(grupo); continue; }
+                const EstadoAgregado& a = estados[static_cast<std::size_t>(pedido_de_item[i])];
+                auto numero = [&](double x) {
+                    return es_float[i] ? Valor::de_decimal(static_cast<float>(x)) : Valor::de_entero(static_cast<long long>(x));
+                };
+                if (item.agregado == "COUNT") fila.push_back(Valor::de_entero(static_cast<long long>(a.count)));
+                else if (item.agregado == "SUM") fila.push_back(numero(a.sum));
+                else if (item.agregado == "MIN") fila.push_back(numero(a.minimum));
+                else if (item.agregado == "MAX") fila.push_back(numero(a.maximum));
+                else {
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%.2f", a.average());
+                    fila.push_back(Valor::de_texto(buf));
+                }
             }
-        }
-        r.filas.push_back(std::move(fila));
-    }
+            grupos.emplace_back(gcol < 0 ? std::string() : grupo.a_texto(), std::move(fila));
+        });
+    // las particiones salen en el orden del hash; sin ORDER BY se devuelven por el valor del grupo,
+    // como antes. Solo se ordena el resultado (una fila por grupo), no las filas de entrada
+    std::sort(grupos.begin(), grupos.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (auto& [clave, fila] : grupos) r.filas.push_back(std::move(fila));
     if (gcol < 0 && r.filas.empty()) {
         Fila fila;
         for (const ItemSelect& item : e.items) fila.push_back(item.agregado == "COUNT" ? Valor::de_entero(0) : Valor::de_texto(""));
         r.filas.push_back(fila);
     }
-    PasoPlan paso{"agrupacion", {{"algoritmo", "external_hash_aggregate"}, {"columna", s.group_by.empty() ? "(todo)" : s.group_by}, {"grupos", texto(r.filas.size())}}};
-    if (!e.traza.events.empty()) {
-        for (const auto& [k, v] : e.traza.last("external_hash_aggregate").details) {
-            if (k == "partitions") paso.detalles.push_back({"particiones", v});
-            if (k == "peak_groups_in_memory") paso.detalles.push_back({"grupos_en_memoria", v});
-        }
-    }
+    PasoPlan paso{"agrupacion", {{"algoritmo", "external_hash_aggregate"},
+                                 {"columna", s.group_by.empty() ? "(todo)" : s.group_by},
+                                 {"grupos", texto(r.filas.size())},
+                                 {"paginas_buffer", texto(PAGINAS_GROUP_BY)},
+                                 {"particiones", texto(stats.particiones)},
+                                 {"niveles", texto(stats.niveles)},
+                                 {"grupos_en_memoria", texto(stats.grupos_en_memoria)},
+                                 {"paginas_escritas", texto(stats.paginas_escritas)},
+                                 {"paginas_leidas", texto(stats.paginas_leidas)}}};
     paso.nodo = "HashAggregate";
     paso.relacion = e.relacion;
     paso.columna = s.group_by;
@@ -2677,7 +2706,7 @@ Resultado Ejecutor::seleccionar(const Sentencia& s) {
         const auto encontrado = score_por_pk.find(clave_de(tabla, f));
         if (encontrado == score_por_pk.end()) throw std::runtime_error("no se encontro el score de la fila");
         return encontrado->second;
-    }, r, PlanTrace()};
+    }, r, PlanTrace(), catalogo_.dir()};
     validar_items(e);
 
     if (e.agrupa()) agrupar(e, filas);
@@ -2809,7 +2838,7 @@ Resultado Ejecutor::seleccionar_join(const Sentencia& s) {
     join.detalles.push_back({"filas", texto(unidas.size())});
 
     const Esquema esquema = esquema_join(pj);
-    Etapas e{esquema, s, items_de(s, esquema, true), pj.relacion, nullptr, r, PlanTrace()};
+    Etapas e{esquema, s, items_de(s, esquema, true), pj.relacion, nullptr, r, PlanTrace(), catalogo_.dir()};
     validar_items(e);
     if (e.agrupa()) agrupar(e, unidas);
     else for (const ItemSelect& item : e.items) r.columnas.push_back(etiqueta(item));

@@ -9,11 +9,13 @@ import Copyright from "./copyright/Copyright";
 import Syntax from "./Syntax";
 import { Plan, Results } from "./Results";
 import SpatialMap from "./SpatialMap";
+import Tienda from "./tienda/Tienda";
 import { splitStatements, statementAt } from "./sql";
 import type { Cell } from "./types";
 
 const views = [
   ["consultas", "Consultas"],
+  ["tienda", "Tienda"],
   ["demo", "Demo guiada"],
   ["comparar", "Comparar estructuras"],
   ["mediciones", "Mediciones"],
@@ -80,16 +82,22 @@ export default function App() {
     ) ?? table;
   const lines = sql.split("\n").length;
 
+  /** el último error de conexión que puso refresh(); solo ese se borra al reconectar */
+  const connectionError = useRef("");
   async function refresh() {
     try {
       const data = await request<{ tablas: Table[] }>("catalogo");
       setTables(data.tablas);
       setConnected(true);
-      setError("");
+      // no borra un error de otra operación (una subida que falló mientras cargaba el catálogo)
+      const previous = connectionError.current;
+      connectionError.current = "";
+      setError((current) => (current === previous ? "" : current));
       if (!db) setDb((await request<{ db: string }>("health")).db);
     } catch (error) {
       setConnected(false);
-      setError((error as Error).message);
+      connectionError.current = (error as Error).message;
+      setError(connectionError.current);
     }
   }
   useEffect(() => {
@@ -567,6 +575,9 @@ export default function App() {
             />
             <Plan result={activeResult} />
           </div>
+        </div>
+        <div hidden={view !== "tienda"}>
+          {view === "tienda" && <Tienda />}
         </div>
         <div hidden={view !== "demo"}>
           <Demo
