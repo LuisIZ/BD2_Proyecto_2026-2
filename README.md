@@ -18,11 +18,12 @@ Guía de consultas que acepta el gestor: [docs/guia_consultas.md](docs/guia_cons
 El sistema está organizado en capas; cada una solo usa a la que tiene debajo.
 
 ```text
-Interfaz web (React)        archivos, consultas, resultados, plan, mapa, galería, comparación y tienda
+Interfaz web (React)        archivos, consultas, resultados, plan, mapa, galería, comparación, tienda y copyright
         │  HTTP
 API (Python + FastAPI)      recibe el SQL y llama al binario motor_sql
   Multimedia (Python)       extracción SIFT y MFCC, índices IVF y HNSW de FAISS, SIMILAR_TO
   Tienda (Python)           catálogo, ficha, recomendador con RRF y sedes cercanas con stock
+  Copyright (Python)        tramos de 10 s, búsqueda con HNSW, umbral de 74 % y veredicto
         │  proceso
 Consultas (C++)             parser, planificador, ejecutor, INNER JOIN, EXPLAIN [ANALYZE], transacciones
 Algoritmos externos         merge sort y hashing en disco (ORDER BY, GROUP BY), hash join e index nested loop
@@ -107,7 +108,7 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 | Tienda: vista en la web con catálogo, ficha, recomendaciones y mapa de sedes | listo |
 | Copyright: base de originales con tramos de audio de GTZAN e índice HNSW | listo ([copyright](docs/copyright.md)) |
 | Copyright: detección por tramos, umbral y evaluación con remixes | listo ([evaluación](docs/copyright.md#evaluación-y-umbral)) |
-| Copyright: interfaz con timeline de coincidencias | en revisión (#94, PR #111) |
+| Copyright: interfaz con timeline de coincidencias | listo |
 
 La tienda se carga ejecutando [docs/tienda.sql](docs/tienda.sql) entero desde la vista
 **Consultas** de la web; los CSV ya están en `datos/tienda/`. Después, la vista **Tienda** usa
@@ -131,9 +132,10 @@ python tools/probar_sql.py docs/tienda.sql
 La base de copyright se carga igual, con [docs/copyright.sql](docs/copyright.sql): crea `canciones`
 (999 clips de GTZAN) y `segmentos` (4 995 tramos de 10 s con su vector), con un HNSW sobre los
 vectores y un B+ sobre `cancion_id`. Los CSV de `datos/audio/` no se versionan: primero se generan
-con `python -m multimedia.segmentos_audio --hop 5 --duracion 10` desde `api/` (unos 30 s; ver
-[copyright](docs/copyright.md#generar-los-tramos)). Después, `POST /api/copyright/analizar` compara
-un audio subido contra esa base.
+con `python -m multimedia.segmentos_audio --hop 5 --duracion 10` desde `api/` (de 30 s a 2 min según
+la laptop; ver [copyright](docs/copyright.md#generar-los-tramos)). Después, la vista **Copyright**
+sube un audio, lo manda a `POST /api/copyright/analizar` y muestra el veredicto y la línea de tiempo
+de los tramos que coinciden con canciones originales.
 
 ### Pendientes de las Partes 1 y 2
 
@@ -195,9 +197,9 @@ BD2_Proyecto_2026-2/
 │   ├── vectorial/        vector.h (tipo Vector y las 3 métricas)
 │   ├── transacciones/    gestor_locks.h (2PL estricto y deadlocks)
 │   └── pruebas/          pruebas de cada módulo y benchmarks
-├── api/                  Python: conecta el motor con la web; tienda.py es la API de la tienda
+├── api/                  Python: conecta el motor con la web; tienda.py y copyright.py son las apps
 │   └── multimedia/       extraer, extraer_audio, indices (FAISS), similitud y benchmarks
-├── web/                  React: la interfaz (src/tienda/ es la vista de la tienda)
+├── web/                  React: la interfaz (src/tienda/ y src/copyright/ son las apps)
 ├── tools/                comando motor, preparación del dataset, datos de la tienda y recorrido SQL
 ├── datos/                datasets CSV y resultados de los experimentos
 └── docs/                 documentación técnica e informe
