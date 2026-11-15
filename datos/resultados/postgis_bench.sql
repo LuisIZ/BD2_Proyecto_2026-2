@@ -79,12 +79,12 @@ BEGIN
         PERFORM set_config('enable_indexscan', 'on', true);
         PERFORM set_config('enable_bitmapscan', 'off', true);
         SELECT geog INTO centro FROM puntos_postgis WHERE id = 1;
-        EXECUTE 'EXPLAIN SELECT id FROM puntos_postgis WHERE ST_DWithin(geog, $1, 5000, false)'
+        EXECUTE 'EXPLAIN (FORMAT JSON) SELECT id FROM puntos_postgis WHERE ST_DWithin(geog, $1, 5000, false)'
         INTO plan_text USING centro;
         IF plan_text NOT LIKE '%puntos_postgis_gix%' THEN
             RAISE EXCEPTION 'PostGIS no selecciono GiST para ST_DWithin (n=%)', cantidad;
         END IF;
-        EXECUTE 'EXPLAIN SELECT id FROM puntos_postgis ORDER BY geog <-> $1 LIMIT 10'
+        EXECUTE 'EXPLAIN (FORMAT JSON) SELECT id FROM puntos_postgis ORDER BY geog <-> $1 LIMIT 10'
         INTO plan_text USING centro;
         IF plan_text NOT LIKE '%puntos_postgis_gix%' THEN
             RAISE EXCEPTION 'PostGIS no selecciono GiST para k-NN (n=%)', cantidad;
@@ -97,7 +97,9 @@ BEGIN
                 PERFORM set_config('enable_bitmapscan', CASE WHEN estrategia = 'postgis' THEN 'on' ELSE 'off' END, true);
                 total := 0;
                 filas := 0;
-                TRUNCATE puntos_referencia;
+                IF estrategia = 'secuencial' THEN
+                    TRUNCATE puntos_referencia;
+                END IF;
                 FOR j IN 0..99 LOOP
                     SELECT geog INTO centro
                     FROM puntos_postgis
@@ -132,7 +134,9 @@ BEGIN
                 PERFORM set_config('enable_bitmapscan', CASE WHEN estrategia = 'postgis' THEN 'on' ELSE 'off' END, true);
                 total := 0;
                 filas := 0;
-                TRUNCATE puntos_referencia;
+                IF estrategia = 'secuencial' THEN
+                    TRUNCATE puntos_referencia;
+                END IF;
                 FOR j IN 0..99 LOOP
                     SELECT geog INTO centro
                     FROM puntos_postgis
