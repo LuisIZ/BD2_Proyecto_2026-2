@@ -21,7 +21,3 @@ SELECT COUNT(*) FROM segmentos;
 
 -- [6] los 5 tramos de una cancion por el indice b+
 SELECT id, inicio, fin FROM segmentos WHERE cancion_id = 1;
-
--- [7] tramos mas parecidos a un clip completo usando hnsw
-SELECT id, cancion_id, inicio, SIMILARITY_SCORE() FROM segmentos
-WHERE SIMILAR_TO('blues/blues.00000.wav', k = 5) USING HNSW;

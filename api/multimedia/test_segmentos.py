@@ -6,8 +6,14 @@ from unittest.mock import patch
 
 import numpy as np
 
-from multimedia.extraer_audio import extract_features_audio
-from multimedia.segmentos_audio import inicios_de_tramos, procesar_tramos
+from multimedia.segmentos_audio import (
+    cargar_vocabulario,
+    descriptores_de_tramos,
+    inicios_de_tramos,
+    normalizar,
+    procesar_tramos,
+    vectores,
+)
 from multimedia.test_extraer_audio import FRECUENCIA, escribir_wav, ruido, tono
 
 
@@ -30,6 +36,15 @@ class PruebasSegmentos(unittest.TestCase):
         with self.assertRaises(ValueError):
             inicios_de_tramos(30.0, 10, 0)
 
+    def test_normalizar_quita_promedio_y_escala(self):
+        d = np.random.default_rng(4).normal(5, 3, (400, 13)).astype(np.float32)
+        n = normalizar(d)
+        np.testing.assert_allclose(n.mean(axis=0), 0, atol=1e-4)
+        np.testing.assert_allclose(n.std(axis=0), 1, atol=1e-3)
+        # sumar una constante (como el volumen en el coeficiente 0) no cambia nada
+        np.testing.assert_allclose(normalizar(d + 40), n, atol=1e-4)
+        self.assertEqual(normalizar(np.empty((0, 13), dtype=np.float32)).shape, (0, 13))
+
     def test_tramos_de_dos_audios_y_mismo_vector_que_el_recorte(self):
         with tempfile.TemporaryDirectory() as carpeta:
             largo = np.concatenate([tono(200, 10), tono(1000, 10), ruido(10, 1)])
@@ -38,17 +53,16 @@ class PruebasSegmentos(unittest.TestCase):
             with open(os.path.join(carpeta, "canciones.csv"), "w", encoding="utf-8", newline="") as archivo:
                 archivo.write("id,audio,genero\n1,largo.wav,rock\n2,corto.wav,jazz\n")
 
-            vocabulario = os.path.join(carpeta, "vocabulario.npy")
-            idf = os.path.join(carpeta, "idf.npy")
-            np.save(vocabulario, np.random.default_rng(3).normal(0, 50, (8, 13)).astype(np.float32))
-            np.save(idf, np.linspace(1.0, 2.0, 8).astype(np.float32))
             salida = os.path.join(carpeta, "salida")
-            with patch.dict(os.environ, {"BD2_VOCABULARIO_AUDIO": vocabulario, "BD2_IDF_AUDIO": idf}):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("BD2_VOCABULARIO_COPYRIGHT", None)
+                os.environ.pop("BD2_IDF_COPYRIGHT", None)
                 total, _ = procesar_tramos(os.path.join(carpeta, "canciones.csv"), carpeta, hop=5, duracion=10,
-                                           salida=salida, procesos=1)
+                                           salida=salida, procesos=1, k=8)
 
                 # 30 s dan 5 tramos y 22 s dan 3
                 self.assertEqual(total, 8)
+                self.assertTrue(os.path.isfile(os.path.join(salida, "vocabulario_copyright_8.npy")))
                 canciones = leer_csv(os.path.join(salida, "canciones.csv"))
                 self.assertEqual([(c["id"], c["archivo"], c["genero"]) for c in canciones],
                                  [("1", "largo.wav", "rock"), ("2", "corto.wav", "jazz")])
@@ -63,10 +77,17 @@ class PruebasSegmentos(unittest.TestCase):
                     self.assertAlmostEqual(float(np.linalg.norm(vector_de_texto(t["v"]))), 1.0, places=5)
 
                 # el tramo de 5 a 15 s da el mismo vector que ese recorte guardado aparte
+                indice, idf, k = cargar_vocabulario(salida, k=8)
                 recorte = os.path.join(carpeta, "recorte.wav")
                 escribir_wav(recorte, largo[5 * FRECUENCIA:15 * FRECUENCIA])
-                np.testing.assert_allclose(vector_de_texto(tramos[1]["v"]), extract_features_audio(recorte), atol=1e-6)
+                vector = vectores([descriptores_de_tramos(recorte)[0][2]], indice, idf, k)[0]
+                np.testing.assert_allclose(vector_de_texto(tramos[1]["v"]), vector, atol=1e-6)
                 self.assertFalse(np.allclose(vector_de_texto(tramos[0]["v"]), vector_de_texto(tramos[4]["v"])))
+
+                # a la mitad del volumen el vector casi no cambia
+                escribir_wav(recorte, 0.5 * largo[5 * FRECUENCIA:15 * FRECUENCIA])
+                bajo = vectores([descriptores_de_tramos(recorte)[0][2]], indice, idf, k)[0]
+                self.assertGreater(float(bajo @ vector), 0.95)
 
     def test_csv_sin_genero_falla(self):
         with tempfile.TemporaryDirectory() as carpeta:

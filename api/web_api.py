@@ -437,3 +437,7 @@ def subida(archivo: str):
 from api import tienda  # noqa: E402
 
 app.include_router(tienda.router)
+
+from api.copyright import router as router_copyright  # noqa: E402
+
+app.include_router(router_copyright)
