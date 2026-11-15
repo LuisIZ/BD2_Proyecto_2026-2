@@ -40,8 +40,9 @@ def normalizar(descriptores):
     return ((descriptores - descriptores.mean(axis=0)) / (descriptores.std(axis=0) + 1e-6)).astype(np.float32)
 
 
-def descriptores_de_tramos(ruta, duracion=DURACION_TRAMO_DEFAULT, hop=HOP_DEFAULT, n_mfcc=N_MFCC_DEFAULT):
-    total = min(librosa.get_duration(path=os.fspath(ruta)), DURACION_MAXIMA)
+def descriptores_de_tramos(ruta, duracion=DURACION_TRAMO_DEFAULT, hop=HOP_DEFAULT, n_mfcc=N_MFCC_DEFAULT,
+                           maximo=DURACION_MAXIMA):
+    total = min(librosa.get_duration(path=os.fspath(ruta)), maximo)
     tramos = []
     for inicio in inicios_de_tramos(total, duracion, hop):
         descriptores = extraer_descriptores_audio(ruta, n_mfcc=n_mfcc, offset=inicio, duracion=duracion)
