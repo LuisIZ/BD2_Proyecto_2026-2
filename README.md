@@ -25,7 +25,7 @@ API (Python + FastAPI)      recibe el SQL y llama al binario motor_sql
   Tienda (Python)           catálogo, ficha, recomendador con RRF y sedes cercanas con stock
         │  proceso
 Consultas (C++)             parser, planificador, ejecutor, INNER JOIN, EXPLAIN [ANALYZE], transacciones
-Algoritmos externos         merge sort (ORDER BY), hashing en disco (GROUP BY), hash join e index nested loop
+Algoritmos externos         merge sort y hashing en disco (ORDER BY, GROUP BY), hash join e index nested loop
 Archivos temporales         páginas de 4 KB para corridas y particiones, borradas al terminar la consulta
 Texto y vectores            SPIMI, TF-IDF y BM25; tipo VECTOR, 3 métricas y k-NN secuencial
 Índices                     B+ agrupado, B+ no agrupado, hash extensible y R-Tree en disco
@@ -51,7 +51,7 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 |---|---|---|
 | 2.1.1 Archivos | Heap File con páginas slotted y reutilización de espacio; archivo secuencial con área auxiliar, eliminación lazy y reorganización al 30 % | [heap](docs/heap_file_slotted_pages.md), [secuencial](docs/sequential_file_paged.md) |
 | 2.1.2 Índices | B+ agrupado, B+ no agrupado, hash extensible paginado en disco | [comparación](docs/comparacion_indices/README.md), [hash](docs/extendible_hash.md) |
-| 2.1.2 Algoritmos externos | external hashing para `GROUP BY` con particiones en archivos temporales de 4 KB; merge sort k-way para `ORDER BY` (sus corridas todavía en memoria, #98 en curso) | [external_algorithms](docs/external_algorithms.md) |
+| 2.1.2 Algoritmos externos | external hashing para `GROUP BY` con particiones en archivos temporales de 4 KB; external merge sort para `ORDER BY` con corridas en archivos temporales y merge k-way | [external_algorithms](docs/external_algorithms.md) |
 | 2.1.3 SQL | parser, planificador por reglas, `EXPLAIN` y `EXPLAIN ANALYZE` con Planning Time y Execution Time | [parser_sql](docs/parser_sql.md) |
 | 2.1.3 INNER JOIN | `FROM a x JOIN b y ON x.c = y.c` con alias; el `WHERE` se aplica en cada tabla antes del join; hash join o index nested loop según los índices; plan en árbol | [parser_sql (5.2)](docs/parser_sql.md#52-inner-join) |
 | 2.1.4 Transacciones | `BEGIN`/`END`/`ROLLBACK`, 2PL estricto, detección de deadlocks y demo con hilos | [transacciones](docs/transacciones.md) |
@@ -106,8 +106,8 @@ a FAISS, busca los vecinos y le pide al motor esas filas con `CANDIDATES`. El de
 | Tienda: recomendador híbrido (texto BM25, imagen HNSW, metadata y compras) fusionado con RRF | listo ([recomendador](docs/tienda.md#recomendador)) |
 | Tienda: vista en la web con catálogo, ficha, recomendaciones y mapa de sedes | listo |
 | Copyright: base de originales con tramos de audio de GTZAN e índice HNSW | listo ([copyright](docs/copyright.md)) |
-| Copyright: detección por tramos, umbral y evaluación con remixes | en curso (#93) |
-| Copyright: interfaz con timeline de coincidencias | en curso (#94) |
+| Copyright: detección por tramos, umbral y evaluación con remixes | listo ([evaluación](docs/copyright.md#evaluación-y-umbral)) |
+| Copyright: interfaz con timeline de coincidencias | en revisión (#94, PR #111) |
 
 La tienda se carga ejecutando [docs/tienda.sql](docs/tienda.sql) entero desde la vista
 **Consultas** de la web; los CSV ya están en `datos/tienda/`. Después, la vista **Tienda** usa
@@ -128,10 +128,15 @@ python tools/probar_sql.py docs/pruebas_entrega_final.sql
 python tools/probar_sql.py docs/tienda.sql
 ```
 
+La base de copyright se carga igual, con [docs/copyright.sql](docs/copyright.sql): crea `canciones`
+(999 clips de GTZAN) y `segmentos` (4 995 tramos de 10 s con su vector), con un HNSW sobre los
+vectores y un B+ sobre `cancion_id`. Los CSV de `datos/audio/` no se versionan: primero se generan
+con `python -m multimedia.segmentos_audio --hop 5 --duracion 10` desde `api/` (unos 30 s; ver
+[copyright](docs/copyright.md#generar-los-tramos)). Después, `POST /api/copyright/analizar` compara
+un audio subido contra esa base.
+
 ### Pendientes de las Partes 1 y 2
 
-- External sort en disco para `ORDER BY` (#98, en curso): hoy el merge sort tiene sus corridas en
-  memoria.
 - El join lee sus dos lados en memoria, ya filtrados por su `WHERE`; no particiona en disco
   cuando no caben.
 - Los locks son a nivel de tabla.
@@ -296,13 +301,14 @@ probar la búsqueda de texto. Lo demás pesa demasiado y se genera o se copia ap
 | Imágenes de ABO | `C:\datos_bd2\imagenes` (o `BD2_DATOS`) | galería y consultas con imagen | [dataset](docs/dataset.md) |
 | Audios de GTZAN | `C:\datos_bd2\audio\genres_original` (o `datos/audio/genres_original` con `BD2_DATOS=datos`) | reproductor y consultas con audio | [audio](docs/extraccion_audio.md) |
 | `vocabulario_audio_256.npy` e `idf_audio_256.npy` | `datos/audio/` | `SIMILAR_TO('cancion.mp3')` | `api/multimedia/extraer_audio.py` ([audio](docs/extraccion_audio.md)) |
+| `canciones.csv`, `segmentos.csv` y el vocabulario e IDF de copyright | `datos/audio/` | `docs/copyright.sql` y la detección | `api/multimedia/segmentos_audio.py` ([copyright](docs/copyright.md)) |
 
 ### Pruebas
 
 ```bash
 make test                                            # motor C++
 cd web && npx playwright test                        # interfaz
-cd api && python -m unittest multimedia.test_similitud multimedia.test_indices multimedia.test_extraer multimedia.test_extraer_audio multimedia.test_bench_vectorial test_tienda
+cd api && python -m unittest multimedia.test_similitud multimedia.test_indices multimedia.test_extraer multimedia.test_extraer_audio multimedia.test_bench_vectorial multimedia.test_segmentos test_tienda test_copyright
 python -m unittest tools.tienda.test_generar             # datos de la tienda
 python tools/probar_sql.py docs/pruebas_partes_3_4.sql   # recorrido SQL por la API
 python tools/probar_sql.py docs/pruebas_entrega_final.sql   # INNER JOIN con los datos de la tienda
