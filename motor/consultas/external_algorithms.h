@@ -56,17 +56,37 @@ public:
     std::size_t paginas_leidas = 0;
 };
 
-template <typename Registro, typename Clave>
+// corrida guardada en memoria; las filas del ejecutor usan ArchivoTemporal (archivo_temporal.h)
+template <typename Registro>
+class CorridaEnMemoria {
+public:
+    void agregar(const Registro& registro) { registros_.push_back(registro); }
+    void cerrar_escritura() {}
+    bool siguiente(Registro& registro) {
+        if (pos_ == registros_.size()) return false;
+        registro = registros_[pos_];
+        ++pos_;
+        return true;
+    }
+
+private:
+    std::vector<Registro> registros_;
+    std::size_t pos_ = 0;
+};
+
+template <typename Registro, typename Clave, typename Corrida = CorridaEnMemoria<Registro>>
 class ExternalMergeSort {
 public:
     using KeyFunction = std::function<Clave(const Registro&)>;
+    using NuevaCorrida = std::function<Corrida()>;
 
     explicit ExternalMergeSort(std::size_t buffer_pages = 10,
                                std::size_t records_per_page = 100,
                                std::size_t k = 0,
-                               PlanTrace* trace = nullptr)
+                               PlanTrace* trace = nullptr,
+                               NuevaCorrida nueva_corrida = [] { return Corrida(); })
         : buffer_pages_(buffer_pages), records_per_page_(records_per_page),
-          k_(k == 0 ? buffer_pages - 1 : k), trace_(trace) {
+          k_(k == 0 ? buffer_pages - 1 : k), trace_(trace), nueva_corrida_(std::move(nueva_corrida)) {
         if (buffer_pages_ < 3 || records_per_page_ == 0 || k_ < 2 || k_ > buffer_pages_ - 1) {
             throw std::invalid_argument("Presupuesto o k invalido para external merge sort");
         }
@@ -75,12 +95,27 @@ public:
     std::vector<Registro> ordenar(std::vector<Registro> records,
                                   const KeyFunction& key,
                                   bool reverse = false) {
+        // fase 1: corridas de B páginas
         const auto chunk_size = buffer_pages_ * records_per_page_;
-        std::vector<std::vector<Registro>> runs;
+        std::vector<Corrida> corridas;
         for (std::size_t inicio = 0; inicio < records.size(); inicio += chunk_size) {
             const auto fin = std::min(records.size(), inicio + chunk_size);
-            runs.emplace_back(records.begin() + inicio, records.begin() + fin);
-            ordenar_run(runs.back(), key, reverse);
+            ordenar_run(records.begin() + inicio, records.begin() + fin, key, reverse);
+            Corrida corrida = nueva_corrida_();
+            for (std::size_t i = inicio; i < fin; ++i) {
+                corrida.agregar(records[i]);
+            }
+            corrida.cerrar_escritura();
+            corridas.push_back(std::move(corrida));
+        }
+        records.clear();
+        std::vector<std::vector<Registro>> runs;
+        for (Corrida& corrida : corridas) {
+            runs.emplace_back();
+            Registro registro;
+            while (corrida.siguiente(registro)) {
+                runs.back().push_back(registro);
+            }
         }
         const auto initial_runs = runs.size();
         std::size_t merge_passes = 0;
@@ -123,8 +158,10 @@ private:
         }
     };
 
-    static void ordenar_run(std::vector<Registro>& run, const KeyFunction& key, bool reverse) {
-        std::sort(run.begin(), run.end(), [&](const Registro& left, const Registro& right) {
+    using Iterador = typename std::vector<Registro>::iterator;
+
+    static void ordenar_run(Iterador inicio, Iterador fin, const KeyFunction& key, bool reverse) {
+        std::stable_sort(inicio, fin, [&](const Registro& left, const Registro& right) {
             return reverse ? key(left) > key(right) : key(left) < key(right);
         });
     }
@@ -153,6 +190,7 @@ private:
     std::size_t records_per_page_;
     std::size_t k_;
     PlanTrace* trace_;
+    NuevaCorrida nueva_corrida_;
 };
 
 enum class AggregateOp { COUNT, SUM, AVG, MIN, MAX };  // los agregados del GROUP BY
