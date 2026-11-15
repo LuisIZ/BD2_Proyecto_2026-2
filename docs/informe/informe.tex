@@ -591,7 +591,7 @@ La función \texttt{extract\_features\_audio} de \texttt{api/multimedia/extraer\
   \item \emph{Transformada discreta del coseno.} Las 128 bandas vecinas están muy correlacionadas entre sí. La DCT tipo II las expresa como una suma de cosenos y concentra la información en los primeros coeficientes. El coeficiente 0 es la energía promedio de la ventana, y los siguientes describen la forma general del espectro, que es lo que distingue el timbre de un instrumento. Se guardan los 13 primeros y se descarta el detalle fino. Como la DCT de una constante solo tiene coeficiente 0, el cambio de volumen del paso anterior afecta solo a ese coeficiente.
 \end{enumerate}
 
-El resultado es una matriz de $13 \times 1\,292$ por clip: un descriptor de 13 números por ventana, del mismo modo que SIFT da un descriptor de 128 números por punto clave. A partir de ahí sigue la cuantización (K-Means, histograma y TF-IDF), que la Parte 5 desarrolla con un ejemplo numérico.
+El resultado es una matriz de $13 \times 1\,292$ por clip: un descriptor de 13 números por ventana, del mismo modo que SIFT da un descriptor de 128 números por punto clave. A partir de ahí sigue la cuantización (K-Means, histograma y TF-IDF), que se desarrolla con un ejemplo numérico en la subsección \ref{sec:copyright-interfaz}.
 
 La colección es GTZAN, con 100 clips de cada uno de 10 géneros. Se quitó \texttt{jazz.00054.wav} porque está dañado, así que son 999 audios. Para evaluar, se pidieron los 5 vecinos más cercanos de cada audio y se contó cuántos eran de su mismo género, cuando al azar sería un 10\,\%. Con $K$ = 64, 128 y 256 se obtuvo 47, 52 y 54\,\%, y entrenar el vocabulario y calcular los vectores tomó 64, 56 y 93 segundos. Se eligió $K = 256$, el mismo valor que en imágenes. Con ese valor, clásica acierta un 86\,\% y rock un 25\,\%. El histograma cuenta cuántas veces aparece cada palabra acústica, pero no cuándo, así que se pierden el ritmo y la melodía, y los géneros con instrumentos parecidos, como rock, disco y country, se confunden más.
 
@@ -1077,6 +1077,66 @@ Clip sin sus tramos (negativo) & 30 & 2 alarmas \\
   \item \emph{Las 2 falsas alarmas} son \texttt{pop.00030} contra \texttt{pop.00031} y \texttt{pop.00047} contra \texttt{pop.00080}, con similitudes de hasta 88 y 91\,\%. Son clips de pop de GTZAN que suenan casi igual entre sí.
   \item \emph{El orden no cuenta.} El histograma no mira el orden de las ventanas, así que un audio puesto al revés se sigue pareciendo a su original (entre 75 y 84\,\% en una prueba aparte). Para un detector real haría falta una huella que conserve el orden en el tiempo.
 \end{itemize}
+
+\subsection{Interfaz de copyright}
+\label{sec:copyright-interfaz}
+
+La vista \emph{Copyright} de la web recibe una canción, la manda a \texttt{POST /api/copyright/analizar} y muestra qué partes de ella se parecen a canciones de GTZAN.
+
+\begin{itemize}
+  \item \emph{Reproductor.} El audio subido se reproduce en el navegador con \texttt{<audio>}, sin volver a pedirlo a la API.
+  \item \emph{Línea de tiempo.} Cada tramo de 10\,s es un bloque en su posición dentro de la canción. Como los tramos empiezan cada 5\,s y se solapan a la mitad, se dibujan en dos carriles alternados. El color indica la canción original de su mejor coincidencia, y gris si no supera el umbral; la intensidad indica la similitud. Al pasar el mouse se ven la canción, su género, el tramo del original con el que coincide y la similitud. Un tramo en silencio no trae coincidencias y se muestra así. Un clic reproduce la subida desde ese segundo, y una línea vertical sigue la reproducción.
+  \item \emph{Canciones detectadas.} Solo las que superan el umbral en al menos 2 tramos. Cada una aparece con su color, su género, cuántos tramos coinciden, su similitud máxima, el porcentaje de los tramos de la canción subida donde aparece y un botón para escuchar el original, que sirve \texttt{/api/audios/\{id\}}.
+  \item \emph{Veredicto.} ``Posible uso no autorizado'' o ``Sin coincidencias'', con el umbral usado: similitud de 74\,\% o más, el valor que eligió la evaluación con remixes, en al menos 2 tramos de la misma canción. Debajo se muestra una de las consultas \texttt{SIMILAR\_TO}, una por cada tramo con sonido, con el vector recortado.
+\end{itemize}
+
+La prueba \texttt{web/tests/copyright.spec.ts} simula la API y comprueba el veredicto, los 8 tramos de una canción de 45\,s, que los tramos de la misma canción tienen el mismo color, el detalle al pasar el mouse, que un clic mueve la reproducción, el original de cada canción, el caso sin coincidencias con un tramo en silencio y los errores de la API (figura~\ref{fig:copyright}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{img/copyright.png}
+\caption{Vista de copyright con una respuesta simulada de 45\,s: los primeros tramos coinciden con \texttt{pop.00011} y los últimos con \texttt{disco.00042}; los grises no superan el umbral.}
+\label{fig:copyright}
+\end{figure}
+
+\paragraph{Cómo un audio se vuelve un vector: la cuantización.} Cada ventana de 2\,048 muestras da 13 coeficientes MFCC, así que un clip de 30\,s es una nube de unos 1\,290 vectores de 13 números. Para comparar dos audios de distinto largo hay que convertir esa nube en un solo vector de tamaño fijo. Eso hace la \emph{cuantización}, igual que con las palabras visuales de las imágenes:
+
+\begin{enumerate}
+  \item \emph{K-Means.} Con las ventanas de toda la colección, K-Means busca $K$ centroides que minimicen la distancia de cada ventana a su centroide más cercano. Empieza con $K$ centroides al azar y repite dos pasos hasta que casi no cambian: asignar cada ventana a su centroide más cercano y mover cada centroide al promedio de sus ventanas. Cada centroide es una \emph{palabra acústica}, un tipo de sonido corto. Se entrena una sola vez, con $K = 256$.
+  \item \emph{Asignación al centroide más cercano.} Cada ventana de un audio se reemplaza por el número de su centroide más cercano en distancia euclidiana. El audio pasa a ser una secuencia de palabras.
+  \item \emph{Histograma.} Se cuenta cuántas veces aparece cada palabra. El resultado tiene $K$ posiciones, sin importar cuánto dure el audio.
+  \item \emph{TF-IDF.} Igual que en texto, se usa $\mathrm{tf} = 1 + \ln f$ para que una palabra muy repetida no domine, y $\mathrm{idf} = \ln\frac{N + 1}{\mathrm{df} + 1} + 1$ para que pesen más las palabras raras en la colección. El vector se normaliza con norma L2, así el coseno compara solo la proporción de sonidos.
+\end{enumerate}
+
+\emph{Ejemplo pequeño.} Supongamos $K = 3$ palabras con solo 2 coeficientes: $c_1 = (0, 0)$, $c_2 = (4, 0)$ y $c_3 = (0, 4)$. Un audio tiene 6 ventanas, y cada una se asigna al centroide más cercano:
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrc}
+\toprule
+Ventana & a $c_1$ & a $c_2$ & a $c_3$ & Palabra \\
+\midrule
+$(1, 0)$ & 1,00 & 3,00 & 4,12 & 1 \\
+$(0, 1)$ & 1,00 & 4,12 & 3,00 & 1 \\
+$(3, 1)$ & 3,16 & 1,41 & 4,24 & 2 \\
+$(5, 0)$ & 5,00 & 1,00 & 6,40 & 2 \\
+$(4, 1)$ & 4,12 & 1,00 & 5,00 & 2 \\
+$(1, 5)$ & 5,10 & 5,83 & 1,41 & 3 \\
+\bottomrule
+\end{tabular}
+\caption{Distancia euclidiana de cada ventana a cada centroide.}
+\end{table}
+
+El histograma es $f = (2, 3, 1)$. Si la colección tiene $N = 4$ audios y las palabras aparecen en $\mathrm{df} = (4, 2, 1)$ de ellos:
+\begin{itemize}
+  \item $\mathrm{tf} = (1 + \ln 2,\ 1 + \ln 3,\ 1 + \ln 1) = (1{,}693;\ 2{,}099;\ 1)$;
+  \item $\mathrm{idf} = (\ln\frac{5}{5} + 1,\ \ln\frac{5}{3} + 1,\ \ln\frac{5}{2} + 1) = (1;\ 1{,}511;\ 1{,}916)$;
+  \item $\mathrm{tf} \cdot \mathrm{idf} = (1{,}693;\ 3{,}171;\ 1{,}916)$, con norma $\sqrt{1{,}693^2 + 3{,}171^2 + 1{,}916^2} = 4{,}073$;
+  \item el vector final es $(0{,}416;\ 0{,}778;\ 0{,}470)$.
+\end{itemize}
+
+La palabra 1 aparece en los 4 audios, así que no ayuda a distinguirlos: su idf es 1, el mínimo. La palabra 3 aparece una sola vez en este audio, pero es la más rara de la colección, y por eso termina pesando más que la palabra 1, que aparece dos veces. En la detección de copyright esto se hace con cada tramo de 10\,s, y dos tramos se parecen si sus vectores tienen un coseno alto.
 
 %-------------------------------------------------------------------------------
 \section{Comparación experimental}
