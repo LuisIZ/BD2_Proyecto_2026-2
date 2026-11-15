@@ -1,0 +1,445 @@
+{
+  "archivo": "0123456789abcdef.mp3",
+  "duracion": 45.0,
+  "umbral": 74.0,
+  "veredicto": "posible_copyright",
+  "tramos": [
+    {
+      "inicio": 0.0,
+      "fin": 10.0,
+      "coincidencias": [
+        {
+          "cancion_id": 711,
+          "archivo": "pop/pop.00011.wav",
+          "genero": "pop",
+          "inicio_original": 5.0,
+          "fin_original": 15.0,
+          "similitud": 93.8,
+          "supera_umbral": true
+        },
+        {
+          "cancion_id": 332,
+          "archivo": "disco/disco.00031.wav",
+          "genero": "disco",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 68.7,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 973,
+          "archivo": "rock/rock.00073.wav",
+          "genero": "rock",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 66.3,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 155,
+          "archivo": "classical/classical.00054.wav",
+          "genero": "classical",
+          "inicio_original": 5.0,
+          "fin_original": 15.0,
+          "similitud": 62.7,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 406,
+          "archivo": "hiphop/hiphop.00005.wav",
+          "genero": "hiphop",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 56.5,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 5.0,
+      "fin": 15.0,
+      "coincidencias": [
+        {
+          "cancion_id": 711,
+          "archivo": "pop/pop.00011.wav",
+          "genero": "pop",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 91.2,
+          "supera_umbral": true
+        },
+        {
+          "cancion_id": 89,
+          "archivo": "blues/blues.00088.wav",
+          "genero": "blues",
+          "inicio_original": 5.0,
+          "fin_original": 15.0,
+          "similitud": 66.9,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 446,
+          "archivo": "hiphop/hiphop.00045.wav",
+          "genero": "hiphop",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 66.6,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 430,
+          "archivo": "hiphop/hiphop.00029.wav",
+          "genero": "hiphop",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 60.1,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 72,
+          "archivo": "blues/blues.00071.wav",
+          "genero": "blues",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 56.2,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 10.0,
+      "fin": 20.0,
+      "coincidencias": [
+        {
+          "cancion_id": 711,
+          "archivo": "pop/pop.00011.wav",
+          "genero": "pop",
+          "inicio_original": 15.0,
+          "fin_original": 25.0,
+          "similitud": 88.5,
+          "supera_umbral": true
+        },
+        {
+          "cancion_id": 601,
+          "archivo": "metal/metal.00001.wav",
+          "genero": "metal",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 73.0,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 408,
+          "archivo": "hiphop/hiphop.00007.wav",
+          "genero": "hiphop",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 61.1,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 51,
+          "archivo": "blues/blues.00050.wav",
+          "genero": "blues",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 58.0,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 227,
+          "archivo": "country/country.00026.wav",
+          "genero": "country",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 56.0,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 15.0,
+      "fin": 25.0,
+      "coincidencias": [
+        {
+          "cancion_id": 711,
+          "archivo": "pop/pop.00011.wav",
+          "genero": "pop",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 84.1,
+          "supera_umbral": true
+        },
+        {
+          "cancion_id": 838,
+          "archivo": "reggae/reggae.00038.wav",
+          "genero": "reggae",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 68.4,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 700,
+          "archivo": "pop/pop.00000.wav",
+          "genero": "pop",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 67.2,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 186,
+          "archivo": "classical/classical.00085.wav",
+          "genero": "classical",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 66.5,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 106,
+          "archivo": "classical/classical.00005.wav",
+          "genero": "classical",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 62.8,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 20.0,
+      "fin": 30.0,
+      "coincidencias": [
+        {
+          "cancion_id": 211,
+          "archivo": "country/country.00010.wav",
+          "genero": "country",
+          "inicio_original": 5.0,
+          "fin_original": 15.0,
+          "similitud": 69.8,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 510,
+          "archivo": "jazz/jazz.00009.wav",
+          "genero": "jazz",
+          "inicio_original": 5.0,
+          "fin_original": 15.0,
+          "similitud": 67.4,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 698,
+          "archivo": "metal/metal.00098.wav",
+          "genero": "metal",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 62.4,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 546,
+          "archivo": "jazz/jazz.00045.wav",
+          "genero": "jazz",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 60.8,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 439,
+          "archivo": "hiphop/hiphop.00038.wav",
+          "genero": "hiphop",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 59.0,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 25.0,
+      "fin": 35.0,
+      "coincidencias": [
+        {
+          "cancion_id": 539,
+          "archivo": "jazz/jazz.00038.wav",
+          "genero": "jazz",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 64.7,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 508,
+          "archivo": "jazz/jazz.00007.wav",
+          "genero": "jazz",
+          "inicio_original": 5.0,
+          "fin_original": 15.0,
+          "similitud": 63.2,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 899,
+          "archivo": "reggae/reggae.00099.wav",
+          "genero": "reggae",
+          "inicio_original": 15.0,
+          "fin_original": 25.0,
+          "similitud": 62.2,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 353,
+          "archivo": "disco/disco.00052.wav",
+          "genero": "disco",
+          "inicio_original": 15.0,
+          "fin_original": 25.0,
+          "similitud": 57.6,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 749,
+          "archivo": "pop/pop.00049.wav",
+          "genero": "pop",
+          "inicio_original": 0.0,
+          "fin_original": 10.0,
+          "similitud": 56.2,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 30.0,
+      "fin": 40.0,
+      "coincidencias": [
+        {
+          "cancion_id": 343,
+          "archivo": "disco/disco.00042.wav",
+          "genero": "disco",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 86.7,
+          "supera_umbral": true
+        },
+        {
+          "cancion_id": 988,
+          "archivo": "rock/rock.00088.wav",
+          "genero": "rock",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 72.2,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 686,
+          "archivo": "metal/metal.00086.wav",
+          "genero": "metal",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 71.6,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 80,
+          "archivo": "blues/blues.00079.wav",
+          "genero": "blues",
+          "inicio_original": 15.0,
+          "fin_original": 25.0,
+          "similitud": 66.7,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 785,
+          "archivo": "pop/pop.00085.wav",
+          "genero": "pop",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 62.1,
+          "supera_umbral": false
+        }
+      ]
+    },
+    {
+      "inicio": 35.0,
+      "fin": 45.0,
+      "coincidencias": [
+        {
+          "cancion_id": 343,
+          "archivo": "disco/disco.00042.wav",
+          "genero": "disco",
+          "inicio_original": 15.0,
+          "fin_original": 25.0,
+          "similitud": 82.3,
+          "supera_umbral": true
+        },
+        {
+          "cancion_id": 819,
+          "archivo": "reggae/reggae.00019.wav",
+          "genero": "reggae",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 69.6,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 469,
+          "archivo": "hiphop/hiphop.00068.wav",
+          "genero": "hiphop",
+          "inicio_original": 20.0,
+          "fin_original": 30.0,
+          "similitud": 60.7,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 71,
+          "archivo": "blues/blues.00070.wav",
+          "genero": "blues",
+          "inicio_original": 15.0,
+          "fin_original": 25.0,
+          "similitud": 57.0,
+          "supera_umbral": false
+        },
+        {
+          "cancion_id": 863,
+          "archivo": "reggae/reggae.00063.wav",
+          "genero": "reggae",
+          "inicio_original": 10.0,
+          "fin_original": 20.0,
+          "similitud": 56.4,
+          "supera_umbral": false
+        }
+      ]
+    }
+  ],
+  "canciones": [
+    {
+      "cancion_id": 711,
+      "archivo": "pop/pop.00011.wav",
+      "genero": "pop",
+      "tramos": 4,
+      "porcentaje": 50.0,
+      "similitud_maxima": 93.8
+    },
+    {
+      "cancion_id": 343,
+      "archivo": "disco/disco.00042.wav",
+      "genero": "disco",
+      "tramos": 2,
+      "porcentaje": 25.0,
+      "similitud_maxima": 86.7
+    }
+  ],
+  "consultas": [
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, cancion_id, inicio, fin, SIMILARITY_SCORE() AS similitud FROM segmentos WHERE SIMILAR_TO(VECTOR(0.081200001,0,0.1423,0.05,0.2), k = 5) USING HNSW;",
+    "SELECT id, archivo, genero FROM canciones;"
+  ]
+}
