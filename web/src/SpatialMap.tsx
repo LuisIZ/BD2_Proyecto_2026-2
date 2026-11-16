@@ -249,13 +249,18 @@ function MapContents({
       map.flyTo(target, Math.max(map.getZoom(), 13), { duration: 0.35 });
       return;
     }
+    // sin animación: si el mapa se desmonta durante el zoom animado, Leaflet
+    // lee el panel ya borrado y lanza "_leaflet_pos" en la consola
     if (shape.center && shape.radius !== undefined) {
-      map.fitBounds(L.latLng(shape.center).toBounds(shape.radius * 2));
+      map.fitBounds(L.latLng(shape.center).toBounds(shape.radius * 2), {
+        animate: false,
+      });
       return;
     }
     if (shape.knn) {
       map.fitBounds(L.latLngBounds([shape.knn.center, ...neighbors]).pad(0.2), {
         maxZoom: 15,
+        animate: false,
       });
       return;
     }
@@ -277,7 +282,7 @@ function MapContents({
             (point) => [point.latitude, point.longitude] as [number, number],
           ),
         ).pad(0.2),
-        { maxZoom: 13 },
+        { maxZoom: 13, animate: false },
       );
     else if (points.length > 0)
       map.fitBounds(
@@ -286,7 +291,7 @@ function MapContents({
             (point) => [point.latitude, point.longitude] as [number, number],
           ),
         ).pad(0.15),
-        { maxZoom: 11 },
+        { maxZoom: 11, animate: false },
       );
   }, [
     map,
