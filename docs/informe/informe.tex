@@ -408,7 +408,7 @@ La demostración con hilos se describe en la sección \ref{sec:demo}.
 
 \subsection{Interfaz de usuario}
 
-La interfaz web tiene los cuatro paneles pedidos: archivos (tablas, esquema, índices y estadísticas de páginas), consultas (editor con resaltado de SQL), resultados (tabla con contador y tiempo) y plan de ejecución, que dibuja el árbol de operadores como grafo con las filas, el tiempo y el índice usado en cada nodo. Además incluye la carga de CSV con elección de clave primaria e índices, y una sección de comparación que ejecuta la misma consulta sobre las distintas organizaciones y grafica el resultado.
+La interfaz web tiene los cuatro paneles pedidos: archivos (tablas, esquema, índices y estadísticas de páginas), consultas (editor con números de línea, ejemplos e historial), resultados (tabla con contador y tiempo) y plan de ejecución, que dibuja el árbol de operadores como grafo con las filas, el tiempo y el índice usado en cada nodo. Además incluye la carga de CSV con elección de clave primaria e índices, y una sección de comparación que ejecuta la misma consulta sobre las distintas organizaciones y grafica el resultado.
 
 %-------------------------------------------------------------------------------
 \section{Parte 2: base de datos espacial}
@@ -1169,7 +1169,17 @@ El heap inserta con una lectura y una escritura de página, y por eso es entre 5
 
 Esta comparación explica la observación del primer avance sobre el tiempo del heap. El crecimiento no se debe a un error: sin índice, buscar por clave primaria en un heap es un recorrido, y su costo crece de forma lineal con el tamaño del archivo. El secuencial ocupa un 24\,\% más de disco porque sus páginas quedan al 80\,\% tras reorganizar. Con carga masiva, ambos tardan lo mismo, porque cada página se escribe una sola vez.
 
-Una segunda medición, tomada como la mediana de 5 corridas (\nolinkurl{datos/resultados/heap_vs_secuencial.md}), confirma el mismo comportamiento: la búsqueda por clave en el heap pasa de 16 a 160 y a 1\,599 páginas al multiplicar los datos por 10, mientras que el secuencial pasa de 6 a 20 y a 35 páginas. Esa medición también muestra que el orden de llegada importa en el secuencial: con claves aleatorias el área auxiliar crece más (25\,629 registros con 100\,000 filas frente a 10\,625 con claves ascendentes) y la búsqueda lee 115 páginas en lugar de 35.
+Una segunda medición, tomada como la mediana de 5 corridas (\nolinkurl{datos/resultados/heap_vs_secuencial.md}), confirma el mismo comportamiento: la búsqueda por clave en el heap pasa de 16 a 160 y a 1\,599 páginas al multiplicar los datos por 10, mientras que el secuencial pasa de 6 a 20 y a 35 páginas. Esa medición también muestra que el orden de llegada importa en el secuencial: con claves aleatorias el área auxiliar crece más (25\,629 registros con 100\,000 filas frente a 10\,625 con claves ascendentes) y la búsqueda lee 115 páginas en lugar de 35. Las cuatro gráficas de esa medición se muestran en la figura~\ref{fig:heap-secuencial}; sus ejes están en escala logarítmica, así que una recta con pendiente de 45 grados indica un crecimiento lineal.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.49\textwidth]{img/heap_secuencial_insercion.png}\hfill
+\includegraphics[width=0.49\textwidth]{img/heap_secuencial_busqueda_pk.png}\\[4pt]
+\includegraphics[width=0.49\textwidth]{img/heap_secuencial_espacio.png}\hfill
+\includegraphics[width=0.49\textwidth]{img/heap_secuencial_reorganizacion.png}
+\caption{Heap File frente a archivo secuencial con 1\,000, 10\,000 y 100\,000 registros, mediana de 5 corridas: tiempo de inserción, búsqueda por clave primaria, espacio en disco y tiempo de reorganización.}
+\label{fig:heap-secuencial}
+\end{figure}
 
 \subsection{Índices: B+ agrupado, B+ no agrupado y hash extensible}
 
@@ -1588,7 +1598,7 @@ Los éxitos son imágenes con mucha textura y un diseño repetido. En el primero
 \begin{table}[H]
 \centering
 \small
-\begin{tabular}{p{3cm}p{5.2cm}p{5.8cm}}
+\begin{tabular}{>{\raggedright\arraybackslash}p{3cm}p{5.2cm}p{5.8cm}}
 \toprule
 Técnica & Conviene cuando & Desventaja \\
 \midrule
@@ -1598,12 +1608,15 @@ B+ agrupado & se consulta por rango o se lista ordenado por la clave primaria & 
 B+ no agrupado & se necesita un índice secundario con repetidos, por igualdad o rango & una lectura del heap por cada fila devuelta \\
 Hash extensible & solo hay búsquedas por igualdad & no sirve para rangos ni para ordenar \\
 R-Tree & se busca por distancia a un punto o dentro de un polígono, con pocas filas en el resultado & radios que devuelven gran parte de la tabla \\
+Búsqueda secuencial (espacial) & la consulta devuelve una parte grande de la tabla, como un radio de 10 km con 100\,000 puntos & siempre lee todas las páginas; en k vecinos ordena toda la tabla (342 ms frente a 5 ms del R-Tree) \\
+GiST (PostgreSQL) & se necesitan búsquedas espaciales en un sistema en producción; fue unas 10 veces más rápido que el R-Tree & su índice ocupa casi el doble que el R-Tree; con \texttt{geography}, más que la propia tabla \\
 SPIMI + TF-IDF & los textos tienen un largo parecido & premia los textos muy cortos; el índice ocupa unas 3 veces más que GIN \\
 SPIMI + BM25 & se rankea texto de propósito general; es la mejor opción del motor & mismo espacio que TF-IDF; \texttt{INSERT} y \texttt{DELETE} obligan a reconstruir \\
 GIN (PostgreSQL) & se filtra con AND o la tabla cambia seguido & lento para rankear consultas OR largas \\
 k-NN secuencial & la tabla es chica o la consulta lleva otros filtros en el \texttt{WHERE} & lee toda la tabla: unos 0,5 s con 100\,000 vectores \\
 IVF & la colección es grande y se reconstruye seguido, o se quiere controlar el recall con \texttt{nprobe} & con \texttt{nprobe} chico pierde vecinos en los bordes de las celdas \\
 HNSW & búsqueda interactiva con coseno sobre datos que caben en memoria & construcción 7 veces más lenta y 27\,\% más de memoria \\
+Coseno (frente a euclidiana) & los vectores son histogramas: compara proporciones y con el HNSW da más recall (0,978 frente a 0,886) & con vectores de norma 1 ordena igual que la euclidiana; con el IVF, la euclidiana llegó a un recall de 1,0 \\
 \bottomrule
 \end{tabular}
 \caption{Resumen de ventajas y desventajas.}
