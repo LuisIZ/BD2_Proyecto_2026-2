@@ -25,7 +25,11 @@ function Encuadre({ datos }: { datos: SedesCercanas }) {
       [datos.origen.lat, datos.origen.lon],
       ...datos.sedes.map((sede) => [sede.lat, sede.lon] as [number, number]),
     ];
-    map.fitBounds(L.latLngBounds(puntos).pad(0.25), { maxZoom: 14 });
+    // sin animación, como en SpatialMap: la ficha puede cerrarse durante el zoom
+    map.fitBounds(L.latLngBounds(puntos).pad(0.25), {
+      maxZoom: 14,
+      animate: false,
+    });
   }, [map, datos]);
   return null;
 }
