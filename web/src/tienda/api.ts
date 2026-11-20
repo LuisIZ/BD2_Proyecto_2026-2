@@ -29,8 +29,17 @@ async function pedir<T>(ruta: string, respaldo: T): Promise<Respuesta<T>> {
   return { datos: data as T, ejemplo: false };
 }
 
-export function buscarProductos(q: string, tipo: string, pagina: number) {
+export function buscarProductos(
+  q: string,
+  tipo: string,
+  pagina: number,
+  precioMin = "",
+  precioMax = "",
+) {
   const params = new URLSearchParams({ q, tipo, pagina: String(pagina) });
+  // un límite vacío no se manda: la API lo toma como "sin límite"
+  if (precioMin) params.set("precio_min", precioMin);
+  if (precioMax) params.set("precio_max", precioMax);
   return pedir<Catalogo>(`productos?${params}`, ejemplo.productos);
 }
 

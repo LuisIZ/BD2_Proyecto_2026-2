@@ -2009,6 +2009,17 @@ details summary {
   flex: 0 1 260px;
   min-width: 0;
 }
+.tienda-precios {
+  display: flex;
+  flex: 0 1 220px;
+  align-items: center;
+  gap: 6px;
+}
+.tienda-precios input {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 70px;
+}
 .tienda-grilla {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));

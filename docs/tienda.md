@@ -119,7 +119,7 @@ también las consultas SQL que corrió, para mostrarlas en la web.
 
 | Endpoint | Qué hace |
 |---|---|
-| `GET /api/tienda/productos?q=&tipo=&pagina=` | busca con `MATCH(descripcion, q) USING BM25` (con `AND tipo = ...` si hay tipo), o lista por tipo; 12 por página |
+| `GET /api/tienda/productos?q=&tipo=&pagina=&precio_min=&precio_max=` | busca con `MATCH(descripcion, q) USING BM25` y filtra con `AND tipo = ...` y `AND precio BETWEEN a AND b` (`>=` o `<=` si falta un límite), o lista solo con los filtros; 12 por página. Un mínimo mayor que el máximo responde 400 |
 | `GET /api/tienda/productos/{id}` | la ficha: nombre, descripción, categoría, precio y foto |
 | `GET /api/tienda/productos/{id}/recomendaciones?k=10` | el top k del recomendador, con la fuente y el puesto de cada producto |
 | `GET /api/tienda/productos/{id}/sedes?lat=&lon=&k=3` | las k sedes más cercanas que tienen stock |

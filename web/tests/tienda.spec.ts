@@ -47,6 +47,27 @@ test("buscar, abrir una ficha, ver 10 recomendaciones y las sedes en el mapa", a
   await expect.poll(() => pedidos.some((p) => p.includes("pagina=2"))).toBe(true);
   await expect(productos).toContainText("S/");
 
+  // rango de precio: un mínimo mayor que el máximo no se manda
+  const minimo = page.getByLabel("Precio mínimo");
+  const maximo = page.getByLabel("Precio máximo");
+  await minimo.fill("300");
+  await maximo.fill("100");
+  await page.getByRole("button", { name: "Buscar", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("no puede ser mayor que el máximo");
+  expect(pedidos.some((p) => p.includes("precio_min"))).toBe(false);
+  await minimo.fill("100");
+  await maximo.fill("300");
+  await page.getByRole("button", { name: "Buscar", exact: true }).click();
+  await expect
+    .poll(() => pedidos.some((p) => p.includes("precio_min=100&precio_max=300")))
+    .toBe(true);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await maximo.fill("");
+  await page.getByRole("button", { name: "Buscar", exact: true }).click();
+  await expect
+    .poll(() => pedidos.some((p) => p.endsWith("precio_min=100")))
+    .toBe(true);
+
   // ficha
   await productos.getByRole("button").first().click();
   await expect(page.getByRole("heading", { name: ejemplo.producto.nombre })).toBeVisible();
