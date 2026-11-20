@@ -1,0 +1,38 @@
+% B+ agrupado frente a B+ no agrupado (secciones 4.3 y 4.4)
+\begin{tikzpicture}[font=\footnotesize, >={Stealth[length=1.8mm]},
+  nodo/.style={draw, fill=gray!12, minimum height=0.55cm, inner sep=3pt},
+  hoja/.style={draw, fill=blue!12, minimum width=1.75cm, minimum height=0.9cm, align=center, inner sep=2pt},
+  pag/.style={draw, fill=orange!18, minimum width=1.25cm, minimum height=0.55cm, inner sep=1pt}]
+% B+ agrupado
+\node[nodo] (r1) at (2.3,2.5) {raíz: 20 \textbar{} 40};
+\node[hoja] (a1) at (0.3,1.0) {10 Ana\\15 Luis};
+\node[hoja] (a2) at (2.3,1.0) {20 Sara\\31 Juan};
+\node[hoja] (a3) at (4.3,1.0) {40 Rosa\\52 Pablo};
+\foreach \h in {a1,a2,a3} \draw[->] (r1.south) -- (\h.north);
+\draw[->, thick, blue!60!black] (a1) -- (a2);
+\draw[->, thick, blue!60!black] (a2) -- (a3);
+\node[align=center] at (2.3,-0.55) {\textbf{B+ agrupado}: la hoja guarda la fila completa.\\Un rango baja una vez y lee hojas contiguas.};
+% B+ no agrupado
+\begin{scope}[xshift=7.6cm]
+\node[nodo] (r2) at (2.3,2.5) {raíz: 20 \textbar{} 40};
+\node[hoja] (b1) at (0.3,1.0) {10 $\to$ (9,2)\\15 $\to$ (3,0)};
+\node[hoja] (b2) at (2.3,1.0) {20 $\to$ (6,1)\\31 $\to$ (1,4)};
+\node[hoja] (b3) at (4.3,1.0) {40 $\to$ (3,5)\\52 $\to$ (8,0)};
+\foreach \h in {b1,b2,b3} \draw[->] (r2.south) -- (\h.north);
+\draw[->, thick, blue!60!black] (b1) -- (b2);
+\draw[->, thick, blue!60!black] (b2) -- (b3);
+\node[pag] (p1) at (-0.4,-0.6) {pág.\ 1};
+\node[pag] (p3) at (0.95,-0.6) {pág.\ 3};
+\node[pag] (p6) at (2.3,-0.6) {pág.\ 6};
+\node[pag] (p8) at (3.65,-0.6) {pág.\ 8};
+\node[pag] (p9) at (5.0,-0.6) {pág.\ 9};
+\draw[->, orange!70!black] (b1.south) -- (p9.north);
+\draw[->, orange!70!black] (b1.south) -- (p3.north);
+\draw[->, orange!70!black] (b2.south) -- (p6.north);
+\draw[->, orange!70!black] (b2.south) -- (p1.north);
+\draw[->, orange!70!black] (b3.south) -- (p3.north);
+\draw[->, orange!70!black] (b3.south) -- (p8.north);
+\node[anchor=west, font=\scriptsize] at (5.75,-0.6) {Heap File};
+\node[align=center] at (2.3,-1.55) {\textbf{B+ no agrupado}: la hoja guarda (clave, RID).\\Cada fila del rango es un salto a otra página del heap.};
+\end{scope}
+\end{tikzpicture}
