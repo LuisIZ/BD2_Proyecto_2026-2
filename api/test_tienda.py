@@ -161,6 +161,20 @@ class PruebaTienda(unittest.TestCase):
             r = tienda.productos(q="kid's", tipo="LAMP", pagina=1)
             self.assertEqual([p["id"] for p in r["productos"]], [8])
             self.assertEqual(r["tipos"][0], {"tipo": "CHAIR", "productos": 4})
+            # rango de precio: con texto, con tipo, solo minimo y solo maximo
+            r = tienda.productos(q="chair", tipo="", pagina=1, precio_min=50, precio_max=100)
+            self.assertEqual(sorted(p["id"] for p in r["productos"]), [2, 3])
+            self.assertIn("AND precio BETWEEN 50 AND 100 USING BM25", r["consulta"])
+            r = tienda.productos(q="", tipo="CHAIR", pagina=1, precio_min=99.9, precio_max=None)
+            self.assertEqual(sorted(p["id"] for p in r["productos"]), [1, 2])
+            self.assertIn("tipo = 'CHAIR' AND precio >= 99.9", r["consulta"])
+            r = tienda.productos(q="", tipo="", pagina=1, precio_min=None, precio_max=60)
+            self.assertEqual((r["total"], sorted(p["id"] for p in r["productos"])), (3, [4, 7, 8]))
+            r = tienda.productos(q="", tipo="", pagina=2, precio_min=40, precio_max=None)
+            self.assertEqual(r["total"], 7)
+            with self.assertRaises(HTTPException) as error:
+                tienda.productos(q="", tipo="", pagina=1, precio_min=200, precio_max=100)
+            self.assertEqual(error.exception.status_code, 400)
         finally:
             tienda.POR_PAGINA = anterior
         ficha = tienda.producto(8)
@@ -168,7 +182,7 @@ class PruebaTienda(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             tienda.producto(99)
         self.assertEqual(error.exception.status_code, 404)
-        print("catalogo: paginas por texto, por tipo y sin filtros; ficha y 404")
+        print("catalogo: paginas por texto, por tipo, por precio y sin filtros; ficha y 404")
 
 
 if __name__ == "__main__":

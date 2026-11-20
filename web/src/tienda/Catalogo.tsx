@@ -40,7 +40,15 @@ export default function Catalogo({
   avisarEjemplo: (ejemplo: boolean) => void;
 }) {
   const [texto, setTexto] = useState("");
-  const [busqueda, setBusqueda] = useState({ q: "", tipo: "", pagina: 1 });
+  const [minimo, setMinimo] = useState("");
+  const [maximo, setMaximo] = useState("");
+  const [busqueda, setBusqueda] = useState({
+    q: "",
+    tipo: "",
+    pagina: 1,
+    precioMin: "",
+    precioMax: "",
+  });
   const [datos, setDatos] = useState<CatalogoDatos>();
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
@@ -49,7 +57,13 @@ export default function Catalogo({
     let vigente = true;
     setCargando(true);
     setError("");
-    buscarProductos(busqueda.q, busqueda.tipo, busqueda.pagina)
+    buscarProductos(
+      busqueda.q,
+      busqueda.tipo,
+      busqueda.pagina,
+      busqueda.precioMin,
+      busqueda.precioMax,
+    )
       .then((respuesta) => {
         if (!vigente) return;
         setDatos(respuesta.datos);
@@ -80,7 +94,17 @@ export default function Catalogo({
         role="search"
         onSubmit={(event) => {
           event.preventDefault();
-          setBusqueda({ ...busqueda, q: texto.trim(), pagina: 1 });
+          if (minimo && maximo && Number(minimo) > Number(maximo)) {
+            setError("El precio mínimo no puede ser mayor que el máximo.");
+            return;
+          }
+          setBusqueda({
+            ...busqueda,
+            q: texto.trim(),
+            pagina: 1,
+            precioMin: minimo,
+            precioMax: maximo,
+          });
         }}
       >
         <input
@@ -104,6 +128,31 @@ export default function Catalogo({
             </option>
           ))}
         </select>
+        <div className="tienda-precios" role="group" aria-label="Rango de precio">
+          <input
+            type="number"
+            min="0"
+            step="any"
+            inputMode="decimal"
+            aria-label="Precio mínimo"
+            placeholder="S/ mín."
+            value={minimo}
+            onChange={(event) => setMinimo(event.target.value)}
+          />
+          <span className="muted" aria-hidden="true">
+            –
+          </span>
+          <input
+            type="number"
+            min="0"
+            step="any"
+            inputMode="decimal"
+            aria-label="Precio máximo"
+            placeholder="S/ máx."
+            value={maximo}
+            onChange={(event) => setMaximo(event.target.value)}
+          />
+        </div>
         <button className="primary" type="submit" disabled={cargando}>
           Buscar
         </button>

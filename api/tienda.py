@@ -12,6 +12,7 @@ import math
 import re
 import time
 from collections import Counter
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -91,18 +92,40 @@ def tipos_con_cantidad():
 # --- catalogo y ficha ---
 
 
+def numero(valor):
+    """Precio para el SQL, sin notacion cientifica ni ceros de mas (100.0 -> 100)."""
+    return f"{valor:.2f}".rstrip("0").rstrip(".")
+
+
+def filtro_precio(precio_min, precio_max):
+    """La condicion del rango de precio; vacia si no hay limites."""
+    if precio_min is not None and precio_max is not None:
+        return f"precio BETWEEN {numero(precio_min)} AND {numero(precio_max)}"
+    if precio_min is not None:
+        return f"precio >= {numero(precio_min)}"
+    if precio_max is not None:
+        return f"precio <= {numero(precio_max)}"
+    return ""
+
+
 @router.get("/productos")
-def productos(q: str = "", tipo: str = "", pagina: int = Query(1, ge=1)):
-    """Busca con BM25 sobre la descripcion, o lista por tipo. El motor no tiene OFFSET:
-    se piden todas las coincidencias y la pagina se corta aqui; sin filtros se pagina por id."""
+def productos(q: str = "", tipo: str = "", pagina: int = Query(1, ge=1),
+              precio_min: Annotated[float | None, Query(ge=0)] = None,
+              precio_max: Annotated[float | None, Query(ge=0)] = None):
+    """Busca con BM25 sobre la descripcion y filtra por tipo y rango de precio. El motor no
+    tiene OFFSET: se piden todas las coincidencias y la pagina se corta aqui; sin filtros se
+    pagina por id."""
     q, tipo = q.strip(), tipo.strip()
+    if precio_min is not None and precio_max is not None and precio_min > precio_max:
+        raise HTTPException(400, "El precio mínimo no puede ser mayor que el máximo.")
     inicio = (pagina - 1) * POR_PAGINA
+    filtros = [f for f in (f"tipo = {literal(tipo)}" if tipo else "", filtro_precio(precio_min, precio_max)) if f]
     if q:
-        filtro = f" AND tipo = {literal(tipo)}" if tipo else ""
+        filtro = "".join(f" AND {f}" for f in filtros)
         consulta = (f"SELECT {COLUMNAS_RESUMEN}, SCORE() AS relevancia FROM productos "
                     f"WHERE MATCH(descripcion, {literal(q)}){filtro} USING BM25 ORDER BY relevancia DESC")
-    elif tipo:
-        consulta = f"SELECT {COLUMNAS_RESUMEN} FROM productos WHERE tipo = {literal(tipo)}"
+    elif filtros:
+        consulta = f"SELECT {COLUMNAS_RESUMEN} FROM productos WHERE {' AND '.join(filtros)}"
     else:
         consulta = f"SELECT {COLUMNAS_RESUMEN} FROM productos WHERE id BETWEEN {inicio + 1} AND {inicio + POR_PAGINA}"
 
@@ -111,13 +134,15 @@ def productos(q: str = "", tipo: str = "", pagina: int = Query(1, ge=1)):
         raise HTTPException(400, respuesta.get("error"))
     filas = [resumen(f) for f in filas_de(respuesta)]
     tipos = tipos_con_cantidad()
-    if q or tipo:
+    if q or filtros:
         total, pagina_filas = len(filas), filas[inicio:inicio + POR_PAGINA]
     else:
         total, pagina_filas = sum(t["productos"] for t in tipos), filas
     return {
         "q": q,
         "tipo": tipo,
+        "precio_min": precio_min,
+        "precio_max": precio_max,
         "pagina": pagina,
         "por_pagina": POR_PAGINA,
         "total": total,

@@ -335,6 +335,4 @@ Cada línea se corre desde la raíz. Python tiene que ser el del entorno virtual
 - Dayane Rojas (@DayaneRojas1506)
 - Noe Paredes (@NoeParedes)
 
-Participaron en avances anteriores: Jimena Huamani (@jimena-mr) y Omar Chavarria (@OmarUTEC).
-
 Planificación en el [Project board](https://github.com/users/LuisIZ/projects/1).
