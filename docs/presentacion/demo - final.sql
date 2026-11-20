@@ -1,4 +1,4 @@
--- Demo de la presentacion final (Partes 3, 4 y 5). El guion esta en "guion - final.md".
+-- Demo de la presentacion final (Partes 3, 4 y 5), en el orden en que se expone.
 -- En la presentacion cada consulta se escribe a mano; este archivo es el respaldo si algo falla.
 --
 -- Requisitos: las tablas de la tienda y de copyright cargadas (docs/tienda.sql y docs/copyright.sql,
