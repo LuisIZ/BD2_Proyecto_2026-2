@@ -9,6 +9,7 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{array}
+\usepackage{longtable}
 \usepackage{float}
 \usepackage{caption}
 \usepackage{listings}
@@ -71,11 +72,11 @@
 
 El equipo construyó desde cero un gestor de bases de datos multimodal: un motor en C++ que guarda tablas en páginas de 4\,KB, las indexa, ejecuta SQL con un planificador y transacciones, y responde consultas espaciales, de texto y de similitud de imágenes y audio. Sobre ese motor funcionan dos aplicaciones, una tienda en línea con recomendaciones y un detector de copyright en audio, que solo se comunican con él por su API.
 
-En todas las partes se midió, además del tiempo, cuántas páginas lee cada operación, porque esa es la unidad de costo con la que se analizan las estructuras en el curso. Los resultados principales son los siguientes:
+En todas las partes se midió, además del tiempo, cuántas páginas lee cada operación, porque esa es la unidad de costo con la que se analizan las estructuras en disco. Los resultados principales son los siguientes:
 
 \begin{itemize}
   \item Sin índice, buscar por clave en un Heap File de 100\,000 filas lee 1\,599 páginas, cerca de la mitad del archivo, como predice el costo $M/2$; el archivo secuencial lee entre 35 y 115.
-  \item En un rango de 100 claves, el B+ agrupado lee 9 páginas y el no agrupado 104: una por cada fila encontrada más la altura del árbol, que es exactamente el costo visto en clase.
+  \item En un rango de 100 claves, el B+ agrupado lee 9 páginas y el no agrupado 104: una por cada fila encontrada más la altura del árbol, que es exactamente el costo teórico.
   \item En texto, BM25 supera a TF-IDF con coseno por 15 puntos de Precision@10 con el mismo tiempo de consulta, y queda al nivel del índice GIN de PostgreSQL.
   \item Con 100\,000 vectores, el índice HNSW responde unas 1\,000 veces más rápido que el recorrido secuencial del motor, con un Recall@10 de 0,98.
   \item En el detector de copyright, el umbral de similitud de 74\,\% se eligió midiendo 150 casos y logra una precisión de 0,90 con un recall de 0,83.
@@ -99,12 +100,12 @@ El proyecto consiste en construir un gestor de bases de datos que soporte varios
   \item \emph{Parte 5, aplicaciones:} una tienda con recomendaciones (opción B del Anexo A) y un detector de copyright en audio (opción C).
 \end{itemize}
 
-El informe sigue la estructura de la sección de entregables: primero la arquitectura y el dominio de datos, luego las técnicas de cada parte y las dos aplicaciones, y al final la comparación experimental, la tabla de cuándo usar cada técnica y las conclusiones. El código, la documentación técnica de cada módulo y el manual de instalación están en el repositorio.
+El informe sigue la estructura de la sección de entregables: primero la arquitectura y el dominio de datos, luego las técnicas de cada parte y las dos aplicaciones, y al final la comparación experimental, la complejidad de cada técnica, la tabla de cuándo usarla y las conclusiones. El código, la documentación técnica de cada módulo y el manual de instalación están en el repositorio.
 
 %-------------------------------------------------------------------------------
 \section{Arquitectura del sistema}
 
-La arquitectura sigue el recorrido de una consulta que se estudió en la primera semana del curso: el \emph{parser} convierte el SQL en un árbol, el \emph{optimizador} elige un plan físico, el \emph{ejecutor} lo recorre nodo por nodo y, por debajo, el \emph{buffer manager} y el \emph{file manager} traducen todo a lecturas y escrituras de páginas. La figura~\ref{fig:capas} muestra cómo quedó repartido ese recorrido en el minigestor. Cada capa solo conoce a la que tiene debajo, lo que permitió que los integrantes trabajaran en paralelo sobre interfaces acordadas.
+La arquitectura sigue el recorrido clásico de una consulta: el \emph{parser} convierte el SQL en un árbol, el \emph{optimizador} elige un plan físico, el \emph{ejecutor} lo recorre nodo por nodo y, por debajo, el \emph{buffer manager} y el \emph{file manager} traducen todo a lecturas y escrituras de páginas. La figura~\ref{fig:capas} muestra cómo quedó repartido ese recorrido en el minigestor. Cada capa solo conoce a la que tiene debajo, lo que permitió que los integrantes trabajaran en paralelo sobre interfaces acordadas.
 
 \begin{figure}[!htbp]
 \centering
@@ -163,14 +164,14 @@ El motor maneja cinco tipos de columna:
 
 \subsection{Formato de registro y de página}
 
-Todas las estructuras trabajan sobre páginas de 4\,096 bytes. En el Heap File y en el archivo secuencial, un registro es de longitud variable: \texttt{[int32 clave][uint32 largo][valor]}, donde el valor empaqueta el resto de columnas, los enteros en 4 bytes y los textos con su largo en 2 bytes seguido de los caracteres. El B+ agrupado, en cambio, usa registros de longitud fija, con cada texto rellenado hasta su largo máximo, para ubicarlos por posición dentro de la hoja. Es el mismo compromiso entre longitud fija y variable que se discutió en clase: la fija simplifica el acceso directo y la variable ahorra espacio.
+Todas las estructuras trabajan sobre páginas de 4\,096 bytes. En el Heap File y en el archivo secuencial, un registro es de longitud variable: \texttt{[int32 clave][uint32 largo][valor]}, donde el valor empaqueta el resto de columnas, los enteros en 4 bytes y los textos con su largo en 2 bytes seguido de los caracteres. El B+ agrupado, en cambio, usa registros de longitud fija, con cada texto rellenado hasta su largo máximo, para ubicarlos por posición dentro de la hoja. Es el compromiso clásico entre longitud fija y variable: la fija simplifica el acceso directo y la variable ahorra espacio.
 
 %-------------------------------------------------------------------------------
 \section{Parte 1: base de datos relacional}
 
 \subsection{Heap File con páginas slotted}
 
-El Heap File guarda los registros en orden de llegada. Cada página es una \emph{slotted page} como la de clase (figura~\ref{fig:slotted}): una cabecera con el número de slots y el inicio del espacio libre, un directorio de slots que crece hacia abajo, equivalente al arreglo de \emph{ItemId} de PostgreSQL, y los datos, que crecen desde el final. Un registro se identifica por su RID, el par (página, slot), y ese RID no cambia aunque otros registros se borren, porque borrar solo marca el slot como tumba.
+El Heap File guarda los registros en orden de llegada. Cada página es una \emph{slotted page} (figura~\ref{fig:slotted}): una cabecera con el número de slots y el inicio del espacio libre, un directorio de slots que crece hacia abajo, equivalente al arreglo de \emph{ItemId} de PostgreSQL, y los datos, que crecen desde el final. Un registro se identifica por su RID, el par (página, slot), y ese RID no cambia aunque otros registros se borren, porque borrar solo marca el slot como tumba.
 
 \begin{figure}[!htbp]
 \centering
@@ -179,14 +180,14 @@ El Heap File guarda los registros en orden de llegada. Cada página es una \emph
 \label{fig:slotted}
 \end{figure}
 
-Para reutilizar el espacio libre, como pide el enunciado, el archivo mantiene en memoria un mapa del espacio libre de cada página, que cumple el papel de la \emph{free list} vista en clase y se reconstruye al abrir leyendo solo las cabeceras. Así una inserción no recorre el archivo buscando sitio: consulta el mapa, lee una página y la escribe. En la prueba del enunciado (insertar 1\,000, borrar 500 e insertar 500) el archivo no crece. La desventaja es que el heap no tiene orden, así que buscar por clave sin índice obliga a recorrerlo.
+Para reutilizar el espacio libre, el archivo mantiene en memoria un mapa del espacio libre de cada página, que cumple el papel de una \emph{free list} y se reconstruye al abrir leyendo solo las cabeceras. Así una inserción no recorre el archivo buscando sitio: consulta el mapa, lee una página y la escribe. En la prueba del enunciado (insertar 1\,000, borrar 500 e insertar 500) el archivo no crece. La desventaja es que el heap no tiene orden, así que buscar por clave sin índice obliga a recorrerlo.
 
 \subsection{Archivo secuencial paginado}
 
 El archivo secuencial mantiene los registros ordenados por clave dentro de cada página y entre páginas, con un área principal ordenada y un área auxiliar para los registros que no caben en su página.
 
 \begin{itemize}
-  \item \emph{Búsqueda.} Búsqueda binaria sobre las páginas principales leyendo solo la primera clave de cada una, que funciona como el índice disperso (\emph{sparse index}) visto en clase; luego búsqueda binaria dentro de la página y, si la clave no está, recorrido del área auxiliar.
+  \item \emph{Búsqueda.} Búsqueda binaria sobre las páginas principales leyendo solo la primera clave de cada una, que funciona como un índice disperso (\emph{sparse index}); luego búsqueda binaria dentro de la página y, si la clave no está, recorrido del área auxiliar.
   \item \emph{Inserción.} Ubica la página por búsqueda binaria; si hay espacio, inserta en su posición ordenada, y si no, el registro va al área auxiliar.
   \item \emph{Eliminación perezosa.} Marca el slot como tumba y lo deja en su sitio, porque su clave todavía sirve como frontera para la búsqueda binaria.
   \item \emph{Reorganización.} Se dispara cuando las tumbas y los registros auxiliares superan el 30\,\% del total. Mezcla en streaming el área principal con el auxiliar ordenado y deja las páginas al 80\,\% (\emph{fill factor}) para que las siguientes inserciones entren en su lugar.
@@ -194,7 +195,7 @@ El archivo secuencial mantiene los registros ordenados por clave dentro de cada 
 
 \subsection{B+ agrupado y B+ no agrupado}
 
-La figura~\ref{fig:bplus} resume la diferencia entre los dos índices B+, que es la misma que se estudió en clase entre un índice \emph{clustered} y uno \emph{unclustered}.
+La figura~\ref{fig:bplus} resume la diferencia entre los dos índices B+: un índice \emph{clustered} frente a uno \emph{unclustered}.
 
 \begin{figure}[!htbp]
 \centering
@@ -203,13 +204,13 @@ La figura~\ref{fig:bplus} resume la diferencia entre los dos índices B+, que es
 \label{fig:bplus}
 \end{figure}
 
-\paragraph{B+ agrupado.} Las hojas contienen las filas completas, ordenadas por clave primaria y encadenadas. Una búsqueda baja de la raíz a la hoja leyendo una página por nivel, $\log_{R/2} M$ en la notación de clase, y un rango recorre hojas consecutivas. Con filas de 180 bytes caben 22 registros por hoja. El árbol implementa split de hojas y nodos internos con propagación hasta la raíz, eliminación con préstamo y fusión, y una carga masiva que llena las hojas al 90\,\%. Solo puede haber uno por tabla, porque define el orden físico de los datos.
+\paragraph{B+ agrupado.} Las hojas contienen las filas completas, ordenadas por clave primaria y encadenadas. Una búsqueda baja de la raíz a la hoja leyendo una página por nivel ($\log_{R/2} M$ niveles), y un rango recorre hojas consecutivas. Con filas de 180 bytes caben 22 registros por hoja. El árbol implementa split de hojas y nodos internos con propagación hasta la raíz, eliminación con préstamo y fusión, y una carga masiva que llena las hojas al 90\,\%. Solo puede haber uno por tabla, porque define el orden físico de los datos.
 
-\paragraph{B+ no agrupado.} Es un índice secundario: sus hojas guardan pares (clave, RID) que apuntan al Heap File, con 16 bytes por entrada y unas 205 entradas por página. Admite claves repetidas y puede crearse sobre cualquier columna \texttt{INT} o \texttt{VARCHAR}. Su costo está en que cada fila encontrada obliga a leer una página del heap, y esas páginas están dispersas: en un rango, el costo es la altura del árbol más un acceso por coincidencia. Para este problema PostgreSQL usa el \emph{Bitmap Index Scan}, visto en clase, que ordena los RID por página antes de leer el heap; el motor no lo implementa.
+\paragraph{B+ no agrupado.} Es un índice secundario: sus hojas guardan pares (clave, RID) que apuntan al Heap File, con 16 bytes por entrada y unas 205 entradas por página. Admite claves repetidas y puede crearse sobre cualquier columna \texttt{INT} o \texttt{VARCHAR}. Su costo está en que cada fila encontrada obliga a leer una página del heap, y esas páginas están dispersas: en un rango, el costo es la altura del árbol más un acceso por coincidencia. Para este problema PostgreSQL usa el \emph{Bitmap Index Scan}, que ordena los RID por página antes de leer el heap; el motor no lo implementa.
 
 \subsection{Hash extensible en disco}
 
-El hash extensible (Fagin et al., 1979) mantiene un directorio de $2^D$ punteros a buckets, donde $D$ es la profundidad global, y cada bucket tiene su profundidad local $d$. Cada bucket es una página de 4 KB con 255 entradas (clave, RID). Cuando un bucket se llena, se divide por un bit más del hash, y si su $d$ ya era igual a $D$, el directorio se duplica (figura~\ref{fig:hash}). Si todas las entradas tienen la misma clave, dividir no sirve, y en ese caso se encadena una página de desborde. La profundidad máxima es un parámetro y por defecto vale 16 bits (65\,536 entradas de directorio), un valor que el profesor sugirió revisar en el primer avance; al llegar a ese límite, los buckets llenos pasan a usar páginas de desborde.
+El hash extensible (Fagin et al., 1979) mantiene un directorio de $2^D$ punteros a buckets, donde $D$ es la profundidad global, y cada bucket tiene su profundidad local $d$. Cada bucket es una página de 4 KB con 255 entradas (clave, RID). Cuando un bucket se llena, se divide por un bit más del hash, y si su $d$ ya era igual a $D$, el directorio se duplica (figura~\ref{fig:hash}). Si todas las entradas tienen la misma clave, dividir no sirve, y en ese caso se encadena una página de desborde. La profundidad máxima es un parámetro y por defecto vale 16 bits (65\,536 entradas de directorio); al llegar a ese límite, los buckets llenos pasan a usar páginas de desborde.
 
 \begin{figure}[!htbp]
 \centering
@@ -236,14 +237,14 @@ Cada valor lleva un byte con su tipo, así que el archivo no depende del esquema
 
 \subsection{Algoritmos externos}
 
-\paragraph{External merge sort.} El \texttt{ORDER BY} se resuelve con el \emph{Two-Phase Multiway Merge Sort} de clase, con un presupuesto de $B = 10$ páginas de 4\,KB:
+\paragraph{External merge sort.} El \texttt{ORDER BY} se resuelve con el \emph{Two-Phase Multiway Merge Sort}, con un presupuesto de $B = 10$ páginas de 4\,KB:
 
 \begin{enumerate}
   \item \emph{Generación de corridas.} Se toman las filas que caben en $B$ páginas, se ordenan en memoria y se escriben como una corrida en un archivo temporal.
   \item \emph{Mezcla de $k$ vías.} Con $k = B - 1$, se mezclan $k$ corridas a la vez con un heap de mínimos, usando una página de entrada por corrida y una de salida. Si hay más de $k$ corridas, cada pasada escribe corridas nuevas y borra las anteriores, hasta que queda una sola.
 \end{enumerate}
 
-Con claves iguales sale primero la fila de la corrida anterior, así que el orden es estable. Con $N$ páginas de filas, el costo es el que se vio en clase:
+Con claves iguales sale primero la fila de la corrida anterior, así que el orden es estable. Con $N$ páginas de filas, el costo es:
 \[
   \text{corridas} = \left\lceil \frac{N}{B} \right\rceil, \qquad
   \text{pasadas} = \left\lceil \log_{B-1} \text{corridas} \right\rceil, \qquad
@@ -267,7 +268,7 @@ Filas & Páginas ($N$) & Corridas & Pasadas & Escritas / leídas & Tiempo \\
 \label{tab:sort-externo}
 \end{table}
 
-\paragraph{External hashing.} El \texttt{GROUP BY} y los agregados siguen el \emph{external hashing} de clase, también con $B = 10$ páginas:
+\paragraph{External hashing.} El \texttt{GROUP BY} y los agregados siguen el \emph{external hashing}, también con $B = 10$ páginas:
 
 \begin{enumerate}
   \item \emph{Particionamiento.} Cada fila se reduce al valor del grupo y a las columnas de los agregados, y se escribe en la partición $\mathrm{hash}(\mathit{grupo}) \bmod (B-1)$, cada una con una página de buffer.
@@ -298,9 +299,9 @@ Con pocos grupos alcanza un nivel: cada fila se escribe y se lee una sola vez, y
 
 \subsection{Parser, planificador y EXPLAIN}
 
-El parser es de descenso recursivo y reconoce \texttt{CREATE TABLE} (con esquema o desde un CSV), \texttt{COPY}, \texttt{CREATE INDEX} (con \texttt{BPLUS}, \texttt{HASH}, \texttt{RTREE}, \texttt{SPIMI}, \texttt{IVF} o \texttt{HNSW}), \texttt{INSERT}, \texttt{DELETE}, \texttt{SELECT} con \texttt{WHERE}, \texttt{GROUP BY}, \texttt{ORDER BY} y \texttt{LIMIT}, \texttt{DROP}, \texttt{SHOW TABLES}, \texttt{DESCRIBE}, \texttt{EXPLAIN [ANALYZE]} y las sentencias de transacción. Antes de ejecutar hace la verificación semántica de clase: que las tablas y columnas existan y que los tipos sean compatibles.
+El parser es de descenso recursivo y reconoce \texttt{CREATE TABLE} (con esquema o desde un CSV), \texttt{COPY}, \texttt{CREATE INDEX} (con \texttt{BPLUS}, \texttt{HASH}, \texttt{RTREE}, \texttt{SPIMI}, \texttt{IVF} o \texttt{HNSW}), \texttt{INSERT}, \texttt{DELETE}, \texttt{SELECT} con \texttt{WHERE}, \texttt{GROUP BY}, \texttt{ORDER BY} y \texttt{LIMIT}, \texttt{DROP}, \texttt{SHOW TABLES}, \texttt{DESCRIBE}, \texttt{EXPLAIN [ANALYZE]} y las sentencias de transacción. Antes de ejecutar hace la verificación semántica: que las tablas y columnas existan y que los tipos sean compatibles.
 
-El planificador es por reglas: elige una sola condición del \texttt{WHERE} que pueda resolverse con una estructura (índice, clave del agrupado o búsqueda binaria del secuencial) y deja el resto para un filtro en memoria. La decisión se toma mirando solo el catálogo, sin leer datos, y por eso \texttt{EXPLAIN} puede mostrar el plan sin ejecutar la consulta. \texttt{EXPLAIN ANALYZE} sí la ejecuta y agrega a cada nodo las filas, páginas y milisegundos reales, con el mismo formato de PostgreSQL que se usó en los laboratorios:
+El planificador es por reglas: elige una sola condición del \texttt{WHERE} que pueda resolverse con una estructura (índice, clave del agrupado o búsqueda binaria del secuencial) y deja el resto para un filtro en memoria. La decisión se toma mirando solo el catálogo, sin leer datos, y por eso \texttt{EXPLAIN} puede mostrar el plan sin ejecutar la consulta. \texttt{EXPLAIN ANALYZE} sí la ejecuta y agrega a cada nodo las filas, páginas y milisegundos reales, con el mismo formato de PostgreSQL:
 
 \begin{lstlisting}
 Limit on t  (rows=3) (actual rows=3)
@@ -328,7 +329,7 @@ SELECT ... FROM a x [INNER] JOIN b y ON x.c = y.c
 
 Las columnas se pueden calificar con la tabla o con su alias; una columna sin calificar es válida si está en una sola de las dos tablas, y si está en las dos el motor responde que es ambigua. Un self-join necesita alias distintos. Junto con el join se agregaron los alias en los agregados (\texttt{COUNT(*) AS veces}), que también se pueden usar en el \texttt{ORDER BY}.
 
-\paragraph{Selección antes del join.} En el motor, cada condición del \texttt{WHERE} menciona una sola columna, así que pertenece a una sola de las dos tablas. El planificador reparte las condiciones por tabla y cada lado se lee con su parte del \texttt{WHERE}, usando sus propios índices. Es la optimización sintáctica de clase: bajar las selecciones en el árbol de álgebra relacional para que el join reciba menos filas.
+\paragraph{Selección antes del join.} En el motor, cada condición del \texttt{WHERE} menciona una sola columna, así que pertenece a una sola de las dos tablas. El planificador reparte las condiciones por tabla y cada lado se lee con su parte del \texttt{WHERE}, usando sus propios índices. Es una optimización sintáctica: bajar las selecciones en el árbol de álgebra relacional para que el join reciba menos filas.
 
 \paragraph{Elección del algoritmo.} Una tabla es indexable si su columna del \texttt{ON} tiene un índice B+ o hash, o si es su clave primaria en una tabla secuencial o B+ agrupada. La tabla indexable es la interna. El planificador compara las filas estimadas de la externa, ya con su \texttt{WHERE}, con los registros de la interna:
 
@@ -390,13 +391,13 @@ Execution Time: 45.182 ms
 
 El planificador estimó 37 filas para la externa frente a los 7\,458 registros de la interna, y por eso eligió buscar por índice: los 2 compradores reales generaron 2 búsquedas que leyeron 38 páginas, mientras que un hash join habría leído \texttt{compras} completa. La estimación (37 filas) se aleja de lo real (2) porque el catálogo supone claves repartidas de forma pareja, pero la decisión es la correcta. El mismo plan muestra un costo fijo del external hashing: con tan pocos grupos, crear y borrar 9 archivos de partición consume 36 de los 45 ms, mientras que el join tarda medio milisegundo.
 
-Como límites, el join solo une dos tablas por una igualdad, no se combina con \texttt{MATCH} ni con \texttt{SIMILAR\_TO}, y lee sus dos lados en memoria después de filtrarlos. Todavía no implementa el hash join con particiones en disco de la clase (\emph{Grace hash join}), que sería necesario cuando los lados no caben en memoria.
+Como límites, el join solo une dos tablas por una igualdad, no se combina con \texttt{MATCH} ni con \texttt{SIMILAR\_TO}, y lee sus dos lados en memoria después de filtrarlos. Todavía no implementa el hash join con particiones en disco (\emph{Grace hash join}), que sería necesario cuando los lados no caben en memoria.
 
 \subsection{Transacciones y concurrencia}
 
 El motor reconoce \texttt{BEGIN TRANSACTION}, \texttt{END TRANSACTION} (o \texttt{COMMIT}) y \texttt{ROLLBACK}. El control de concurrencia usa bloqueos a nivel de tabla: un \texttt{SELECT} pide un lock compartido (S) y un \texttt{INSERT} o \texttt{DELETE} uno exclusivo (X). Se aplica 2PL estricto, es decir, los locks de una transacción se conservan hasta que termina, y la espera se implementa con variables de condición, sin espera activa.
 
-Como el 2PL puede producir interbloqueos, se optó por detectarlos: cuando una transacción debe esperar, el gestor arma el grafo de espera y busca un ciclo con una búsqueda en profundidad. Si lo encuentra, aborta a la transacción más joven del ciclo. Las páginas se escriben en disco en el momento, es decir, con \emph{modificación inmediata}, así que el rollback es un deshacer lógico: cada \texttt{INSERT} y \texttt{DELETE} queda anotado en memoria y \texttt{ROLLBACK} aplica la operación inversa en orden contrario. Es el UNDO de clase, pero sin un log en disco (WAL): el motor no puede recuperarse de una caída a mitad de una transacción. La demostración con hilos se presenta en la sección~\ref{sec:demo}.
+Como el 2PL puede producir interbloqueos, se optó por detectarlos: cuando una transacción debe esperar, el gestor arma el grafo de espera y busca un ciclo con una búsqueda en profundidad. Si lo encuentra, aborta a la transacción más joven del ciclo. Las páginas se escriben en disco en el momento, es decir, con \emph{modificación inmediata}, así que el rollback es un deshacer lógico: cada \texttt{INSERT} y \texttt{DELETE} queda anotado en memoria y \texttt{ROLLBACK} aplica la operación inversa en orden contrario. Es un UNDO, pero sin un log en disco (WAL): el motor no puede recuperarse de una caída a mitad de una transacción. La demostración con hilos se presenta en la sección~\ref{sec:demo}.
 
 \subsection{Interfaz de usuario}
 
@@ -405,7 +406,7 @@ La interfaz web tiene los cuatro paneles pedidos: archivos (tablas, esquema, ín
 %-------------------------------------------------------------------------------
 \section{Parte 2: base de datos espacial}
 
-La Parte 2 agrega datos geográficos al motor. El problema que resuelve es el que se planteó en la clase de bases de datos espaciales: un B+ ordena por una sola dimensión, así que no sirve para preguntar qué puntos están cerca de otro en el plano. Para eso se necesita un índice que agrupe por cercanía en dos dimensiones, el R-Tree.
+La Parte 2 agrega datos geográficos al motor. El problema que resuelve es el clásico de las bases de datos espaciales: un B+ ordena por una sola dimensión, así que no sirve para preguntar qué puntos están cerca de otro en el plano. Para eso se necesita un índice que agrupe por cercanía en dos dimensiones, el R-Tree.
 
 \subsection{Métricas de distancia}
 
@@ -457,7 +458,7 @@ El R-Tree (Guttman, 1984) guarda los puntos en nodos de 4 KB, igual que los dem�
 \label{fig:rtree}
 \end{figure}
 
-Las consultas siguen los algoritmos de clase (figura~\ref{fig:rtree}):
+Las consultas funcionan así (figura~\ref{fig:rtree}):
 
 \begin{itemize}
   \item \emph{Rango por radio:} se calcula la caja de grados que contiene al círculo y solo se baja por los nodos cuyo MBR la corta; en las hojas se filtra con la distancia exacta.
@@ -477,25 +478,25 @@ La interfaz incluye un panel de mapa con Leaflet que dibuja los puntos de la tab
 %-------------------------------------------------------------------------------
 \section{Parte 3: búsqueda de texto}
 
-La Parte 3 resuelve el problema con el que empezó la unidad de recuperación de información: buscar con \texttt{LIKE '\%palabra\%'} obliga a leer toda la tabla y no ordena por relevancia. La solución vista en clase es representar cada documento como una bolsa de palabras, guardar un índice invertido y rankear con un modelo de pesos.
+La Parte 3 resuelve el problema con el que empezó la unidad de recuperación de información: buscar con \texttt{LIKE '\%palabra\%'} obliga a leer toda la tabla y no ordena por relevancia. La solución habitual es representar cada documento como una bolsa de palabras, guardar un índice invertido y rankear con un modelo de pesos.
 
 \subsection{Preprocesamiento e índice invertido SPIMI}
 
-El sistema busca en la columna \texttt{descripcion} de los productos de ABO, que está en inglés. Antes de indexar, el texto pasa por las etapas de clase: minúsculas, tokenización usando los signos como separadores, eliminación de \emph{stopwords} y stemming de Porter (1980). Por ejemplo, \emph{The CARS are running, fast!} produce \texttt{car run fast}. La misma función se aplica a los documentos y a las consultas, para que los términos coincidan.
+El sistema busca en la columna \texttt{descripcion} de los productos de ABO, que está en inglés. Antes de indexar, el texto pasa por las etapas habituales: minúsculas, tokenización usando los signos como separadores, eliminación de \emph{stopwords} y stemming de Porter (1980). Por ejemplo, \emph{The CARS are running, fast!} produce \texttt{car run fast}. La misma función se aplica a los documentos y a las consultas, para que los términos coincidan.
 
 El índice se construye con SPIMI y no con BSBI porque SPIMI no necesita un diccionario global de identificadores de término: cada bloque tiene su propio diccionario hash de término a lista de postings $(\mathit{doc\_id}, \mathit{tf})$ y usa como máximo 4 MB. Cuando un bloque llega a ese límite, se ordenan sus términos y se escribe a un archivo temporal; como los documentos llegan en orden, cada lista ya queda ordenada por \texttt{doc\_id}. Al final, una mezcla de $k$ vías con cola de prioridad junta las listas de cada término, igual que la fase de mezcla del merge sort externo, y en memoria solo hay una entrada por bloque.
 
-En clase se propuso guardar el diccionario final en páginas ordenadas o en un B+. Se decidió mantenerlo en memoria: un archivo guarda término, posición de su lista y frecuencia de documento, y se carga una vez al abrir el índice. Ubicar un término cuesta $O(1)$ sin leer disco, y una consulta solo lee las listas de sus términos. El costo es memoria proporcional al vocabulario, que crece mucho más lento que la colección: los 10\,000 productos tienen 8\,108 términos, unos 0,2 MB. Si no cupiera en memoria, la alternativa sería la de clase.
+Una opción es guardar el diccionario final en páginas ordenadas o en un B+. Se decidió mantenerlo en memoria: un archivo guarda término, posición de su lista y frecuencia de documento, y se carga una vez al abrir el índice. Ubicar un término cuesta $O(1)$ sin leer disco, y una consulta solo lee las listas de sus términos. El costo es memoria proporcional al vocabulario, que crece mucho más lento que la colección: los 10\,000 productos tienen 8\,108 términos, unos 0,2 MB. Si no cupiera en memoria, se usaría esa alternativa.
 
 \subsection{Ranking: TF-IDF con coseno y BM25}
 
-La búsqueda solo recorre los postings de los términos de la consulta, acumula el score de cada documento y conserva los $k$ mejores con un heap de tamaño $k$, así que el costo es $O(n \log k)$ y no $O(n \log n)$.
+La búsqueda solo recorre los postings de los términos de la consulta, acumula el score de cada documento y conserva los $k$ mejores con un heap de tamaño $k$. Si la consulta lee $p_q$ postings y toca $A$ documentos, el costo es $O(p_q \log A + A \log k)$, en lugar de ordenar los $A$ candidatos con $O(A \log A)$; la sección~\ref{sec:complejidad} detalla este y los demás costos.
 
-\paragraph{TF-IDF con coseno.} Se usa el esquema lnc.ltc de clase. El documento pesa $w_d = 1 + \log_{10}(\mathrm{tf})$ y la consulta $w_q = (1 + \log_{10}(\mathrm{tf})) \cdot \log_{10}(N / \mathrm{df})$, y el score es el coseno entre ambos:
+\paragraph{TF-IDF con coseno.} Se usa el esquema lnc.ltc. El documento pesa $w_d = 1 + \log_{10}(\mathrm{tf})$ y la consulta $w_q = (1 + \log_{10}(\mathrm{tf})) \cdot \log_{10}(N / \mathrm{df})$, y el score es el coseno entre ambos:
 \[
   \mathrm{score}(d, q) = \frac{\sum_{t} w_d(t)\, w_q(t)}{\lVert d \rVert\, \lVert q \rVert}
 \]
-Las normas de los documentos se calculan al construir el índice, porque de otro modo el coseno tendría que recorrer todos los términos del documento en cada consulta. Con el ejemplo de clase, \emph{seguro de carro}, da 0,80.
+Las normas de los documentos se calculan al construir el índice, porque de otro modo el coseno tendría que recorrer todos los términos del documento en cada consulta. Con el ejemplo \emph{seguro de carro}, el score da 0,80.
 
 \paragraph{BM25.} Se usa $k_1 = 1{,}2$ y $b = 0{,}75$. El parámetro $k_1$ satura el aporte de la frecuencia y $b$ controla cuánto se penaliza un documento largo:
 \[
@@ -540,13 +541,13 @@ Todos los índices se pueden crear en las tres organizaciones de archivo (\textt
 \section{Parte 4: búsqueda multimedia}
 \label{sec:parte4}
 
-La Parte 4 busca objetos parecidos a una imagen o a un audio. Cada objeto se convierte en un vector y la búsqueda pasa a ser un problema de vecinos más cercanos en un espacio métrico. En este punto aparece una idea central de la clase de búsqueda eficiente: con 256 dimensiones, la \emph{maldición de la dimensionalidad} hace que las distancias entre puntos se parezcan mucho y que un índice exacto como el R-Tree de la Parte 2 casi no pueda podar ramas. Por eso se usan índices aproximados, IVF y HNSW, que aceptan perder algunos vecinos a cambio de no comparar contra toda la colección.
+La Parte 4 busca objetos parecidos a una imagen o a un audio. Cada objeto se convierte en un vector y la búsqueda pasa a ser un problema de vecinos más cercanos en un espacio métrico. En este punto aparece una idea central de la búsqueda eficiente: con 256 dimensiones, la \emph{maldición de la dimensionalidad} hace que las distancias entre puntos se parezcan mucho y que un índice exacto como el R-Tree de la Parte 2 casi no pueda podar ramas (sección~\ref{sec:dimensionalidad}). Por eso se usan índices aproximados, IVF y HNSW, que aceptan perder algunos vecinos a cambio de no comparar contra toda la colección.
 
-El profesor autorizó usar los índices de FAISS en lugar de implementarlos, con la condición de explicar cómo funcionan por dentro y qué significa cada parámetro. El trabajo quedó repartido entre dos procesos: el motor en C++ guarda los vectores, resuelve el k-NN exacto y arma las respuestas, y la API en Python extrae las características y mantiene los índices de FAISS.
+Los índices IVF y HNSW son los de la biblioteca FAISS; esta sección explica cómo funcionan por dentro y qué significa cada parámetro. El trabajo quedó repartido entre dos procesos: el motor en C++ guarda los vectores, resuelve el k-NN exacto y arma las respuestas, y la API en Python extrae las características y mantiene los índices de FAISS.
 
 \subsection{Extracción de características de imágenes}
 
-La función \texttt{extract\_features} sigue el modelo de bolsa de palabras visuales (BoVW) de clase:
+La función \texttt{extract\_features} sigue el modelo de bolsa de palabras visuales (BoVW):
 
 \begin{enumerate}
   \item SIFT (Lowe, 2004) detecta en la imagen, en escala de grises, hasta 500 puntos clave y describe cada uno con un vector de 128 dimensiones que no cambia con la escala ni con la rotación.
@@ -558,7 +559,7 @@ Con los 100\,000 productos y 7 procesos, la extracción completa tomó unos 19 m
 
 \subsection{Extracción de características de audio}
 
-Para audio solo cambia el descriptor local: MFCC en lugar de SIFT, calculados con \texttt{librosa} sobre ventanas deslizantes, como se indicó en clase. La función \texttt{librosa.feature.mfcc} se llama con \texttt{sr=22050}, \texttt{n\_mfcc=13}, \texttt{n\_fft=2048} y \texttt{hop\_length=512}, y por dentro hace estos pasos:
+Para audio solo cambia el descriptor local: MFCC en lugar de SIFT, calculados con \texttt{librosa} sobre ventanas deslizantes. La función \texttt{librosa.feature.mfcc} se llama con \texttt{sr=22050}, \texttt{n\_mfcc=13}, \texttt{n\_fft=2048} y \texttt{hop\_length=512}, y por dentro hace estos pasos:
 
 \begin{enumerate}
   \item \emph{Carga.} El audio (wav, mp3, flac u ogg) se pasa a mono y se remuestrea a 22\,050 muestras por segundo. Un clip de 30\,s queda como 661\,500 números entre $-1$ y $1$. Por el teorema de Nyquist, esa frecuencia representa sonidos de hasta 11\,025\,Hz, suficiente para la voz y la mayoría de los instrumentos.
@@ -616,7 +617,7 @@ La palabra 1 aparece en los 4 audios, así que no ayuda a distinguirlos y su idf
 
 \texttt{FLOAT} guarda un \texttt{float32} y admite comparaciones, \texttt{ORDER BY} y agregados. \texttt{VECTOR(k)} guarda $k$ valores \texttt{float32} seguidos, sin cabecera, porque la dimensión ya está en el catálogo; con $k = 256$ ocupa 1 KB. Se eligió \texttt{float32} porque es lo que producen la extracción y FAISS, así que los dos procesos leen los mismos números sin conversión. La dimensión máxima es 512 para que un registro quepa en una página de 4 KB; en el B+ agrupado, con registros de longitud fija de hasta 2\,040 bytes, \texttt{VECTOR(512)} da un error al crear la tabla.
 
-Las tres métricas pedidas se transforman para que en todas un valor menor signifique más parecido, la conversión entre similitud y disimilitud vista en clase. Con una sola convención, el mismo código de k-NN sirve para las tres.
+Las tres métricas pedidas se transforman para que en todas un valor menor signifique más parecido, la conversión habitual entre similitud y disimilitud. Con una sola convención, el mismo código de k-NN sirve para las tres.
 
 \begin{table}[H]
 \centering
@@ -636,7 +637,7 @@ Si los vectores tienen norma 1, como los histogramas, se cumple $\lVert a - b \r
 
 \subsection{k-NN secuencial}
 
-Sin índice, la respuesta exacta exige medir la distancia a todas las filas: es la línea base de la clase. El nodo \texttt{Seq Vector Scan} recorre la tabla y mantiene un heap de máximos con las $k$ mejores filas vistas, de modo que no hace falta un nodo \texttt{Sort} y en memoria solo hay $k$ filas. Con $N$ filas de dimensión $d$ el costo es $O(N d + N \log k)$, y las páginas leídas son las de toda la tabla, que es justamente lo que IVF y HNSW evitan. Este resultado exacto es también la referencia para medir el recall de los índices aproximados.
+Sin índice, la respuesta exacta exige medir la distancia a todas las filas: es la línea base. El nodo \texttt{Seq Vector Scan} recorre la tabla y mantiene un heap de máximos con las $k$ mejores filas vistas, de modo que no hace falta un nodo \texttt{Sort} y en memoria solo hay $k$ filas. Con $N$ filas de dimensión $d$ el costo es $O(N d + N \log k)$, y las páginas leídas son las de toda la tabla, que es justamente lo que IVF y HNSW evitan. Este resultado exacto es también la referencia para medir el recall de los índices aproximados.
 
 \begin{lstlisting}
 Projection on img (actual rows=10)
@@ -644,9 +645,40 @@ Projection on img (actual rows=10)
      Order By: distancia(v, VECTOR(256 dimensiones)) [coseno] ASC LIMIT 10
 \end{lstlisting}
 
+\subsection{Maldición de la dimensionalidad}
+\label{sec:dimensionalidad}
+
+Al subir la dimensión, las distancias entre puntos se concentran cerca de la media. El vecino más cercano y el más lejano quedan casi a la misma distancia, las regiones de un índice exacto se solapan y podar deja de servir. Para ver cuánto afecta esto a los vectores del proyecto, se midió el \emph{contraste relativo} $(d_{\max} - d_{\min}) / d_{\min}$ de 200 consultas contra 10\,000 vectores, con el script \texttt{tools/contraste\_dimensionalidad.py} (tabla~\ref{tab:contraste}). Un contraste cercano a 0 significa que todos los puntos están a la misma distancia de la consulta.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+Vectores (norma 1) & Contraste relativo (mediana) \\
+\midrule
+Uniformes, $d = 2$ & 18\,207 \\
+Uniformes, $d = 16$ & 2,59 \\
+Uniformes, $d = 256$ & 0,31 \\
+Histogramas de las fotos de ABO, $d = 256$ & 1,00 \\
+\bottomrule
+\end{tabular}
+\caption{Contraste relativo de las distancias euclidianas según la dimensión.}
+\label{tab:contraste}
+\end{table}
+
+Con las fotos de ABO, el vecino más lejano está apenas al doble de distancia que el más cercano. Los histogramas se concentran menos que unos datos uniformes de la misma dimensión, porque son dispersos (en promedio, 83 de sus 256 componentes son distintas de cero) y las fotos parecidas forman grupos. Aun así, hacen falta 191 componentes principales para explicar el 90\,\% de la varianza, así que la dimensión no se puede reducir mucho sin perder información. Con este contraste, la caja de casi cualquier nodo de un R-Tree queda dentro del radio del mejor candidato y la búsqueda visita casi todo el árbol. Por eso el motor no ofrece el R-Tree para columnas \texttt{VECTOR}.
+
+El diseño mitiga el problema en cuatro puntos:
+\begin{itemize}
+  \item \emph{Dimensión fija y moderada.} La bolsa de palabras cambia los cientos de descriptores SIFT de 128 dimensiones de cada foto por un solo vector de $K = 256$. Comparar dos fotos es calcular una distancia y no emparejar dos conjuntos de descriptores.
+  \item \emph{TF-IDF y norma L2.} TF-IDF baja el peso de las palabras que aparecen en casi todas las fotos, que son las que menos distinguen. La norma L2 deja todos los vectores sobre la esfera unitaria, donde las tres métricas ordenan igual.
+  \item \emph{Coseno.} Compara proporciones, así que no depende de cuántos puntos SIFT tenga cada foto.
+  \item \emph{Índices aproximados con refinamiento.} IVF y HNSW no podan con cajas: el IVF elige celdas por su centroide y el HNSW sigue un grafo de vecinos, así que su costo no depende de que las distancias se separen. El motor recalcula después la distancia exacta de los candidatos, con el esquema de filtrar y refinar.
+\end{itemize}
+
 \subsection{Índice IVF}
 
-El IVF (\emph{Inverted File Index}) aplica a los vectores la misma idea del índice invertido de texto. El espacio se divide con k-means en \texttt{nlist} celdas de Voronoi, cada una con su centroide y la lista de los vectores que caen en ella, y una consulta solo recorre las listas de las \texttt{nprobe} celdas más cercanas (figura~\ref{fig:ivf-hnsw}). Como se señaló en clase, la bolsa de palabras visuales ya es un IVF: en los dos casos se agrupa con k-means y se guarda una lista invertida por centroide. Sivic y Zisserman aplicaron el archivo invertido a imágenes, y Jégou, Douze y Schmid lo usaron como cuantizador grueso delante de una búsqueda exacta.
+El IVF (\emph{Inverted File Index}) aplica a los vectores la misma idea del índice invertido de texto. El espacio se divide con k-means en \texttt{nlist} celdas de Voronoi, cada una con su centroide y la lista de los vectores que caen en ella, y una consulta solo recorre las listas de las \texttt{nprobe} celdas más cercanas (figura~\ref{fig:ivf-hnsw}). La bolsa de palabras visuales ya es un IVF: en los dos casos se agrupa con k-means y se guarda una lista invertida por centroide. Sivic y Zisserman aplicaron el archivo invertido a imágenes, y Jégou, Douze y Schmid lo usaron como cuantizador grueso delante de una búsqueda exacta.
 
 \begin{figure}[!htbp]
 \centering
@@ -657,13 +689,13 @@ El IVF (\emph{Inverted File Index}) aplica a los vectores la misma idea del índ
 
 \paragraph{Construcción.} Se entrena un k-means con \texttt{nlist} centroides durante 10 iteraciones, con semilla fija, y cada vector se agrega a la lista de su centroide. Insertar después es ese mismo paso, sin reentrenar; si se insertan muchos vectores de una zona nueva, las listas se desbalancean y conviene reconstruir.
 
-\paragraph{Búsqueda.} La consulta se compara con los \texttt{nlist} centroides, se eligen los \texttt{nprobe} más cercanos y se calcula la distancia exacta solo contra los vectores de esas listas: unos $\texttt{nlist} + \texttt{nprobe} \cdot n / \texttt{nlist}$ en lugar de $n$. El precio es el problema de la frontera visto en clase: si el vecino verdadero cae en una celda no revisada, el IVF no lo encuentra. Con $\texttt{nprobe} = \texttt{nlist}$ el resultado es el mismo que el de la fuerza bruta, y así lo comprueban las pruebas.
+\paragraph{Búsqueda.} La consulta se compara con los \texttt{nlist} centroides, se eligen los \texttt{nprobe} más cercanos y se calcula la distancia exacta solo contra los vectores de esas listas: unos $\texttt{nlist} + \texttt{nprobe} \cdot n / \texttt{nlist}$ en lugar de $n$. El precio es el problema de la frontera: si el vecino verdadero cae en una celda no revisada, el IVF no lo encuentra. Con $\texttt{nprobe} = \texttt{nlist}$ el resultado es el mismo que el de la fuerza bruta, y así lo comprueban las pruebas.
 
 \paragraph{Parámetros y espacio.} Se usa $\texttt{nlist} \approx \sqrt{n}$ (25, 100 y 316 listas para 1k, 10k y 100k vectores) y \texttt{nprobe} se elige según el recall que se necesita. El índice guarda los vectores completos, más los ids y los centroides: con 100\,000 vectores ocupa 98,7 MB, apenas un 1\,\% más que los vectores solos. El IVF no ahorra espacio, ahorra comparaciones.
 
 \subsection{Índice HNSW}
 
-HNSW (Malkov y Yashunin, 2020) se estudió en la clase de búsqueda aproximada y, para esta parte, también en el artículo original y en el código de FAISS (\texttt{IndexHNSWFlat}). La idea parte de un grafo de proximidad, donde cada vector está unido a algunos vecinos y la búsqueda salta siempre al vecino más cercano a la consulta. En un grafo plano esto es lento, porque desde un punto lejano hacen falta muchos saltos cortos. HNSW lo resuelve con capas, igual que una \emph{skip list} (Pugh, 1990): la capa 0 tiene todos los vectores y cada capa superior una fracción cada vez menor, con enlaces más largos.
+HNSW (Malkov y Yashunin, 2020) se estudió en el artículo original y en el código de FAISS (\texttt{IndexHNSWFlat}). La idea parte de un grafo de proximidad, donde cada vector está unido a algunos vecinos y la búsqueda salta siempre al vecino más cercano a la consulta. En un grafo plano esto es lento, porque desde un punto lejano hacen falta muchos saltos cortos. HNSW lo resuelve con capas, igual que una \emph{skip list} (Pugh, 1990): la capa 0 tiene todos los vectores y cada capa superior una fracción cada vez menor, con enlaces más largos.
 
 \paragraph{Construcción.} Cada vector recibe un nivel aleatorio $l = \lfloor -\ln(U) \cdot m_L \rfloor$, con $m_L = 1 / \ln M$, así que la probabilidad de llegar a la capa 1 es $1/M$, a la capa 2 es $1/M^2$, etc. Con $M = 32$ y 100\,000 vectores, FAISS dejó 96\,812 nodos solo en la capa 0, 3\,093 hasta la capa 1, 92 hasta la capa 2 y 3 en la capa 3. Desde la capa $l$ hasta la 0 se buscan \texttt{ef\_construccion} candidatos y se eligen hasta $M$ vecinos ($2M$ en la capa 0), prefiriendo los que apuntan en direcciones distintas para que el grafo no se parta en grupos aislados.
 
@@ -701,7 +733,7 @@ ORDER BY score DESC;
 
 \texttt{SIMILAR\_TO} acepta un archivo de imagen o de audio, subido desde la interfaz o tomado del dataset, o un literal \texttt{VECTOR(...)}. Por omisión $k$ vale 10 y la métrica es el coseno. \texttt{SIMILARITY\_SCORE()} invierte la distancia para que \texttt{ORDER BY score DESC} dé primero lo más parecido: con coseno vale $1 - d$, con producto punto $-d$ y con euclidiana $1 / (1 + d)$. La API aplica al archivo la extracción con el mismo vocabulario e IDF de la colección y lo reemplaza por el literal \texttt{VECTOR(...)} antes de llegar al motor.
 
-\paragraph{Filtrar y refinar.} El motor no enlaza FAISS, y FAISS solo devuelve claves y distancias, no filas. En lugar de repetir en Python el trabajo de armar la respuesta, la API busca en FAISS y le indica al motor qué filas eligió con una cláusula interna, \texttt{CANDIDATES}, que el usuario nunca escribe (figura~\ref{fig:flujo}). El motor lee esas filas, recalcula la distancia exacta y aplica el resto del \texttt{SELECT}. Es el esquema de \emph{filtrar y refinar} de clase: un filtro barato y aproximado (FAISS) y un refinamiento exacto sobre pocos candidatos. Así una fila tiene el mismo score con o sin índice.
+\paragraph{Filtrar y refinar.} El motor no enlaza FAISS, y FAISS solo devuelve claves y distancias, no filas. En lugar de repetir en Python el trabajo de armar la respuesta, la API busca en FAISS y le indica al motor qué filas eligió con una cláusula interna, \texttt{CANDIDATES}, que el usuario nunca escribe (figura~\ref{fig:flujo}). El motor lee esas filas, recalcula la distancia exacta y aplica el resto del \texttt{SELECT}. Es el esquema de \emph{filtrar y refinar}: un filtro barato y aproximado (FAISS) y un refinamiento exacto sobre pocos candidatos. Así una fila tiene el mismo score con o sin índice.
 
 \begin{figure}[!htbp]
 \centering
@@ -714,11 +746,13 @@ Esto hace que la organización de la tabla importe: con 100\,000 vectores y $k =
 
 \paragraph{Mantenimiento con un archivo de cambios.} El catálogo del motor sigue siendo la única fuente de verdad. El motor no puede llamar a FAISS, pero sabe qué filas entran y salen, así que escribe un archivo de cambios binario, con registros \texttt{[uint8 I|D][int32 pk][k float32]}. Antes de cada búsqueda, la API aplica los cambios a FAISS, guarda el índice y recién entonces vacía el archivo, como un log. Si la API se cae entre esos dos pasos, los cambios se vuelven a aplicar sin daño, porque insertar primero quita la clave y eliminar una clave ausente no hace nada. El motor solo escribe en el archivo lo confirmado: dentro de una transacción, los cambios esperan en memoria hasta el \texttt{COMMIT} y se descartan con un \texttt{ROLLBACK}; de lo contrario FAISS podría marcar como borrada una fila que el rollback restauró.
 
-\paragraph{Filtros adicionales.} En \texttt{SIMILAR\_TO('zapato.jpg', k=10) AND precio < 50 USING HNSW}, FAISS no conoce el precio: devuelve los 10 más parecidos y el motor filtra después, así que la respuesta puede tener menos de 10 filas. Es el mismo comportamiento de las consultas híbridas con pgvector vistas en clase. Sin \texttt{USING} no ocurre, porque el motor filtra primero y elige los $k$ entre los que pasan.
+\paragraph{Filtros adicionales.} En \texttt{SIMILAR\_TO('zapato.jpg', k=10) AND precio < 50 USING HNSW}, FAISS no conoce el precio: devuelve los 10 más parecidos y el motor filtra después, así que la respuesta puede tener menos de 10 filas. Es el mismo comportamiento de las consultas híbridas con pgvector. Sin \texttt{USING} no ocurre, porque el motor filtra primero y elige los $k$ entre los que pasan.
 
 \subsection{Interfaz para las Partes 3 y 4}
 
 El panel de resultados reconoce el tipo de consulta y la muestra de la forma más fácil de leer. En una búsqueda de texto, el score se dibuja como una barra y los términos de la consulta se resaltan en cada fila. En una búsqueda por similitud, los resultados aparecen como una galería de miniaturas ordenadas por score, o con un reproductor en el caso de audio, y el botón \emph{Subir archivo} deja lista la consulta \texttt{SIMILAR\_TO} con la imagen o el audio subidos. El grafo del plan muestra los nodos nuevos (búsqueda de texto, k-NN de vectores y vecinos con FAISS) con el índice y la métrica que usó cada uno.
+
+La interfaz sigue a herramientas conocidas. El editor con el plan dibujado como grafo se parece al de pgAdmin para PostgreSQL. La galería ordenada por similitud es la forma de las búsquedas por imagen de las tiendas en línea, y la línea de tiempo del detector de copyright, con un color por canción original, recuerda a los reportes de coincidencias de las plataformas de video. La diferencia es que aquí cada pantalla muestra también las consultas SQL que la produjeron: el panel de consultas, la tienda y el detector las tienen a la vista. La vista \emph{Sintaxis} sirve de manual breve, con la forma de cada sentencia, una explicación corta y los índices con sus parámetros; \texttt{web/INSTRUCTIVO.md} explica la instalación y cada panel.
 
 %-------------------------------------------------------------------------------
 \section{Parte 5: aplicaciones}
@@ -726,14 +760,14 @@ El panel de resultados reconoce el tipo de consulta y la muestra de la forma má
 
 \subsection{Elección de las aplicaciones}
 
-El enunciado pide una aplicación que consuma la API del motor, integre al menos dos tipos de datos y tenga una interfaz propia, a elegir entre las cuatro opciones del Anexo A. El equipo desarrolló dos, la B y la C, porque el profesor ofreció puntos extra por una segunda aplicación y porque ambas se apoyan en datos e índices que ya estaban terminados al cierre de la Parte 4.
+El enunciado pide una aplicación que consuma la API del motor, integre al menos dos tipos de datos y tenga una interfaz propia, a elegir entre las cuatro opciones del Anexo A. El equipo desarrolló dos, la B y la C, porque ambas se apoyan en datos e índices que ya estaban terminados al cierre de la Parte 4.
 
 \begin{itemize}
   \item \emph{Opción B, tienda con recomendaciones.} Es la opción que usa más partes del motor: los productos de ABO ya tenían texto, foto y vector, y las sedes usan el tipo \texttt{POINT} y el R-Tree. Una sola pantalla combina cuatro tipos de datos (relacional, texto, imagen y espacial), el doble del mínimo pedido, y las tablas de inventario y compras permiten probar el \texttt{INNER JOIN} con datos que tienen sentido.
   \item \emph{Opción C, copyright en audio.} La Parte 4 ya extraía los MFCC de GTZAN y los buscaba con HNSW. Esta aplicación cambia la unidad de búsqueda, de la canción entera a tramos de 10 segundos, y agrega lo que la Parte 4 no tenía: decidir con un umbral si una coincidencia es real y medir esa decisión con casos de prueba.
 \end{itemize}
 
-Las otras dos se descartaron. La opción A (RAG) depende de un modelo de lenguaje externo, y lo que le toca a la base de datos es casi solo la búsqueda de texto de la Parte 3. La opción D (reconocimiento facial) necesita hardware, modelos preentrenados de rostros que no se vieron en el curso y fotos de personas, que son datos personales; además, su exigencia principal, responder en menos de 100\,ms, depende más del modelo que del motor.
+Las otras dos se descartaron. La opción A (RAG) depende de un modelo de lenguaje externo, y lo que le toca a la base de datos es casi solo la búsqueda de texto de la Parte 3. La opción D (reconocimiento facial) necesita hardware, modelos preentrenados de rostros y fotos de personas, que son datos personales; además, su exigencia principal, responder en menos de 100\,ms, depende más del modelo que del motor.
 
 \subsection{Arquitectura de las dos aplicaciones}
 
@@ -835,7 +869,7 @@ Se pide un resultado más de los 20 porque el propio X suele salir primero en te
 \[
   \text{RRF}(d) = \sum_{L \,\ni\, d} \frac{1}{k + \text{puesto}_L(d)}, \qquad k = 60.
 \]
-Es la misma fusión por puestos que se mostró en clase para la búsqueda híbrida de texto y vectores con pgvector. Con $k = 60$, el valor que proponen los autores, la diferencia entre el primer puesto y el décimo es pequeña ($1/61$ frente a $1/70$), así que aparecer en varias listas pesa más que estar arriba en una sola. Si una fuente falla o viene vacía, por ejemplo un producto que nadie compró, se fusionan las demás y la respuesta lo indica.
+Es la misma fusión por puestos que se usa en la búsqueda híbrida de texto y vectores con pgvector. Con $k = 60$, el valor que proponen los autores, la diferencia entre el primer puesto y el décimo es pequeña ($1/61$ frente a $1/70$), así que aparecer en varias listas pesa más que estar arriba en una sola. Si una fuente falla o viene vacía, por ejemplo un producto que nadie compró, se fusionan las demás y la respuesta lo indica.
 
 \paragraph{Por qué RRF y no sumar scores.} Los scores de las cuatro fuentes no están en la misma escala: BM25 no tiene un máximo fijo, el coseno va de 0 a 1, la metadata solo distingue tres niveles y las compras son conteos. Sumarlos haría que BM25 decidiera casi todo, y normalizarlos depende de cómo se reparten los scores en cada lista. RRF solo usa los puestos, que sí son comparables, y no requiere entrenar pesos, algo imposible sin datos reales de clics o de compras.
 
@@ -964,7 +998,7 @@ El umbral no se fijó de forma arbitraria. Un script de evaluación arma 150 cas
   \item \emph{50 negativos}: 20 audios sintéticos (notas al azar, ruido, barridos y acordes) y 30 recortes de clips de GTZAN, sacando de los resultados los tramos de su propia canción.
 \end{itemize}
 
-Cada caso se evalúa con cada umbral entre 50 y 99\,\%. La precisión es la fracción de canciones reportadas que eran de verdad la original, el recall es la fracción de positivos en los que se reporta la original y F1 es su promedio armónico, las mismas medidas de efectividad de la clase de recuperación multimedia.
+Cada caso se evalúa con cada umbral entre 50 y 99\,\%. La precisión es la fracción de canciones reportadas que eran de verdad la original, el recall es la fracción de positivos en los que se reporta la original y F1 es su promedio armónico, las medidas de efectividad habituales en recuperación de información.
 
 \begin{table}[H]
 \centering
@@ -1038,7 +1072,7 @@ La vista \emph{Copyright} recibe una canción y muestra qué partes se parecen a
 
 \subsection{Metodología y verificación}
 
-Las mediciones de las Partes 1 y 2 usan \texttt{organizations} o puntos generados con 1\,000, 10\,000 y 100\,000 filas y semilla fija; las de las Partes 3 y 4 usan los productos de ABO con los mismos tres tamaños. Se reportan dos medidas: el tiempo de reloj y las páginas leídas o escritas, contadas por el propio motor. Los tiempos incluyen el caché de archivos del sistema operativo, así que reflejan CPU y llamadas al sistema más que la latencia de un disco real. Por eso las páginas son la medida más estable para comparar estructuras, y son también la unidad de costo de las fórmulas vistas en clase, con las que se contrastan los resultados.
+Las mediciones de las Partes 1 y 2 usan \texttt{organizations} o puntos generados con 1\,000, 10\,000 y 100\,000 filas y semilla fija; las de las Partes 3 y 4 usan los productos de ABO con los mismos tres tamaños. Se reportan dos medidas: el tiempo de reloj y las páginas leídas o escritas, contadas por el propio motor. Los tiempos incluyen el caché de archivos del sistema operativo, así que reflejan CPU y llamadas al sistema más que la latencia de un disco real. Por eso las páginas son la medida más estable para comparar estructuras, y son también la unidad de costo de las fórmulas teóricas, con las que se contrastan los resultados.
 
 En cuanto a la verificación, cada módulo del motor tiene su programa de prueba y \texttt{make test} los ejecuta todos: al entregar, los catorce terminan sin errores. Las pruebas comparan cada estructura con una búsqueda de fuerza bruta (por ejemplo, el join contra un nested loop y el R-Tree contra el recorrido secuencial), y la API tiene sus propias pruebas sobre el motor real. Además, tres recorridos SQL (\texttt{docs/pruebas\_partes\_3\_4.sql}, \texttt{docs/pruebas\_entrega\_final.sql} y \texttt{docs/tienda.sql}) ejecutan las consultas por la API y comprueban el resultado de cada bloque, y la interfaz tiene pruebas de extremo a extremo con Playwright. Los comandos están en el README.
 
@@ -1082,7 +1116,7 @@ Reorganización (ms) & 0,04 & 0,42 & 5,93 & 7,66 & 16,6 & 125,6 \\
 \label{fig:heap-secuencial-2}
 \end{figure}
 
-\paragraph{Contraste con el costo de clase.} Sin índice, buscar una clave en el heap es un recorrido que, en promedio, se detiene a la mitad del archivo: el costo $M/2$ de la tabla de costos del curso. Con 100\,000 filas el heap tiene $M = 3\,576$ páginas y la búsqueda lee 1\,599, cerca de la mitad. En el secuencial la búsqueda binaria cuesta $\log_2 M$: con unas 4\,400 páginas principales son unas 12 lecturas, y el resto de las 35 o 115 páginas medidas las agrega el área auxiliar, que con claves aleatorias crece más (25\,629 registros frente a 10\,625 con claves ascendentes).
+\paragraph{Contraste con el costo teórico.} Sin índice, buscar una clave en el heap es un recorrido que, en promedio, se detiene a la mitad del archivo: el costo teórico de $M/2$ páginas. Con 100\,000 filas el heap tiene $M = 3\,576$ páginas y la búsqueda lee 1\,599, cerca de la mitad. En el secuencial la búsqueda binaria cuesta $\log_2 M$: con unas 4\,400 páginas principales son unas 12 lecturas, y el resto de las 35 o 115 páginas medidas las agrega el área auxiliar, que con claves aleatorias crece más (25\,629 registros frente a 10\,625 con claves ascendentes).
 
 \paragraph{Lectura de los resultados.} El heap inserta con una lectura y una escritura de página, y por eso es entre 6 y 7 veces más rápido al insertar fila por fila; el secuencial paga la búsqueda binaria de cada inserción, el área auxiliar y las reorganizaciones automáticas. A cambio, responde una búsqueda por clave leyendo entre 14 y 45 veces menos páginas. Con claves ascendentes, el secuencial ocupa un 24\,\% más de disco porque deja sus páginas al 80\,\%. El heap conviene para cargas con muchas inserciones y recorridos completos; el secuencial, cuando lo frecuente es buscar por clave o por rango y se inserta poco.
 
@@ -1107,7 +1141,7 @@ Ordenamiento completo & 6\,453 & 100\,690 & 104\,546 \\
 \label{tab:indices-paginas}
 \end{table}
 
-\paragraph{Contraste con el costo de clase.} En un rango, el B+ no agrupado cuesta la altura del árbol más un acceso al heap por coincidencia: $3 + 100 \approx 103{,}7$ páginas, exactamente lo que se midió. El agrupado lee la altura más las hojas que ocupan las 100 filas (unas 22 por hoja), 9,4 páginas. El hash no conserva el orden y recorre el heap completo, $M = 4\,546$ páginas, con cualquier rango. En igualdad, el hash lee siempre el directorio y un bucket, y los B+ bajan los 3 niveles del árbol.
+\paragraph{Contraste con el costo teórico.} En un rango, el B+ no agrupado cuesta la altura del árbol más un acceso al heap por coincidencia: $3 + 100 \approx 103{,}7$ páginas, exactamente lo que se midió. El agrupado lee la altura más las hojas que ocupan las 100 filas (unas 22 por hoja), 9,4 páginas. El hash no conserva el orden y recorre el heap completo, $M = 4\,546$ páginas, con cualquier rango. En igualdad, el hash lee siempre el directorio y un bucket, y los B+ bajan los 3 niveles del árbol.
 
 \begin{figure}[!htbp]
 \centering
@@ -1188,7 +1222,7 @@ sin transacciones:   esperado 2000, obtenido 500, depositos perdidos 15
 con BEGIN/END y 2PL: esperado 2000, obtenido 2000, deadlocks detectados 31
 \end{lstlisting}
 
-Sin transacciones, cada sentencia es atómica, pero entre la lectura y la escritura otro hilo lee el mismo saldo: es la \emph{actualización perdida} vista en clase, y en las corridas se perdieron entre 13 y 15 de los 20 depósitos. Con \texttt{BEGIN ... END}, el lock compartido de la lectura se mantiene hasta escribir; cuando dos hilos leen y luego quieren escribir, se produce un interbloqueo que el gestor detecta, la víctima se deshace y reintenta, y el saldo final siempre es 2\,000. El número de interbloqueos varía entre corridas porque depende de cómo el sistema operativo reparte los hilos, pero el resultado no cambia.
+Sin transacciones, cada sentencia es atómica, pero entre la lectura y la escritura otro hilo lee el mismo saldo: es la \emph{actualización perdida}, y en las corridas se perdieron entre 13 y 15 de los 20 depósitos. Con \texttt{BEGIN ... END}, el lock compartido de la lectura se mantiene hasta escribir; cuando dos hilos leen y luego quieren escribir, se produce un interbloqueo que el gestor detecta, la víctima se deshace y reintenta, y el saldo final siempre es 2\,000. El número de interbloqueos varía entre corridas porque depende de cómo el sistema operativo reparte los hilos, pero el resultado no cambia.
 
 \subsection{Parte 2: búsqueda secuencial, R-Tree y GiST}
 
@@ -1325,6 +1359,8 @@ $n$ & SPIMI & GIN & GIN: carga + \texttt{tsvector} & SPIMI & GIN \\
 \includegraphics[width=0.75\textwidth]{img/texto_tamano.png}
 \caption{Tamaño del índice de texto.}
 \end{figure}
+
+\paragraph{Cómo construye PostgreSQL el índice GIN.} Según la documentación de PostgreSQL, un GIN (\emph{Generalized Inverted Index}) es por dentro un B-tree cuyas claves son los elementos de cada valor indexado; en un \texttt{tsvector}, los lexemas que deja \texttt{to\_tsvector}. Cada clave de una hoja guarda los TID (página y posición) de las filas que la contienen. Si la lista es corta, va dentro de la misma entrada como una \emph{posting list}; si es larga, se guarda aparte como un \emph{posting tree}, un segundo B-tree de TID. Desde la versión 9.4 las listas se comprimen guardando la diferencia entre TID consecutivos. Al crear el índice, PostgreSQL recorre la tabla, acumula los pares (lexema, TID) en memoria hasta llenar \texttt{maintenance\_work\_mem} y los inserta ordenados por lexema, un esquema por bloques parecido al de SPIMI. Después, con \texttt{fastupdate} activo, las filas nuevas van a una \emph{pending list} sin ordenar, que pasa al índice principal con \texttt{VACUUM} o al superar \texttt{gin\_pending\_list\_limit}. Así el índice se actualiza de forma incremental, sin reconstruirse. Como guarda solo los lexemas, sin su frecuencia ni sus posiciones, la búsqueda crece de forma logarítmica con el número de palabras distintas, pero calcular \texttt{ts\_rank} exige leer cada fila candidata.
 
 Los dos índices crecen de forma lineal con $n$. GIN construye casi 7 veces más rápido, pero porque el \texttt{tsvector} ya está calculado: la tokenización y el stemming se pagan al cargar la tabla, y sumando carga e índice PostgreSQL tarda casi lo mismo que SPIMI. GIN ocupa un tercio porque comprime sus listas de postings y no guarda la frecuencia, mientras que SPIMI guarda cada posting sin comprimir, con un \texttt{doc\_id} de 8 bytes y un \texttt{tf} de 4 bytes.
 
@@ -1476,7 +1512,7 @@ El k-NN secuencial crece de forma lineal con $n$ (6,6, 66 y 488 ms): lee las 33\
 \caption{Recall@10 contra tiempo de consulta con 100\,000 vectores, métrica euclidiana.}
 \end{figure}
 
-Las curvas de recall contra tiempo muestran el compromiso de cada índice al mover su parámetro, como se recomendó en clase para evaluar un índice aproximado. El IVF cambia recall por tiempo de forma predecible: con coseno pasa de 0,73 con $\texttt{nprobe} = 1$ (0,20 ms) a 0,93 con 8 y 0,99 con 32 (3 ms); más allá ya cuesta lo mismo que el plano. El HNSW llega antes a un recall alto, 0,92 en 0,22 ms con $\texttt{ef\_busqueda} = 16$, pero se estanca: subir a 256 lo deja en 0,98 y multiplica el tiempo por 5. Para el mismo tiempo, el HNSW gana con coseno y el IVF gana con euclidiana, donde llega a 1,0 con $\texttt{nprobe} = 32$ mientras el HNSW se queda entre 0,89 y 0,94.
+Las curvas de recall contra tiempo muestran el compromiso de cada índice al mover su parámetro, que es la forma habitual de evaluar un índice aproximado. El IVF cambia recall por tiempo de forma predecible: con coseno pasa de 0,73 con $\texttt{nprobe} = 1$ (0,20 ms) a 0,93 con 8 y 0,99 con 32 (3 ms); más allá ya cuesta lo mismo que el plano. El HNSW llega antes a un recall alto, 0,92 en 0,22 ms con $\texttt{ef\_busqueda} = 16$, pero se estanca: subir a 256 lo deja en 0,98 y multiplica el tiempo por 5. Para el mismo tiempo, el HNSW gana con coseno y el IVF gana con euclidiana, donde llega a 1,0 con $\texttt{nprobe} = 32$ mientras el HNSW se queda entre 0,89 y 0,94.
 
 \paragraph{Euclidiana frente a coseno.} Como los histogramas tienen norma 1, $\| a-b\|^2 = 2 - 2\cos(a,b)$ y las dos métricas ordenan los vecinos igual; por eso el plano, el motor y el IVF dan casi el mismo recall con ambas. La diferencia aparece en el HNSW, cuyo grafo se construye con la métrica del índice. Una explicación probable, que no se midió aparte, es que con la euclidiana al cuadrado las distancias entre vectores de norma 1 caen en un rango muy pequeño, quedan más vecinos casi empatados y la búsqueda voraz se detiene antes. Se recomienda el coseno: compara proporciones, rinde mejor con el HNSW y sigue siendo correcto si un vector llega sin normalizar.
 
@@ -1532,6 +1568,99 @@ Los éxitos son imágenes con mucha textura y un diseño repetido: una funda con
 \paragraph{Limitaciones.} Los 15\,571 productos que comparten foto tienen vectores idénticos. Cuando dos vecinos empatan en el puesto 10, cada técnica desempata distinto, y por eso el motor da un recall de 0,994 a 0,996 y no de 1, aunque su búsqueda es exacta. Además, los tiempos del motor incluyen leer del disco y los de FAISS no, así que la comparación justa entre ambos es cómo crece cada uno con $n$.
 
 %-------------------------------------------------------------------------------
+\section{Complejidad de las técnicas}
+\label{sec:complejidad}
+
+Las tablas~\ref{tab:complejidad-12} y~\ref{tab:complejidad-345} resumen el costo de cada estructura y algoritmo tal como está implementado. En las estructuras en disco, el costo principal se da en páginas leídas o escritas, la unidad habitual de los costos en disco, y el de CPU se indica cuando no es proporcional a las páginas. La notación es la siguiente: $n$ filas, $P$ páginas de datos, $R$ registros por página, $B = 10$ páginas de buffer, $h$ altura de un árbol, $m$ filas del resultado, $k$ vecinos pedidos y $d$ dimensión de un vector.
+
+Las cotas sin marca se deducen del algoritmo, a partir del código, de la bibliografía o del artículo original, y valen para el peor caso o para el caso esperado de una función hash. Las marcadas con $^\ast$ describen un comportamiento empírico y no una garantía. El R-Tree no tiene cota logarítmica en el peor caso, porque sus rectángulos pueden solaparse (Guttman, 1984). La búsqueda del HNSW es aproximadamente logarítmica en la práctica, como miden Malkov y Yashunin, pero tampoco tiene una garantía en el peor caso. Los costos de IVF y HNSW siguen a Jégou, Douze y Schmid, a Malkov y Yashunin y a la documentación de FAISS. Los dos algoritmos externos reciben las filas del operador anterior, y el presupuesto de $B$ páginas se aplica a sus corridas y particiones.
+
+{\small
+\setlength{\tabcolsep}{4pt}
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.1cm}>{\raggedright\arraybackslash}p{4.5cm}>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{2.9cm}}
+\caption{Complejidad de las Partes 1 y 2.}
+\label{tab:complejidad-12} \\
+\toprule
+Operación & E/S (páginas) & CPU & Memoria o espacio \\
+\midrule
+\endfirsthead
+\toprule
+Operación & E/S (páginas) & CPU & Memoria o espacio \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\multicolumn{4}{l}{\emph{Parte 1: organización de archivos e índices}} \\
+Heap File: insertar & 1 lectura y 1 escritura: $O(1)$ & $O(P)$ en el peor caso para hallar una página con espacio; $O(1)$ amortizado & mapa de espacio libre en memoria: $O(P)$ \\
+Heap File: buscar o borrar por clave & $O(P)$; $P/2$ en promedio & $O(n)$ & -- \\
+Heap File: leer por RID & $O(1)$ & $O(1)$ & -- \\
+Secuencial: buscar por clave & $O(\log_2 P + A)$, con $A$ páginas del área auxiliar & búsqueda binaria en la página & páginas al 80\,\% \\
+Secuencial: rango & $O(\log_2 P + m/R + A)$ & $O(a \log a)$ para ordenar los $a$ registros auxiliares & -- \\
+Secuencial: insertar & $O(\log_2 P)$ y 1 escritura & -- & -- \\
+Secuencial: reorganizar & $O(P + A)$; ocurre cuando el desperdicio pasa del 30\,\%, así que se reparte entre las inserciones que lo provocan & $O(a \log a + n)$ & archivo nuevo \\
+B+ agrupado: igualdad & $h = O(\log_f n)$, con $f = 511$ hijos por nodo interno & $O(h \log f)$: búsqueda binaria en cada nodo & $O(n/R)$ hojas \\
+B+ agrupado: rango & $h + \lceil m/R \rceil$ & $O(h \log f + m)$ & -- \\
+B+ agrupado: insertar o borrar & $O(h)$, con splits o fusiones que pueden subir hasta la raíz & $O(h \cdot f)$ al mover entradas & -- \\
+B+ no agrupado: rango & $h$ + hojas $+\, m$, una página de datos por fila; $f = 205$ & $O(h \log f + m)$ & 16 B por entrada \\
+Hash extensible: igualdad & $O(1)$ esperado: una página del directorio y el bucket, más sus páginas de desborde & $O(1)$ esperado & buckets de 255 entradas \\
+Hash extensible: insertar & $O(1)$ amortizado; duplicar el directorio cuesta $O(2^D)$, con $D \le 16$ (hasta 64 páginas) & $O(1)$ esperado & directorio de $2^D$ punteros \\
+\midrule
+\multicolumn{4}{l}{\emph{Parte 1: algoritmos externos y join}} \\
+External merge sort & $2N\,(1 + \lceil \log_{B-1} \lceil N/B \rceil \rceil)$, con $N$ páginas de filas & $O(n \log n)$ & $B$ páginas \\
+External hashing (\texttt{GROUP BY}) & $\approx 2N$: escribir las $B-1$ particiones y releerlas; una pasada más por cada nivel de repartición (hasta 3) & $O(n)$ esperado & $B$ páginas \\
+Hash join & $P_R + P_S$ & $O(|R| + |S| + \text{salida})$ esperado & tabla hash del lado menor, en memoria \\
+Index nested loop join & $P_{\text{ext}} + u\,(h + c)$, con $u$ claves distintas de la externa y $c$ coincidencias por clave & $O(u \cdot \text{búsqueda} + \text{salida})$ & resultados por clave: $O(u)$ \\
+\midrule
+\multicolumn{4}{l}{\emph{Parte 2: espacial}} \\
+R-Tree: insertar & $O(h)^\ast$ & $O(hM)$ para elegir el subárbol; split cuadrático $O(M^2)$, con $M = 170$ & $O(n/M)$ nodos \\
+R-Tree: radio o polígono & $O(\log_M n + m)^\ast$ con poco solapamiento; $O(n)$ en el peor caso & más $O(V)$ por candidato con un polígono de $V$ vértices & -- \\
+R-Tree: $k$ vecinos (\emph{best-first}) & cerca de $O(\log_M n + k)$ nodos$^\ast$; $O(n)$ en el peor caso & $O(\log q)$ por operación de la cola de $q$ entradas & cola: $O(n)$ en el peor caso \\
+Sin índice: radio y $k$ vecinos & $O(P)$ & $O(n)$ y $O(n \log n)$, porque ordena toda la tabla & -- \\
+Distancia euclidiana o haversine & -- & $O(1)$ & -- \\
+\end{longtable}
+}
+
+{\small
+\setlength{\tabcolsep}{4pt}
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.1cm}>{\raggedright\arraybackslash}p{4.5cm}>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{2.9cm}}
+\caption{Complejidad de las Partes 3, 4 y 5.}
+\label{tab:complejidad-345} \\
+\toprule
+Operación & E/S (páginas) & CPU & Memoria o espacio \\
+\midrule
+\endfirsthead
+\toprule
+Operación & E/S (páginas) & CPU & Memoria o espacio \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+\multicolumn{4}{l}{\emph{Parte 3: texto ($p$ postings, $V$ términos, $N$ documentos)}} \\
+SPIMI: construir & $O(p)$: escribe cada bloque, lo relee en la mezcla y escribe el índice final & $O(T + \sum_i t_i \log t_i + p \log b)$, con $T$ tokens, $t_i$ términos del bloque $i$ y $b$ bloques & bloque de 4 MB y una entrada por bloque en la mezcla \\
+Consulta TF-IDF o BM25 & $\sum_{t \in q} \lceil p_t / R \rceil$: una lectura contigua por término; el diccionario está en memoria & $O(p_q \log A + A \log k + N)$; el término $N$ viene de recalcular el largo promedio en cada consulta & diccionario $O(V)$ y normas $O(N)$ en memoria; índice $O(p)$ \\
+\texttt{INSERT} o \texttt{DELETE} con SPIMI & reconstrucción completa en la siguiente búsqueda: $O(p)$ & la de construir & -- \\
+GIN de PostgreSQL & $O(\log V)$ en el B-tree de lexemas, más la lista de TID de cada término; \texttt{ts\_rank} lee cada fila candidata & -- & listas comprimidas, sin frecuencias \\
+\midrule
+\multicolumn{4}{l}{\emph{Parte 4: multimedia ($K = 256$ palabras)}} \\
+SIFT de una imagen & -- & $O(\text{píxeles})$ por escala; hasta 500 descriptores de 128 dimensiones & -- \\
+MFCC de un audio & -- & $O(F\, n_{\text{fft}} \log n_{\text{fft}})$, con $F$ ventanas de $n_{\text{fft}} = 2048$ muestras & -- \\
+Vocabulario con k-means & -- & $O(I \cdot S \cdot K \cdot d)$, con $I = 25$ iteraciones y hasta $S = 10^6$ descriptores & $O(S\,d)$ \\
+Vector de un objeto & -- & $O(n_{\text{desc}}\,K\,d)$ para asignar cada descriptor a su palabra, más $O(K)$ para TF-IDF & 1 KB por vector \\
+k-NN secuencial & $O(P)$ & $O(N d + N \log k)$ & heap de $k$ filas \\
+IVF: construir & -- & $O(I \cdot n \cdot n_{\text{list}} \cdot d)$ para entrenar y $O(n\, n_{\text{list}}\, d)$ para asignar & $O(n d + n_{\text{list}} d)$; 1\,\% sobre los vectores \\
+IVF: buscar & -- & $O(n_{\text{list}} d + n_{\text{probe}}\,(n / n_{\text{list}})\,d)$; con $n_{\text{list}} \approx \sqrt{n}$ y listas parejas, $O(n_{\text{probe}} \sqrt{n}\, d)$ & -- \\
+IVF: insertar o borrar & -- & $O(n_{\text{list}} d)$ para insertar; $O(n)$ para borrar, porque \texttt{remove\_ids} recorre las listas & -- \\
+HNSW: construir & -- & $O(n \log n)^\ast$, con un factor que crece con $M$, $ef_{\text{construccion}}$ y $d$ & $O(n\,(d + M))$: 256 B de enlaces por vector de 1 KB en la capa 0; 27\,\% medido \\
+HNSW: buscar & -- & $O(\log n)^\ast$, por un factor que crece con $ef_{\text{busqueda}}$ y $d$ & lista de $ef_{\text{busqueda}}$ candidatos \\
+HNSW: borrar & -- & $O(1)$ para marcar; al pasar el 30\,\% de borrados, reconstrucción $O(n \log n)^\ast$ repartida entre los borrados & marcas: $O(n)$ bits \\
+\midrule
+\multicolumn{4}{l}{\emph{Parte 5: aplicaciones}} \\
+Recomendador (RRF) & 3 lotes al motor y una búsqueda HNSW & $O(L \log L)$ para fusionar, con $L \le 84$ candidatos de las 4 listas & -- \\
+Detector de copyright & $s$ búsquedas HNSW, con $s = \lceil (D - 10)/5 \rceil + 1$ tramos para un audio de $D$ segundos & extraer y cuantizar: $O(s \cdot F_s\,(n_{\text{fft}} \log n_{\text{fft}} + 13K))$, con $F_s$ ventanas por tramo; buscar: $O(s \log n)^\ast$; agrupar: $O(s k)$ & -- \\
+\end{longtable}
+}
+
+%-------------------------------------------------------------------------------
 \section{Cuándo usar cada técnica}
 
 \begin{table}[H]
@@ -1565,7 +1694,7 @@ Coseno (frente a euclidiana) & los vectores son histogramas: compara proporcione
 \section{Conclusiones y límites conocidos}
 \label{sec:pendiente}
 
-El proyecto permitió comprobar en la práctica varias ideas que en clase se ven de forma teórica. La más clara es que el número de páginas leídas explica casi todas las diferencias de rendimiento, y que esas páginas coinciden con las fórmulas de costo del curso: el heap lee cerca de la mitad del archivo para encontrar una clave, el B+ no agrupado paga exactamente un acceso al heap por fila del rango y el merge sort externo escribe y lee $N(1 + \text{pasadas})$ páginas. También quedó claro que medir bien es parte del trabajo: dos observaciones del primer avance se explicaban por lo que se estaba midiendo y no por un error en las estructuras.
+El proyecto permitió comprobar en la práctica varias ideas que suelen verse de forma teórica. La más clara es que el número de páginas leídas explica casi todas las diferencias de rendimiento, y que esas páginas coinciden con las fórmulas de costo teóricas: el heap lee cerca de la mitad del archivo para encontrar una clave, el B+ no agrupado paga exactamente un acceso al heap por fila del rango y el merge sort externo escribe y lee $N(1 + \text{pasadas})$ páginas. También quedó claro que medir bien es parte del trabajo: dos resultados extraños del primer avance se explicaban por lo que se estaba midiendo y no por un error en las estructuras.
 
 \paragraph{Parte 1.} Está completa: organización de archivos, los tres índices, external sort y external hashing en disco, \texttt{INNER JOIN} con hash join e index nested loop elegidos por el planificador, transacciones con 2PL estricto y detección de interbloqueos, y la interfaz con sus cuatro paneles. Quedan tres límites: el join lee sus dos lados en memoria y todavía no particiona en disco cuando no caben; los locks son a nivel de tabla, lo que simplifica el gestor pero reduce la concurrencia; y el rollback es un deshacer lógico sin WAL, así que el motor no se recupera de una caída a mitad de una transacción.
 
@@ -1584,6 +1713,7 @@ En conjunto, el proyecto recorrió el camino completo de un gestor de bases de d
   \item Fagin, R., Nievergelt, J., Pippenger, N. y Strong, H. R. Extendible hashing: a fast access method for dynamic files. \emph{ACM Transactions on Database Systems}, 4(3), 1979. \url{https://doi.org/10.1145/320083.320092}
   \item Guttman, A. R-trees: a dynamic index structure for spatial searching. \emph{Proceedings of ACM SIGMOD}, 1984. \url{https://doi.org/10.1145/602259.602266}
   \item PostgreSQL Global Development Group. Documentación de \texttt{EXPLAIN}.\\ \url{https://www.postgresql.org/docs/current/sql-explain.html}
+  \item PostgreSQL Global Development Group. Documentación de los índices GIN y de los índices para búsqueda de texto.\\ \url{https://www.postgresql.org/docs/current/gin.html}\\ \url{https://www.postgresql.org/docs/current/textsearch-indexes.html}
   \item Lowe, D. G. Distinctive image features from scale-invariant keypoints. \emph{International Journal of Computer Vision}, 60(2), 2004. \url{https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf}
   \item Malkov, Y. A. y Yashunin, D. A. Efficient and robust approximate nearest neighbor search using Hierarchical Navigable Small World graphs. \emph{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 42(4), 2020. \url{https://arxiv.org/abs/1603.09320}
   \item Pugh, W. Skip lists: a probabilistic alternative to balanced trees. \emph{Communications of the ACM}, 33(6), 1990. \url{https://doi.org/10.1145/78973.78977}

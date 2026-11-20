@@ -1,5 +1,6 @@
 -- Demo de la presentacion final (Parte 5 y pendientes de la Parte 1): una consulta de cada tipo
--- sobre los datos de la tienda y de copyright. El guion esta en "guion - p5.md".
+-- sobre los datos de la tienda y de copyright. Sus bloques [1] y [2] cargan las tablas que usa
+-- "demo - final.sql", y los bloques [3] a [7] muestran el JOIN y los algoritmos externos.
 --
 -- Antes de la demo (una sola vez):
 --     python docs/presentacion/preparar_demo_p5.py --foto <una foto de un taburete o una silla>
