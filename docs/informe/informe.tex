@@ -800,7 +800,7 @@ Las dos aplicaciones son clientes del motor y no leen sus archivos directamente.
 \toprule
 Endpoint & Qué devuelve & Datos e índices \\
 \midrule
-\texttt{GET /api/tienda/\allowbreak productos?q=\&tipo=} & catálogo paginado & texto con BM25 (SPIMI) o filtro por tipo \\
+\texttt{GET /api/tienda/\allowbreak productos?q=\&tipo=\&\allowbreak precio\_min=\&precio\_max=} & catálogo paginado & texto con BM25 (SPIMI), filtro por tipo y rango de precio \\
 \texttt{GET /api/tienda/\allowbreak productos/\{id\}} & ficha del producto & relacional, B+ agrupado por \texttt{id} \\
 \texttt{GET /api/tienda/\allowbreak productos/\{id\}/\allowbreak recomendaciones} & top 10 con RRF & texto (SPIMI), imagen (HNSW), relacional (B+ y hash) \\
 \texttt{GET /api/tienda/\allowbreak productos/\{id\}/\allowbreak sedes?lat=\&lon=} & 3 sedes cercanas con stock & relacional (B+ en \texttt{inventario}) y espacial (R-Tree) \\
@@ -904,7 +904,18 @@ El primero aparece en tres listas ($1/61 + 1/63 + 1/62 \approx 0{,}0484$) y gana
 \subsection{Interfaz de la tienda}
 \label{sec:interfaz-tienda}
 
-La vista \emph{Tienda} muestra el sistema desde el punto de vista de un cliente: un catálogo con buscador de texto (BM25) y filtro por tipo (figura~\ref{fig:tienda-catalogo}); la ficha de cada producto (figura~\ref{fig:tienda-ficha}); el top 10 de recomendaciones, donde cada tarjeta lleva una etiqueta por cada lista en la que apareció y un desplegable con su score RRF, su puesto en cada lista y la consulta SQL usada (figura~\ref{fig:tienda-recomendaciones}); y un mapa con las 3 sedes más cercanas que tienen stock, numeradas como el k-NN de la Parte 2 (figura~\ref{fig:tienda-sedes}). La ubicación del usuario empieza en UTEC y cambia con un clic en el mapa.
+La vista \emph{Tienda} muestra el sistema desde el punto de vista de un cliente: un catálogo con buscador de texto (BM25), filtro por tipo y rango de precio (figura~\ref{fig:tienda-catalogo}); la ficha de cada producto (figura~\ref{fig:tienda-ficha}); el top 10 de recomendaciones, donde cada tarjeta lleva una etiqueta por cada lista en la que apareció y un desplegable con su score RRF, su puesto en cada lista y la consulta SQL usada (figura~\ref{fig:tienda-recomendaciones}); y un mapa con las 3 sedes más cercanas que tienen stock, numeradas como el k-NN de la Parte 2 (figura~\ref{fig:tienda-sedes}). La ubicación del usuario empieza en UTEC y cambia con un clic en el mapa.
+
+\paragraph{Filtro por rango de precio.} El catálogo tiene dos campos, precio mínimo y máximo, que la API agrega al \texttt{WHERE} como una condición más, junto al tipo. Si se llenan los dos límites se usa \texttt{BETWEEN}, y si falta uno, \texttt{>=} o \texttt{<=}. Por ejemplo, buscar \emph{sofa} entre S/~100 y S/~300 genera:
+
+\begin{lstlisting}[language=SQL]
+SELECT id, nombre, tipo, marca, color, precio, imagen, SCORE() AS relevancia
+FROM productos
+WHERE MATCH(descripcion, 'sofa') AND precio BETWEEN 100 AND 300
+USING BM25 ORDER BY relevancia DESC;
+\end{lstlisting}
+
+En \texttt{EXPLAIN ANALYZE} el plan es \emph{Text Scan} seguido de \emph{Filter}: el índice invertido entrega primero los productos que contienen el término y el motor descarta en memoria los que quedan fuera del rango. La consulta toma entre 35 y 80\,ms y devuelve 3 sofás. Sin texto, \texttt{precio} no tiene índice, así que el plan es \emph{Seq Scan} seguido de \emph{Filter}: el motor recorre los 10\,000 productos, lo que toma entre 195 y 270\,ms. Un B+ sobre \texttt{precio} convertiría ese recorrido en una búsqueda por rango, pero con este tamaño de tabla no hace falta. Si el mínimo es mayor que el máximo, la web avisa sin consultar y la API responde con un error 400.
 
 \begin{figure}[!htbp]
 \centering
