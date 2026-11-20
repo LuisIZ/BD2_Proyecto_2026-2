@@ -18,6 +18,9 @@ export interface ProductoResumen {
 export interface Catalogo {
   q: string;
   tipo: string;
+  /** límites del rango de precio; null = sin límite */
+  precio_min?: number | null;
+  precio_max?: number | null;
   pagina: number;
   por_pagina: number;
   total: number;
