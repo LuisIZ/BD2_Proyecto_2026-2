@@ -1,0 +1,33 @@
+% Hash extensible: el bucket 00 se llena con d = D y el directorio se duplica (sección 4.5)
+\begin{tikzpicture}[font=\footnotesize, >={Stealth[length=1.6mm]},
+  dir/.style={draw, fill=gray!12, minimum width=0.9cm, minimum height=0.42cm, inner sep=0pt, font=\scriptsize\ttfamily},
+  bkt/.style={draw, fill=blue!12, minimum width=2.3cm, minimum height=0.55cm, align=center, font=\scriptsize}]
+% antes: D = 2
+\node[font=\footnotesize\bfseries] at (0.45,2.25) {D = 2};
+\foreach \e [count=\i from 0] in {00,01,10,11}
+  \node[dir] (x\e) at (0.45,{1.6-0.42*\i}) {\e};
+\node[bkt, fill=red!12] (A) at (3.0,1.8) {d = 2 \quad 4, 8, 12\\(lleno)};
+\node[bkt] (B) at (3.0,0.95) {d = 1 \quad 1, 3, 7};
+\node[bkt] (C) at (3.0,0.1) {d = 2 \quad 2, 6};
+\draw[->] (x00.east) -- (A.west);
+\draw[->] (x01.east) -- (B.west);
+\draw[->] (x11.east) -- (B.west);
+\draw[->] (x10.east) -- (C.west);
+\node[align=center, font=\scriptsize] at (1.9,-0.75) {insertar 16: va al bucket 00, que está lleno\\y tiene $d = D$, así que se duplica el directorio};
+\draw[->, very thick, gray!70!black] (4.6,0.95) -- (5.6,0.95);
+% después: D = 3
+\begin{scope}[xshift=6.4cm]
+\node[font=\footnotesize\bfseries] at (0.45,2.55) {D = 3};
+\foreach \e [count=\i from 0] in {000,001,010,011,100,101,110,111}
+  \node[dir] (y\e) at (0.45,{2.1-0.42*\i}) {\e};
+\node[bkt] (A0) at (3.3,2.1) {d = 3 \quad 8, 16};
+\node[bkt] (A1) at (3.3,1.35) {d = 3 \quad 4, 12};
+\node[bkt] (B2) at (3.3,0.45) {d = 1 \quad 1, 3, 7};
+\node[bkt] (C2) at (3.3,-0.45) {d = 2 \quad 2, 6};
+\draw[->] (y000.east) -- (A0.west);
+\draw[->] (y100.east) -- (A1.west);
+\foreach \e in {001,011,101,111} \draw[->, gray!70!black] (y\e.east) -- (B2.west);
+\foreach \e in {010,110} \draw[->, gray!70!black] (y\e.east) -- (C2.west);
+\node[align=center, font=\scriptsize] at (2.2,-1.75) {el bucket 00 se divide por un bit más (000 y 100);\\los buckets con $d < D$ siguen compartidos};
+\end{scope}
+\end{tikzpicture}

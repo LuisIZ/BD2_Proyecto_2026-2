@@ -1,0 +1,40 @@
+% IVF (celdas y nprobe) y HNSW (capas y descenso voraz) (secciones 7.6 y 7.7)
+\begin{tikzpicture}[font=\footnotesize, >={Stealth[length=1.8mm]},
+  pto/.style={circle, fill=gray!60, inner sep=0.9pt},
+  cen/.style={star, star points=5, fill=blue!60!black, inner sep=1.2pt},
+  hn/.style={circle, draw, fill=gray!15, inner sep=1.4pt},
+  pie/.style={align=center, font=\scriptsize, anchor=north}]
+% ---- IVF ----
+\node[font=\bfseries] at (2.2,3.75) {IVF};
+\fill[blue!8] (2.2,1.6) rectangle (4.4,3.4);
+\draw[gray!60] (0,0) rectangle (4.4,3.4);
+\draw[gray!60] (2.2,0) -- (2.2,3.4); \draw[gray!60] (0,1.6) -- (4.4,1.6);
+\foreach \c in {(1.1,0.8),(3.3,0.8),(1.1,2.5),(3.3,2.5)} \node[cen] at \c {};
+\foreach \p in {(0.4,0.3),(0.7,1.2),(1.6,0.4),(1.8,1.3),(2.6,0.3),(3.9,1.2),(2.9,1.1),(4.1,0.4),(0.5,2.0),(0.6,3.0),(1.5,2.9),(1.9,2.1),(2.6,2.0),(3.9,3.0),(3.6,2.0),(4.0,2.4)}
+  \node[pto] at \p {};
+\coordinate (q) at (2.35,1.75);
+\node[circle, fill=red!70!black, inner sep=1.5pt, label={[red!70!black,font=\scriptsize]above right:$q$}] at (q) {};
+\node[circle, draw=red!70!black, thick, inner sep=1.6pt] (v) at (2.0,1.65) {};
+\draw[red!70!black, densely dotted] (q) -- (v);
+\node[pie, text width=5.2cm] at (2.2,-0.15) {Celdas de k-means (\texttt{nlist} = 4). Con \texttt{nprobe} = 1 solo se revisa la celda sombreada y se pierde el vecino real (círculo), que está al otro lado de la frontera; con \texttt{nprobe} = 2 se recupera.};
+% ---- HNSW ----
+\begin{scope}[xshift=6.6cm]
+\node[font=\bfseries] at (3.0,3.75) {HNSW};
+\foreach \y/\t in {2.9/capa 2, 1.7/capa 1, 0.5/capa 0}{
+  \draw[gray!50, fill=gray!4] (0,\y-0.42) -- (5.2,\y-0.42) -- (5.8,\y+0.42) -- (0.6,\y+0.42) -- cycle;
+  \node[anchor=west, font=\scriptsize, text=gray!60!black] at (5.85,\y) {\t};}
+\node[hn, fill=green!30] (e2) at (1.2,2.9) {}; \node[hn] (f2) at (4.4,2.9) {};
+\draw (e2) -- (f2);
+\node[hn] (e1) at (1.2,1.7) {}; \node[hn] (a1) at (2.6,1.85) {}; \node[hn] (f1) at (4.4,1.7) {}; \node[hn] (b1) at (3.5,1.55) {};
+\draw (e1) -- (a1) -- (b1) -- (f1); \draw (a1) -- (f1);
+\foreach \n/\p in {c1/{(0.9,0.45)},c2/{(1.7,0.65)},c3/{(2.5,0.4)},c4/{(3.2,0.65)},c5/{(3.8,0.35)},c6/{(4.4,0.5)},c7/{(5.0,0.7)}}
+  \node[hn] (\n) at \p {};
+\draw (c1) -- (c2) -- (c3) -- (c4) -- (c5) -- (c6) -- (c7); \draw (c2) -- (c4); \draw (c4) -- (c6); \draw (c3) -- (c5);
+\draw[->, thick, red!70!black] (e2) -- (f2);
+\draw[->, thick, red!70!black, dashed] (f2) -- (f1);
+\draw[->, thick, red!70!black] (f1) -- (b1);
+\draw[->, thick, red!70!black, dashed] (b1) -- (c5);
+\node[circle, draw=red!70!black, thick, inner sep=3.5pt] at (c5) {};
+\node[pie, text width=6.0cm] at (3.0,-0.15) {Se entra por la capa más alta (verde) y se avanza al vecino más cercano a $q$ hasta que ninguno mejora; luego se baja una capa. En la capa 0 se exploran los \texttt{ef\_busqueda} mejores candidatos.};
+\end{scope}
+\end{tikzpicture}

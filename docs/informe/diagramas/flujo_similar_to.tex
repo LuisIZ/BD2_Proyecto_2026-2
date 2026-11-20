@@ -1,0 +1,17 @@
+% Flujo de SIMILAR_TO ... USING HNSW entre la API y el motor (sección 7.8)
+\begin{tikzpicture}[font=\footnotesize, >={Stealth[length=2mm]},
+  caja/.style={draw, rounded corners=2pt, fill=gray!8, align=center, minimum height=1.0cm, inner sep=4pt},
+  dato/.style={font=\scriptsize\ttfamily, align=center}]
+\node[caja, text width=3.3cm] (u) at (0,0) {\textbf{Usuario}\\\texttt{SIMILAR\_TO('foto.jpg', k=10) USING HNSW}};
+\node[caja, text width=3.4cm, fill=blue!8] (api) at (4.9,0) {\textbf{API (Python)}\\1.\ SIFT y BoVW: vector\\2.\ busca en FAISS};
+\node[caja, text width=2.4cm, fill=green!10] (faiss) at (4.9,-2.4) {\textbf{FAISS HNSW}\\en memoria};
+\node[caja, text width=3.5cm, fill=orange!12] (mot) at (10.8,0) {\textbf{motor\_sql (C++)}\\lee esas filas y recalcula\\la distancia exacta};
+\node[caja, text width=3.4cm, fill=gray!15, font=\scriptsize] (log) at (10.8,-2.4) {\texttt{<indice>.faiss.cambios}\\solo cambios confirmados};
+\draw[->] (u) -- (api);
+\draw[->] ([xshift=-3mm]api.south) -- node[left, dato] {vector} ([xshift=-3mm]faiss.north);
+\draw[->] ([xshift=3mm]faiss.north) -- node[right, dato] {ids: 812, 45, 3301} ([xshift=3mm]api.south);
+\draw[->] (api) -- node[above, dato] {CANDIDATES\\(812, 45, 3301)} (mot);
+\draw[->] (mot) -- (log) node[midway, right, dato] {INSERT, DELETE,\\COPY, COMMIT};
+\draw[->, dashed] (log) -- node[above, dato] {se aplica\\antes de buscar} (faiss);
+\draw[->] (mot.north) -- ++(0,0.55) -| node[pos=0.25, above, font=\scriptsize] {filas, score y plan (\emph{filtrar} con FAISS, \emph{refinar} en el motor)} (u.north);
+\end{tikzpicture}
