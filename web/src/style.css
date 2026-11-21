@@ -2009,6 +2009,32 @@ details summary {
   flex: 0 1 260px;
   min-width: 0;
 }
+.tienda-foto-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+}
+.tienda-foto-resultado {
+  margin: 12px 0 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.tienda-foto-cabecera {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px 0;
+}
+.tienda-foto-cabecera img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .tienda-precios {
   display: flex;
   flex: 0 1 220px;

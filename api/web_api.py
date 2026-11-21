@@ -38,6 +38,8 @@ ESCRIBEN = {"insert", "delete", "copy", "create_index", "commit"}
 async def lifespan(app):
     global motor
     motor = MotorSQL(db=DB)
+    # CLIP tarda unos 8 s en cargar: se carga ahora, en segundo plano, y no en la primera busqueda por foto
+    threading.Thread(target=tienda.calentar_clip, daemon=True).start()
     yield
 
 

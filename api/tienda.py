@@ -160,6 +160,83 @@ def producto(id: int):
     return {**resumen(fila), "item_id": fila["item_id"], "categoria": fila["categoria"], "descripcion": fila["descripcion"]}
 
 
+# --- buscar por foto ---
+
+# el nombre que devuelve POST /api/multimedia/subir: 16 hexadecimales y la extension
+ARCHIVO_SUBIDO = re.compile(r"[0-9a-f]{16}\.(jpg|jpeg|png|webp|bmp)")
+
+
+def clip():
+    """multimedia.clip_imagenes si PyTorch esta instalado y los vectores del catalogo estan construidos."""
+    api()  # web_api pone api/ en sys.path, de donde sale el paquete multimedia
+    modulo = importlib.import_module("multimedia.clip_imagenes")
+    return modulo if modulo.disponible() and modulo.cargar_indice() is not None else None
+
+
+def calentar_clip():
+    """Carga el modelo y hace una inferencia de prueba para que la primera foto no pague el arranque.
+    Si CLIP no esta listo no hace nada: 'Buscar por foto' sigue con SIFT."""
+    try:
+        from PIL import Image
+
+        modulo = clip()
+        if modulo is not None:
+            modulo.vectores_de_imagenes([Image.new("RGB", (224, 224))])
+    except Exception:  # noqa: BLE001 - es solo un precalentamiento; el error real sale al buscar
+        pass
+
+
+def parecidos_con_clip(modulo, archivo, k):
+    """CLIP: el vector de la foto contra los 512 numeros de cada producto (coseno)."""
+    ruta = api().ruta_en(archivo, [api().SUBIDAS])
+    if ruta is None:
+        raise HTTPException(404, f"No hay una foto subida con el nombre {archivo}.")
+    try:
+        vecinos = modulo.vecinos(modulo.vector_de_archivo(ruta), k)
+    except OSError as error:
+        raise HTTPException(400, f"No se pudo leer la foto: {error}") from error
+    consulta = f"-- CLIP ({modulo.MODELO}): coseno entre el vector de la foto y el de cada producto, k = {k}"
+    return dict(vecinos), consulta
+
+
+def parecidos_con_sift(archivo, k):
+    """SIFT + palabras visuales: SIMILAR_TO ... USING HNSW, el mismo camino que la vista Consultas."""
+    consulta = (f"SELECT id, SIMILARITY_SCORE() FROM catalogo "
+                f"WHERE SIMILAR_TO({literal(archivo)}, k = {k}) USING HNSW WITH METRIC = cosine")
+    with api().lock:
+        sql, _ = api().preparar_similitud(consulta)
+        respuesta = api().ejecutar(sql)[0]
+    if not respuesta.get("ok"):
+        raise HTTPException(400, respuesta.get("error", "el motor no respondio"))
+    return {int(fila[0]): float(fila[1]) for fila in respuesta["filas"]}, consulta
+
+
+@router.get("/foto")
+def buscar_por_foto(archivo: str, k: int = Query(12, ge=1, le=30),
+                    metodo: Annotated[str, Query(pattern="^(auto|clip|sift)$")] = "auto"):
+    """Los productos que se parecen a una foto subida con /api/multimedia/subir.
+    clip: modelo de imagenes que entiende el objeto; sift: el indice HNSW del motor (Parte 4);
+    auto: clip si esta instalado y construido, si no sift. Las tarjetas salen de productos."""
+    if not ARCHIVO_SUBIDO.fullmatch(archivo):
+        raise HTTPException(400, "El nombre no es el de una foto subida con /api/multimedia/subir.")
+    modulo = clip() if metodo in ("auto", "clip") else None
+    if metodo == "clip" and modulo is None:
+        raise HTTPException(
+            400, "CLIP no esta listo: instala torch y transformers y ejecuta python -m api.multimedia.clip_imagenes.")
+    if modulo is not None:
+        similitud, consulta = parecidos_con_clip(modulo, archivo, k)
+        usado = "clip"
+    else:
+        similitud, consulta = parecidos_con_sift(archivo, k)
+        usado = "sift"
+    tarjetas = resumenes(list(similitud))
+    return {
+        "metodo": usado,
+        "productos": [{**tarjetas[i], "similitud": s} for i, s in similitud.items() if i in tarjetas],
+        "consulta": consulta,
+    }
+
+
 # --- recomendaciones ---
 
 
