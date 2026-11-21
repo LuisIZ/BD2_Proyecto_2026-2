@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Thumbnail } from "../Gallery";
-import { buscarProductos, precio } from "./api";
-import type { Catalogo as CatalogoDatos, ProductoResumen } from "./types";
+import { buscarPorFoto, buscarProductos, precio } from "./api";
+import type {
+  Catalogo as CatalogoDatos,
+  FotoResultado,
+  ProductoResumen,
+} from "./types";
 
 /** Tarjeta con foto, nombre, marca y precio; la usan el catálogo y las recomendaciones. */
 export function Tarjeta({
@@ -52,6 +56,42 @@ export default function Catalogo({
   const [datos, setDatos] = useState<CatalogoDatos>();
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
+  const [foto, setFoto] = useState<{ vista: string; nombre: string; archivo: File }>();
+  const [metodo, setMetodo] = useState("auto");
+  const [parecidos, setParecidos] = useState<FotoResultado>();
+  const [buscandoFoto, setBuscandoFoto] = useState(false);
+  const [errorFoto, setErrorFoto] = useState("");
+  const campoArchivo = useRef<HTMLInputElement>(null);
+
+  async function subirFoto(archivo: File, como = metodo) {
+    if (!foto || foto.archivo !== archivo) {
+      if (foto) URL.revokeObjectURL(foto.vista);
+      setFoto({ vista: URL.createObjectURL(archivo), nombre: archivo.name, archivo });
+    }
+    setParecidos(undefined);
+    setErrorFoto("");
+    setBuscandoFoto(true);
+    try {
+      setParecidos(await buscarPorFoto(archivo, como));
+    } catch (e) {
+      setErrorFoto((e as Error).message);
+    } finally {
+      setBuscandoFoto(false);
+    }
+  }
+
+  function quitarFoto() {
+    if (foto) URL.revokeObjectURL(foto.vista);
+    setFoto(undefined);
+    setParecidos(undefined);
+    setErrorFoto("");
+  }
+
+  function elegida(event: React.ChangeEvent<HTMLInputElement>) {
+    const archivo = event.target.files?.[0];
+    event.target.value = ""; // permite elegir la misma foto otra vez
+    if (archivo) void subirFoto(archivo);
+  }
 
   useEffect(() => {
     let vigente = true;
@@ -157,6 +197,78 @@ export default function Catalogo({
           Buscar
         </button>
       </form>
+      <div className="tienda-foto-barra">
+        <input
+          ref={campoArchivo}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={elegida}
+        />
+        <button onClick={() => campoArchivo.current?.click()} disabled={buscandoFoto}>
+          Buscar por foto
+        </button>
+        <span className="muted small">
+          Sube la foto de un producto y busca los más parecidos.
+        </span>
+      </div>
+      {foto && (
+        <div className="tienda-foto-resultado" aria-live="polite">
+          <div className="tienda-foto-cabecera">
+            <img src={foto.vista} alt={`Tu foto: ${foto.nombre}`} />
+            <div>
+              <strong>Productos parecidos a tu foto</strong>
+              <label className="small">
+                Método{" "}
+                <select
+                  value={metodo}
+                  disabled={buscandoFoto}
+                  onChange={(event) => {
+                    setMetodo(event.target.value);
+                    void subirFoto(foto.archivo, event.target.value);
+                  }}
+                >
+                  <option value="auto">Automático</option>
+                  <option value="clip">CLIP (entiende el objeto)</option>
+                  <option value="sift">SIFT + HNSW (motor)</option>
+                </select>
+              </label>
+              {parecidos && (
+                <span className="muted small"> · se buscó con {parecidos.metodo.toUpperCase()}</span>
+              )}
+              {buscandoFoto && <p className="muted small">Analizando la foto…</p>}
+              {parecidos && !parecidos.productos.length && (
+                <p className="muted small">No se encontraron productos parecidos.</p>
+              )}
+              <button className="text-button" onClick={quitarFoto}>
+                Quitar la foto
+              </button>
+            </div>
+          </div>
+          {errorFoto && (
+            <p className="message error tienda-estado" role="alert">
+              {errorFoto}
+            </p>
+          )}
+          {parecidos && (
+            <>
+              <ul className="tienda-grilla" aria-label="Productos parecidos">
+                {parecidos.productos.map((producto) => (
+                  <Tarjeta key={producto.id} producto={producto} abrir={abrir}>
+                    <span className="muted small">
+                      {Math.round(producto.similitud * 100)} % parecido
+                    </span>
+                  </Tarjeta>
+                ))}
+              </ul>
+              <details className="tienda-sql">
+                <summary>Consulta SQL</summary>
+                <code>{parecidos.consulta}</code>
+              </details>
+            </>
+          )}
+        </div>
+      )}
       {error && (
         <p className="message error tienda-estado" role="alert">
           {error}

@@ -30,6 +30,14 @@ export interface Catalogo {
   consulta: string;
 }
 
+/** GET /api/tienda/foto: los productos parecidos a una foto subida; similitud va de 0 a 1. */
+export interface FotoResultado {
+  /** con qué se buscó: clip (modelo de imágenes) o sift (el índice HNSW del motor) */
+  metodo: "clip" | "sift";
+  productos: (ProductoResumen & { similitud: number })[];
+  consulta: string;
+}
+
 /** GET /api/tienda/productos/{id} */
 export interface Producto extends ProductoResumen {
   item_id: string;

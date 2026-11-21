@@ -1,5 +1,12 @@
+import { uploadFile } from "../api";
 import ejemplo from "./ejemplo.json";
-import type { Catalogo, Producto, Recomendaciones, SedesCercanas } from "./types";
+import type {
+  Catalogo,
+  FotoResultado,
+  Producto,
+  Recomendaciones,
+  SedesCercanas,
+} from "./types";
 
 /** La respuesta y si salió de ejemplo.json porque la API todavía no tiene /api/tienda. */
 export interface Respuesta<T> {
@@ -41,6 +48,18 @@ export function buscarProductos(
   if (precioMin) params.set("precio_min", precioMin);
   if (precioMax) params.set("precio_max", precioMax);
   return pedir<Catalogo>(`productos?${params}`, ejemplo.productos);
+}
+
+/** Sube la foto y trae los productos más parecidos: con CLIP, o con SIFT + HNSW como SIMILAR_TO en Consultas. */
+export async function buscarPorFoto(foto: File, metodo = "auto", k = 12) {
+  const { archivo } = await uploadFile(foto);
+  const params = new URLSearchParams({ archivo, k: String(k), metodo });
+  const respuesta = await pedir<FotoResultado>(`foto?${params}`, {
+    metodo: "sift",
+    productos: [],
+    consulta: "",
+  });
+  return { ...respuesta.datos, archivo };
 }
 
 export function obtenerProducto(id: number) {
